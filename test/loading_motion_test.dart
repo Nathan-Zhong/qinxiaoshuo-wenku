@@ -12,6 +12,8 @@ import 'package:wenku8_flutter/pages.dart';
 import 'package:wenku8_flutter/reader_paged_view.dart';
 import 'package:wenku8_flutter/reader_preferences.dart';
 
+import 'support/legado_engine_mock.dart';
+
 double _revealProgress(WidgetTester tester, String key) => tester
     .renderObject<ArchiveRevealRender>(
       find
@@ -87,8 +89,14 @@ void main() {
   ) async {
     SharedPreferences.setMockInitialValues({});
     final state = await LibraryState.load();
-    final repository = _PendingLibrary();
-    await tester.pumpWidget(NovelApp(state: state, repository: repository));
+    // B2: the discovery feed loads from the engine; gate the explore
+    // answer so the library stays in its loading state.
+    final engine = LegadoEngineMock()..exploreGate = Completer<void>();
+    engine.install();
+    addTearDown(engine.uninstall);
+    await tester.pumpWidget(
+      NovelApp(state: state, repository: const DemoNovelRepository()),
+    );
     await tester.pump(const Duration(milliseconds: 180));
     expect(find.byType(LibrarySkeleton), findsOneWidget);
     expect(find.byType(LoadingSkeleton), findsWidgets);
@@ -99,7 +107,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.binding.transientCallbackCount, 0);
     expect(find.byType(FrostedHeader), findsOneWidget);
-    repository.books.complete(demoNovels);
+    engine.exploreGate!.complete();
     await tester.pumpAndSettle();
     expect(find.byType(LoadingSkeleton), findsNothing);
     expect(find.byType(CupertinoActivityIndicator), findsNothing);
@@ -157,6 +165,8 @@ void main() {
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
+    final engine = LegadoEngineMock()..install();
+    addTearDown(engine.uninstall);
     final state = await LibraryState.load();
     await tester.pumpWidget(
       NovelApp(state: state, repository: const DemoNovelRepository()),
@@ -239,12 +249,6 @@ void main() {
     await tester.pump();
     expect(tester.takeException(), isNull);
   });
-}
-
-class _PendingLibrary extends DemoNovelRepository {
-  final books = Completer<List<Novel>>();
-  @override
-  Future<List<Novel>> list() => books.future;
 }
 
 class _PendingContent extends DemoNovelRepository {

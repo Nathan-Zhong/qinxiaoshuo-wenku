@@ -17,6 +17,7 @@ import 'package:wenku8_flutter/pages.dart';
 import 'package:wenku8_flutter/reader_find.dart';
 import 'package:wenku8_flutter/reader_content.dart';
 
+import 'support/legado_engine_mock.dart';
 import 'support/offline_fixture.dart';
 
 Finder _button(String label) => find
@@ -367,6 +368,23 @@ void main({
   testWidgets(
     'recent successful search can be recalled and cleared with confirmation',
     (tester) async {
+      // B2: search runs through the engine bridge; complete each
+      // started task with one result so the shell records the recent
+      // search exactly as it did for repository searches.
+      final engine = LegadoEngineMock()..install();
+      addTearDown(engine.uninstall);
+      void completeSearch() {
+        final taskId = engine.searchTaskIds.last;
+        engine.pushSnapshot(taskId, [
+          LegadoEngineMock.bookJson((
+            name: '星尘远征',
+            author: '佚名',
+            url: 'https://src.example/b/star',
+          )),
+        ]);
+        engine.pushFinish(taskId);
+      }
+
       await mount(
         tester,
         HomeShell(state: state, repository: const DemoNovelRepository()),
@@ -378,6 +396,8 @@ void main({
         '星尘',
       );
       await io(tester);
+      completeSearch();
+      await io(tester);
       expect(state.recentSearches, ['星尘']);
       await tester.enterText(
         find.byKey(const ValueKey('expanded-search-input')),
@@ -387,6 +407,8 @@ void main({
       expect(find.byKey(const ValueKey('recent-search-星尘')), findsOneWidget);
       await shot(tester, 'recent-searches');
       await tester.tap(_tapKey('recent-search-星尘'));
+      await io(tester);
+      completeSearch();
       await io(tester);
       expect(
         tester

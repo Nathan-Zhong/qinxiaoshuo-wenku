@@ -10,6 +10,7 @@ import 'app_ui.dart';
 import 'app_licenses.dart';
 import 'catalog.dart';
 import 'legacy_wenku_repository.dart';
+import 'legado/legado_books.dart';
 import 'library_state.dart';
 import 'local_books.dart';
 import 'local_series_actions.dart';
@@ -71,7 +72,9 @@ Future<void> main() async {
   );
   final repository = defaultTargetPlatform == TargetPlatform.android
       ? OfflineNovelRepository(
-          remote: remote,
+          // Engine (Legado) books route to the engine by id; all other
+          // traffic keeps flowing to the wenku remote untouched.
+          remote: LegadoBooks.dispatch(remote),
           cache: await OfflineCacheStore.forApp(),
           local: await LocalBookStore.forApp(),
           network: network,

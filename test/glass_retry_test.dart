@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wenku8_flutter/app_ui.dart';
@@ -15,17 +16,24 @@ void main() {
         'readerChromeVisible': true,
         'readerChromeHintSeen': true,
       });
+      // B2: the discovery feed is served by the Legado engine bridge —
+      // the first explore fetch fails, the retry succeeds.
+      final engine = _FlakyExplore();
+      engine.install();
+      addTearDown(engine.uninstall);
       final state = await LibraryState.load();
-      final repository = _RetryLibrary();
-      await tester.pumpWidget(NovelApp(state: state, repository: repository));
+      await tester.pumpWidget(
+        NovelApp(state: state, repository: const DemoNovelRepository()),
+      );
       await tester.pumpAndSettle();
       expect(find.text('书籍加载失败'), findsOneWidget);
       expect(find.byType(GlassTextButton), findsOneWidget);
       await tester.tap(find.text('重试'));
       await tester.pumpAndSettle();
       expect(find.text('书籍加载失败'), findsNothing);
+      expect(find.text('重试之书'), findsWidgets);
       expect(find.text('小说文库'), findsOneWidget);
-      expect(repository.attempts, 2);
+      expect(engine.attempts, 2);
       expect(tester.takeException(), isNull);
     },
   );
@@ -39,9 +47,16 @@ void main() {
       });
       final state = await LibraryState.load();
       final repository = _RetryDetail();
-      await tester.pumpWidget(NovelApp(state: state, repository: repository));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text(demoNovels.first.title).last);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: novelTheme(Brightness.light),
+          home: DetailLoaderPage(
+            novel: demoNovels.first,
+            state: state,
+            repository: repository,
+          ),
+        ),
+      );
       await tester.pumpAndSettle();
       expect(find.text('书籍详情加载失败'), findsOneWidget);
       final cover = find.descendant(
@@ -91,12 +106,77 @@ void main() {
   });
 }
 
-class _RetryLibrary extends DemoNovelRepository {
+/// Engine bridge stand-in whose explore fetch fails exactly once.
+class _FlakyExplore {
+  static const _channel = MethodChannel('org.mewx.wenku8/legado_engine');
   int attempts = 0;
-  @override
-  Future<List<Novel>> list() async {
-    if (attempts++ == 0) throw StateError('fixture list failure');
-    return demoNovels;
+
+  void install() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_channel, (call) async {
+          switch (call.method) {
+            case 'init':
+              return {'ok': true, 'engineVersion': 'test', 'sourceCount': 1};
+            case 'listSources':
+              return [
+                {
+                  'sourceUrl': 'https://src.example',
+                  'sourceName': '示例源',
+                  'group': '',
+                  'type': 0,
+                  'enabled': true,
+                  'enabledExplore': true,
+                  'customOrder': 0,
+                  'weight': 0,
+                  'respondTimeMs': 1,
+                  'lastUpdateTime': 0,
+                  'hasLogin': false,
+                },
+              ];
+            case 'getExploreKinds':
+              return [
+                {
+                  'title': '全部',
+                  'url': 'kind/all',
+                  'viewName': 'text',
+                  'style': 3,
+                },
+              ];
+            case 'getExploreBooks':
+              attempts++;
+              if (attempts == 1) {
+                throw PlatformException(code: 'NET', message: 'down');
+              }
+              return {
+                'books': [
+                  {
+                    'name': '重试之书',
+                    'author': '佚名',
+                    'bookUrl': 'https://src.example/book/7',
+                    'tocUrl': '',
+                    'origin': 'https://src.example',
+                    'originName': '示例源',
+                    'origins': ['https://src.example'],
+                    'type': 0,
+                    'kind': '玄幻',
+                    'coverUrl': null,
+                    'intro': '重试后出现的书。',
+                    'wordCount': null,
+                    'latestChapterTitle': '第一章',
+                    'chapterWordCount': 0,
+                    'variable': null,
+                  },
+                ],
+                'hasMore': false,
+              };
+          }
+          return null;
+        });
+  }
+
+  void uninstall() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_channel, null);
   }
 }
 

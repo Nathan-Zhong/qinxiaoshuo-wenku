@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wenku8_flutter/app_ui.dart';
@@ -82,6 +83,154 @@ Finder _control(String label) => find
     )
     .first;
 
+/// Legado engine bridge stand-in: one source with two explore kinds,
+/// twenty books per explore page, and a push-driven search stream.
+class _EngineMock {
+  static const _methodChannel = MethodChannel('org.mewx.wenku8/legado_engine');
+  static const _searchChannel = EventChannel(
+    'org.mewx.wenku8/legado_search_events',
+  );
+
+  final _messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  final exploreRequests = <(String, int)>[];
+  var failExplore = false;
+  var failSecondExplorePage = false;
+
+  /// The search EventChannel is mocked at the message level (listen /
+  /// cancel answered with the standard codec, events pushed as success
+  /// envelopes): MockStreamHandler's activation path rejects streams
+  /// started from inside a testWidgets fake-async zone.
+  static const _codec = StandardMethodCodec();
+  static bool _searchListening = false;
+  int? searchTaskId;
+
+  static Map<String, Object?> bookJson(String name, String bookUrl) => {
+    'name': name,
+    'author': '功能作者',
+    'bookUrl': bookUrl,
+    'tocUrl': '',
+    'origin': 'https://src.example',
+    'originName': '示例源',
+    'origins': ['https://src.example'],
+    'type': 0,
+    'kind': '玄幻',
+    'coverUrl': null,
+    'intro': '简介',
+    'wordCount': null,
+    'latestChapterTitle': '第一章',
+    'chapterWordCount': 0,
+    'variable': null,
+  };
+
+  static Map<String, Object?> searchBookJson(String name, String bookUrl) =>
+      bookJson(name, bookUrl);
+
+  void install() {
+    _messenger.setMockMethodCallHandler(_methodChannel, (call) async {
+      switch (call.method) {
+        case 'init':
+          return {'ok': true, 'engineVersion': 'test', 'sourceCount': 1};
+        case 'listSources':
+          return [
+            {
+              'sourceUrl': 'https://src.example',
+              'sourceName': '示例源',
+              'group': '',
+              'type': 0,
+              'enabled': true,
+              'enabledExplore': true,
+              'customOrder': 0,
+              'weight': 0,
+              'respondTimeMs': 1,
+              'lastUpdateTime': 0,
+              'hasLogin': false,
+            },
+          ];
+        case 'getExploreKinds':
+          return [
+            {'title': '玄幻', 'url': 'kind/xh', 'viewName': 'text', 'style': 3},
+            {'title': '都市', 'url': 'kind/ds', 'viewName': 'text', 'style': 3},
+          ];
+        case 'getExploreBooks':
+          final args = (call.arguments as Map).cast<String, Object?>();
+          final kind = args['kindUrl'] as String;
+          final page = args['page'] as int;
+          exploreRequests.add((kind, page));
+          if (failExplore || (failSecondExplorePage && page == 2)) {
+            throw PlatformException(code: 'NET', message: 'down');
+          }
+          final prefix = kind == 'kind/ds' ? '都市书' : '玄幻书';
+          return {
+            'books': [
+              for (var i = 1; i <= 20; i++)
+                bookJson(
+                  '$prefix ${(page - 1) * 20 + i}',
+                  'https://src.example/$kind/${(page - 1) * 20 + i}',
+                ),
+            ],
+            'hasMore': page < 2,
+          };
+        case 'startSearch':
+          final args = (call.arguments as Map).cast<String, Object?>();
+          searchTaskId = args['taskId'] as int;
+          return null;
+      }
+      return null;
+    });
+    _messenger.setMockMessageHandler(_searchChannel.name, (message) async {
+      if (message == null) return null;
+      final call = _codec.decodeMethodCall(message);
+      if (call.method == 'listen') {
+        _searchListening = true;
+        return _codec.encodeSuccessEnvelope(null);
+      }
+      if (call.method == 'cancel') {
+        _searchListening = false;
+        return _codec.encodeSuccessEnvelope(null);
+      }
+      return null;
+    });
+  }
+
+  void uninstall() {
+    _messenger.setMockMethodCallHandler(_methodChannel, null);
+    _messenger.setMockMessageHandler(_searchChannel.name, null);
+    _searchListening = false;
+  }
+
+  void _pushSearchEvent(Map<String, Object?> event) {
+    assert(_searchListening, 'search stream is not listening');
+    _messenger.handlePlatformMessage(
+      _searchChannel.name,
+      _codec.encodeSuccessEnvelope(event),
+      (_) {},
+    );
+  }
+
+  void pushSearchSnapshot(
+    List<Map<String, Object?>> books, {
+    required bool hasMore,
+  }) {
+    _pushSearchEvent({
+      'type': 'searchSnapshot',
+      'taskId': searchTaskId,
+      'books': books,
+      'groups': <Object?>[],
+      'hasMore': hasMore,
+    });
+  }
+
+  void pushSearchFinish() {
+    _pushSearchEvent({
+      'type': 'searchFinish',
+      'taskId': searchTaskId,
+      'isEmpty': false,
+      'hasMore': false,
+    });
+  }
+}
+
 ScrollableState _scroll(WidgetTester tester, Finder parent) =>
     tester.state<ScrollableState>(
       find.descendant(of: parent, matching: find.byType(Scrollable)).first,
@@ -125,12 +274,19 @@ Future<void> _reader(
 }
 
 void main() {
+  // B2: discovery is fed by the Legado engine (selected source's
+  // explore lists), so these cases drive the bridge stand-in instead
+  // of the shell repository's catalogue methods.
   testWidgets(
-    'catalogue loads page two lazily and rank picker reuses the glass menu',
+    'explore loads page two lazily and the picker switches source kinds',
     (tester) async {
+      final engine = _EngineMock()..install();
+      addTearDown(engine.uninstall);
       final repository = _Repository();
       await _mount(tester, repository);
       final feed = tester.widget<DiscoverPage>(find.byType(DiscoverPage)).feed!;
+      expect(feed.items.length, 20);
+      expect(feed.items.first.title, startsWith('玄幻书'));
       final scroll = _scroll(
         tester,
         find.byKey(const PageStorageKey('discover')),
@@ -145,10 +301,11 @@ void main() {
       await tester.tap(_control('分类与排序'));
       await tester.pumpAndSettle();
       expect(find.byType(GlassOverlaySurface), findsOneWidget);
-      await tester.tap(find.text('总人气'));
+      await tester.tap(find.text('都市'));
       await tester.pumpAndSettle();
-      expect(feed.sort, NovelSort.allVisit);
-      expect(repository.calls, contains((NovelSort.allVisit, 1)));
+      expect(engine.exploreRequests, contains(('kind/ds', 1)));
+      expect(feed.page, 1);
+      expect(feed.items.first.title, startsWith('都市书'));
       expect(tester.takeException(), isNull);
     },
   );
@@ -156,8 +313,10 @@ void main() {
   testWidgets(
     'pagination errors retain books and only explicit retry resumes loading',
     (tester) async {
-      final repository = _Repository()..failSecond = true;
-      await _mount(tester, repository);
+      final engine = _EngineMock()..failSecondExplorePage = true;
+      engine.install();
+      addTearDown(engine.uninstall);
+      await _mount(tester, _Repository());
       final scroll = _scroll(
         tester,
         find.byKey(const PageStorageKey('discover')),
@@ -167,10 +326,10 @@ void main() {
       scroll.position.jumpTo(scroll.position.maxScrollExtent);
       await tester.pumpAndSettle();
       expect(find.text('加载下一页失败'), findsOneWidget);
-      expect(repository.calls.length, 2);
+      expect(engine.exploreRequests.length, 2);
       final feed = tester.widget<DiscoverPage>(find.byType(DiscoverPage)).feed!;
       expect(feed.items.length, 20);
-      repository.failSecond = false;
+      engine.failSecondExplorePage = false;
       await tester.tap(find.text('重试'));
       await tester.pumpAndSettle();
       expect(feed.items.length, 40);
@@ -181,23 +340,41 @@ void main() {
   testWidgets('inline search continues beyond its first twenty matches', (
     tester,
   ) async {
-    final repository = _Repository();
-    await _mount(tester, repository);
+    final engine = _EngineMock()..install();
+    addTearDown(engine.uninstall);
+    await _mount(tester, _Repository());
     await tester.tap(_control('搜索'));
     await tester.pumpAndSettle();
     final results = find.byType(InlineSearchResults);
     final feed = tester.widget<InlineSearchResults>(results).feed;
-    final scroll = _scroll(tester, results);
-    scroll.position.jumpTo(scroll.position.maxScrollExtent);
+    await tester.enterText(find.byType(TextField).first, '搜索书');
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pumpAndSettle();
+    expect(engine.searchTaskId, isNotNull);
+    // Streaming search: snapshots grow the same result list in place
+    // instead of paging, so matches past the first twenty just appear.
+    engine.pushSearchSnapshot([
+      for (var i = 1; i <= 20; i++)
+        _EngineMock.searchBookJson('搜索书 $i', 'https://src.example/s/$i'),
+    ], hasMore: true);
+    await tester.pumpAndSettle();
+    expect(feed.items.length, 20);
+    engine.pushSearchSnapshot([
+      for (var i = 1; i <= 40; i++)
+        _EngineMock.searchBookJson('搜索书 $i', 'https://src.example/s/$i'),
+    ], hasMore: false);
+    engine.pushSearchFinish();
     await tester.pumpAndSettle();
     expect(feed.items.length, 40);
-    expect(feed.page, 2);
     expect(find.byType(HomeShell), findsOneWidget);
   });
 
   testWidgets(
     'shelf and settings remain available when the recent list fails',
     (tester) async {
+      final engine = _EngineMock()..failExplore = true;
+      engine.install();
+      addTearDown(engine.uninstall);
       SharedPreferences.setMockInitialValues({
         'readerChromeVisible': true,
         'readerChromeHintSeen': true,
@@ -206,7 +383,7 @@ void main() {
       final state = await LibraryState.load();
       await state.toggleShelf(5000, novel: _book(5000));
       await state.setChapter(5000, 1);
-      final repository = _Repository()..failList = true;
+      final repository = _Repository();
       await tester.pumpWidget(NovelApp(state: state, repository: repository));
       await tester.pumpAndSettle();
       expect(find.text('书籍加载失败'), findsOneWidget);

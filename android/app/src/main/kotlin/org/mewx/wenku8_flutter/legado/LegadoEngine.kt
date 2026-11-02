@@ -179,6 +179,57 @@ object LegadoEngine {
     }
 
     // ------------------------------------------------------------------
+    // Explore (discovery): kinds -> paged book lists
+    // ------------------------------------------------------------------
+
+    /**
+     * Next-page URLs for sources whose explore rules resolve paging via a
+     * parsed next-page link instead of a page number. The Dart contract
+     * only carries (sourceUrl, kindUrl, page), so the bridge keeps the
+     * chain per (source, kind): page 1 resets it, later pages reuse the
+     * URL stored by the previous response when one was produced.
+     */
+    private val exploreNextPageUrls = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    suspend fun getExploreKinds(sourceUrl: String): List<Map<String, Any?>> {
+        requireInit()
+        val source = sourceOrThrow(sourceUrl)
+        return source.exploreKinds().map { LegadoDto.exploreKind(it) }
+    }
+
+    suspend fun getExploreBooks(
+        sourceUrl: String,
+        kindUrl: String,
+        page: Int
+    ): Map<String, Any?> {
+        requireInit()
+        val source = sourceOrThrow(sourceUrl)
+        val chainKey = "$sourceUrl\n$kindUrl"
+        val nextPageUrl = if (page <= 1) {
+            exploreNextPageUrls.remove(chainKey)
+            null
+        } else {
+            exploreNextPageUrls[chainKey]
+        }
+        val result = WebBook.getBookListAwait(
+            bookSource = source,
+            key = kindUrl,
+            page = page,
+            isSearch = false,
+            nextPageUrl = nextPageUrl
+        )
+        if (result.nextPageUrl.isNullOrBlank()) {
+            exploreNextPageUrls.remove(chainKey)
+        } else {
+            exploreNextPageUrls[chainKey] = result.nextPageUrl
+        }
+        return mapOf(
+            "books" to result.books.map { LegadoDto.searchBook(it) },
+            "hasMore" to result.hasNextPage
+        )
+    }
+
+    // ------------------------------------------------------------------
     // Book chain: info -> chapter list -> content
     // ------------------------------------------------------------------
 

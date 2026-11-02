@@ -8,6 +8,8 @@ import 'package:wenku8_flutter/library_backup.dart';
 import 'package:wenku8_flutter/library_state.dart';
 import 'package:wenku8_flutter/low_performance_page.dart';
 import 'package:wenku8_flutter/main.dart';
+
+import 'support/legado_engine_mock.dart';
 import 'package:wenku8_flutter/performance_preferences.dart';
 import 'support/visual_review.dart';
 
@@ -193,6 +195,9 @@ void main() {
       await tester.runAsync(
         () => state.setPerformance(const PerformancePreferences(enabled: true)),
       );
+      // B2: the discovery carousel is engine-fed now.
+      final engine = LegadoEngineMock()..install();
+      addTearDown(engine.uninstall);
       final boundary = GlobalKey();
       await tester.pumpWidget(
         RepaintBoundary(

@@ -302,7 +302,7 @@ void main() {
           find.byKey(ValueKey('shelf-book-${f.imported.id}')),
           findsNothing,
         );
-        expect(f.remote.lists, 1); // 定版后启动落在发现页，已加载一次列表；后续切换不得再增
+        expect(f.remote.lists, 0); // B2 后发现页由引擎供数，文库远程列表不再被发现页调用；后续切换不得触发
         await captureReview(tester, capture, 'offline-cached-shelf');
 
         final shelfElement = tester.element(find.byType(ShelfPage));
@@ -434,7 +434,7 @@ void main() {
         );
         // 本地栏已取消，页身份保留改由书架页验证（全程同一 element）。
         expect(tester.element(find.byType(ShelfPage)), same(shelfElement));
-        expect(f.remote.lists, 1);
+        expect(f.remote.lists, 0);
         expect(tester.takeException(), isNull);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());

@@ -10,14 +10,29 @@ import 'package:wenku8_flutter/main.dart';
 import 'package:wenku8_flutter/native_effects.dart';
 import 'package:wenku8_flutter/pages.dart';
 
+import 'support/legado_engine_mock.dart';
+
+/// B2: discovery rows are engine books; the stand-in feeds them,
+/// and the shell repository lends the tapped book the demo directory
+/// so detail/reader flows keep working in tests.
+class _DetailRepository extends DemoNovelRepository {
+  const _DetailRepository();
+
+  @override
+  Future<List<NovelChapter>> chapters(int id) async =>
+      demoNovels.first.chapters;
+}
+
 Future<LibraryState> _mount(WidgetTester tester) async {
   SharedPreferences.setMockInitialValues({
     'readerChromeVisible': true,
     'readerChromeHintSeen': true,
   });
+  final engine = LegadoEngineMock()..install();
+  addTearDown(engine.uninstall);
   final state = await LibraryState.load();
   await tester.pumpWidget(
-    NovelApp(state: state, repository: const DemoNovelRepository()),
+    NovelApp(state: state, repository: const _DetailRepository()),
   );
   await tester.pumpAndSettle();
   return state;
@@ -267,8 +282,10 @@ void main() {
         'readerChromeHintSeen': true,
       });
       final state = await LibraryState.load();
+      final engine = LegadoEngineMock()..install();
+      addTearDown(engine.uninstall);
       await tester.pumpWidget(
-        NovelApp(state: state, repository: const DemoNovelRepository()),
+        NovelApp(state: state, repository: const _DetailRepository()),
       );
       await tester.pumpAndSettle();
       await tester.tap(find.text(demoNovels.first.title).last);

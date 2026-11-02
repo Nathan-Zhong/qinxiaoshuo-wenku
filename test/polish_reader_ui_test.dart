@@ -11,6 +11,8 @@ import 'package:wenku8_flutter/pages.dart';
 import 'package:wenku8_flutter/reader_content.dart';
 import 'package:wenku8_flutter/reader_chrome.dart';
 
+import 'support/legado_engine_mock.dart';
+
 class _Reader extends DemoNovelRepository {
   int calls = 0;
   int adjacentCalls = 0;
@@ -394,6 +396,12 @@ void main({
       }
       final queries = <String>[];
       final search = _ImmediateSearch(queries);
+      // B2: searching runs through the engine bridge; the observable
+      // request log is the bridge's startSearch keywords. An empty
+      // query issues no request at all now (it just shows the idle
+      // state), so composition must leave the log empty.
+      final engine = LegadoEngineMock()..install();
+      addTearDown(engine.uninstall);
       await tester.pumpWidget(NovelApp(state: state, repository: search));
       await tester.pumpAndSettle();
       await tester.tap(_control('搜索'));
@@ -409,7 +417,7 @@ void main({
         ),
       );
       await tester.pump(const Duration(milliseconds: 600));
-      expect(queries, ['']);
+      expect(engine.searchKeywords, isEmpty);
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
           text: '玻璃',
@@ -418,12 +426,12 @@ void main({
       );
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pumpAndSettle();
-      expect(queries, ['', '玻璃']);
+      expect(engine.searchKeywords, ['玻璃']);
       expect(tester.widget(find.byType(InlineSearchResults)), same(results));
       await tester.enterText(input, '不要请求');
       await tester.tap(find.byKey(const ValueKey('inline-search-close')));
       await tester.pumpAndSettle();
-      expect(queries, ['', '玻璃']);
+      expect(engine.searchKeywords, ['玻璃']);
       expect(tester.takeException(), isNull);
     },
   );

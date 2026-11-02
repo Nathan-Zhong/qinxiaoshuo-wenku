@@ -4,7 +4,10 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.SearchBook
+import io.legado.app.data.entities.rule.ExploreKind
+import io.legado.app.data.entities.rule.FlexChildStyle
 import io.legado.app.utils.GSON
+import kotlin.math.roundToInt
 
 /**
  * Entity -> channel map conversions, field-for-field per ENGINE-study
@@ -88,6 +91,32 @@ object LegadoDto {
             "latestChapterTime" to book.latestChapterTime,
             "lastCheckCount" to book.lastCheckCount,
             "canUpdate" to book.canUpdate
+        )
+    }
+
+    /**
+     * Table F. The fork entity is `ExploreKind{title, type, url, style}`
+     * (no `viewName`; `style` is a [FlexChildStyle] object, not an Int),
+     * so the bridge maps it onto the drafted shape: `type` -> `viewName`
+     * (RowUi.Type strings such as text/title/button), and `style` -> the
+     * effective column count of the style (1-4, defaulting to
+     * [FlexChildStyle.DEFAULT_COLS]; the legacy basis-percent field is
+     * folded back into a column count when `cols` is absent).
+     */
+    fun exploreKind(kind: ExploreKind): Map<String, Any?> {
+        val style = kind.style()
+        val cols = style.cols?.coerceIn(1, FlexChildStyle.MAX_COLS)
+            ?: if (style.layout_flexBasisPercent > 0f) {
+                (100f / style.layout_flexBasisPercent).roundToInt()
+                    .coerceIn(1, FlexChildStyle.MAX_COLS)
+            } else {
+                FlexChildStyle.DEFAULT_COLS
+            }
+        return mapOf(
+            "title" to kind.title,
+            "url" to kind.url,
+            "viewName" to kind.type,
+            "style" to cols
         )
     }
 

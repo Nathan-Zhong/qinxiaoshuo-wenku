@@ -155,13 +155,16 @@ void main() {
       'readerChromeVisible': true,
       'readerChromeHintSeen': true,
     });
+    // B2 接线后发现页由 Legado 引擎供数：用通道替身喂一个书源的发现
+    // 书目，详情/阅读则由下面的测试仓库承接（测试平台不套分发仓库）。
+    _mockExploreChannels(tester);
     final state = await LibraryState.load();
     await tester.pumpWidget(
-      NovelApp(state: state, repository: const DemoNovelRepository()),
+      NovelApp(state: state, repository: const _ChainRepository()),
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text(demoNovels.first.title).last);
+    await tester.tap(find.text('发现精选').last);
     await tester.pumpAndSettle();
     expect(find.text('简介'), findsOneWidget);
 
@@ -176,4 +179,89 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('阅读设置'), findsNothing);
   });
+}
+
+/// Serves detail/chapters/content for whichever book the discovery
+/// tap hands over, standing in for the engine-backed chain.
+class _ChainRepository extends NovelRepository {
+  const _ChainRepository();
+
+  @override
+  Future<List<Novel>> list() async => const [];
+
+  @override
+  Future<Novel?> find(int id) async => null;
+
+  @override
+  Future<List<Novel>> search(String query) async => const [];
+
+  @override
+  Future<Novel> detail(Novel novel) async => novel;
+
+  @override
+  Future<List<NovelChapter>> chapters(int id) async => const [
+    NovelChapter('第一章', '', id: 1),
+    NovelChapter('第二章', '', id: 2),
+  ];
+
+  @override
+  Future<String> chapterContent(int id, NovelChapter chapter) async =>
+      '这是正文的第一段。\n\n这是正文的第二段，内容足够排满一屏用于阅读器渲染。';
+}
+
+void _mockExploreChannels(WidgetTester tester) {
+  const channel = MethodChannel('org.mewx.wenku8/legado_engine');
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(channel, (call) async {
+    switch (call.method) {
+      case 'init':
+        return {'ok': true, 'engineVersion': 'test', 'sourceCount': 1};
+      case 'listSources':
+        return [
+          {
+            'sourceUrl': 'https://src.example',
+            'sourceName': '示例源',
+            'group': '',
+            'type': 0,
+            'enabled': true,
+            'enabledExplore': true,
+            'customOrder': 0,
+            'weight': 0,
+            'respondTimeMs': 1,
+            'lastUpdateTime': 0,
+            'hasLogin': false,
+          },
+        ];
+      case 'getExploreKinds':
+        return [
+          {'title': '全部', 'url': 'kind/all', 'viewName': 'text', 'style': 3},
+        ];
+      case 'getExploreBooks':
+        return {
+          'books': [
+            {
+              'name': '发现精选',
+              'author': '佚名',
+              'bookUrl': 'https://src.example/book/9',
+              'tocUrl': '',
+              'origin': 'https://src.example',
+              'originName': '示例源',
+              'origins': ['https://src.example'],
+              'type': 0,
+              'kind': '玄幻',
+              'coverUrl': null,
+              'intro': '一本来自书源发现页的书。',
+              'wordCount': null,
+              'latestChapterTitle': '第二章',
+              'chapterWordCount': 0,
+              'variable': null,
+            },
+          ],
+          'hasMore': false,
+        };
+    }
+    return null;
+  });
+  addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
 }

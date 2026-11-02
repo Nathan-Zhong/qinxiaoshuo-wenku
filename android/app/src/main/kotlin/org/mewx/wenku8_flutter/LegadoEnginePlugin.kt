@@ -26,11 +26,12 @@ import org.mewx.wenku8_flutter.legado.legadoErrorCode
  * Bridge between the Dart [LegadoEngineClient] contract (ENGINE-study §4)
  * and the vendored Legado engine.
  *
- * Implemented in this phase: ping, init (real: Room DB in app-private
- * storage + provider registration), source management (list/get/upsert/
- * import/delete/enable/meta/groups), streaming multi-source search over
- * the search EventChannel, and the book chain getBookInfo / getChapterList
- * / getChapterContent. All other contract methods return notImplemented.
+ * Implemented: ping, init (real: Room DB in app-private storage +
+ * provider registration), source management (list/get/upsert/import/
+ * delete/enable/meta/groups), explore (getExploreKinds /
+ * getExploreBooks), streaming multi-source search over the search
+ * EventChannel, and the book chain getBookInfo / getChapterList /
+ * getChapterContent. All other contract methods return notImplemented.
  *
  * Threading: engine work runs on [LegadoEngine.scope] (IO); channel
  * results and event sinks are always delivered on the main thread.
@@ -176,6 +177,18 @@ class LegadoEnginePlugin : FlutterPlugin {
 
             "listSourceGroups" -> launchEngine(result) {
                 LegadoEngine.listSourceGroups()
+            }
+
+            "getExploreKinds" -> launchEngine(result) {
+                LegadoEngine.getExploreKinds(reqString(call, "sourceUrl"))
+            }
+
+            "getExploreBooks" -> launchEngine(result) {
+                LegadoEngine.getExploreBooks(
+                    sourceUrl = reqString(call, "sourceUrl"),
+                    kindUrl = reqString(call, "kindUrl"),
+                    page = call.argument<Int>("page") ?: 1
+                )
             }
 
             "startSearch" -> {

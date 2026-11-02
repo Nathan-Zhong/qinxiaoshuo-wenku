@@ -108,17 +108,25 @@ class ReaderBookmark {
     required this.chapterTitle,
     required this.position,
     this.quote = '',
+    this.note = '',
   });
   final String id;
   final String chapterTitle;
   final ReadingPosition position;
   final String quote;
 
+  /// The reader's personal note （感想） on this bookmark. Reserved in
+  /// B2 for the B3 bookmarks page (write-at-creation + later editing);
+  /// stored exactly like [quote] — omitted from JSON while empty, so
+  /// existing bookmark data needs no migration.
+  final String note;
+
   Map<String, Object> toJson() => {
     'id': id,
     'chapterTitle': chapterTitle,
     'position': position.toJson(),
     if (quote.isNotEmpty) 'quote': quote,
+    if (note.isNotEmpty) 'note': note,
   };
 
   factory ReaderBookmark.fromJson(Map<String, dynamic> json) {
@@ -126,12 +134,15 @@ class ReaderBookmark {
     final title = json['chapterTitle'];
     final position = json['position'];
     final quote = json['quote'] ?? '';
+    final note = json['note'] ?? '';
     if (id is! String ||
         id.isEmpty ||
         title is! String ||
         position is! Map ||
         quote is! String ||
-        quote.length > 12000) {
+        quote.length > 12000 ||
+        note is! String ||
+        note.length > 12000) {
       throw const FormatException('Damaged bookmark');
     }
     return ReaderBookmark(
@@ -139,6 +150,7 @@ class ReaderBookmark {
       chapterTitle: title,
       position: ReadingPosition.fromJson(Map<String, dynamic>.from(position)),
       quote: quote,
+      note: note,
     );
   }
 }
@@ -1213,6 +1225,7 @@ class LibraryState extends ChangeNotifier {
             chapterTitle: mark.chapterTitle,
             position: move(mark.position, identity, target) ?? mark.position,
             quote: mark.quote,
+            note: mark.note,
           ),
       ];
       final markIds = bookmarks.map((m) => m.id).toSet();
@@ -1243,6 +1256,7 @@ class LibraryState extends ChangeNotifier {
             chapterTitle: target.chapters[mapped.chapter].title,
             position: mapped,
             quote: mark.quote,
+            note: mark.note,
           );
           if (fingerprints.add(_bookmarkFingerprint(copied)) &&
               markIds.add(id)) {

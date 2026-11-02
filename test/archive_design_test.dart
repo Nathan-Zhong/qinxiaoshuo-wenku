@@ -12,6 +12,8 @@ import 'package:wenku8_flutter/main.dart';
 import 'package:wenku8_flutter/pages.dart';
 import 'package:wenku8_flutter/reader_chrome.dart';
 
+import 'support/legado_engine_mock.dart';
+
 double contrast(Color a, Color b) {
   final x = a.computeLuminance(), y = b.computeLuminance();
   return (math.max(x, y) + .05) / (math.min(x, y) + .05);
@@ -183,6 +185,20 @@ void main() {
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
+    // B2: the discovery carousel is fed by the selected Legado
+    // source's explore list, so the engine stand-in serves the five
+    // featured books the style assertions run against.
+    final engine = LegadoEngineMock()
+      ..exploreBooks = [
+        for (var i = 1; i <= 5; i++)
+          LegadoEngineMock.bookJson((
+            name: '档案书 $i',
+            author: '佚名',
+            url: 'https://src.example/b/a$i',
+          )),
+      ];
+    engine.install();
+    addTearDown(engine.uninstall);
     final state = await LibraryState.load();
     addTearDown(state.dispose);
     await tester.pumpWidget(
@@ -194,13 +210,10 @@ void main() {
       tester
           .widget<ArchiveFileCarousel>(find.byType(ArchiveFileCarousel))
           .books
-          .map((book) => book.id),
-      demoNovels.take(5).map((book) => book.id),
+          .map((book) => book.title),
+      [for (var i = 1; i <= 5; i++) '档案书 $i'],
     );
-    expect(
-      find.text('01 / ${demoNovels.take(5).length.toString().padLeft(2, '0')}'),
-      findsOneWidget,
-    );
+    expect(find.text('01 / 05'), findsOneWidget);
     expect(find.text('WENKU8 / READING ARCHIVE'), findsOneWidget);
     expect(find.byType(ArchiveBackdrop), findsOneWidget);
     await tester.tapAt(

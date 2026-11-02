@@ -15,6 +15,7 @@ import 'package:wenku8_flutter/reader_preferences.dart';
 import 'package:wenku8_flutter/reader_turn_motion.dart';
 
 import 'reader_modes_test.dart' show settleReader;
+import 'support/legado_engine_mock.dart';
 import 'support/visual_review.dart';
 
 class _TabletBooks extends DemoNovelRepository {
@@ -32,6 +33,16 @@ class _TabletBooks extends DemoNovelRepository {
         colors: const [Color(0xFF373737), Color(0xFF686868)],
       ),
   ];
+}
+
+/// B2: discovery rows are engine books now; lend the tapped book
+/// the demo directory so the tablet detail/reader flow keeps data.
+class _TabletDetailBooks extends _TabletBooks {
+  const _TabletDetailBooks();
+
+  @override
+  Future<List<NovelChapter>> chapters(int id) async =>
+      demoNovels.first.chapters;
 }
 
 void main({
@@ -89,9 +100,20 @@ void main({
       final state = await LibraryState.load();
       expect(state.reduceMotion, false);
       addTearDown(state.dispose);
+      final engine = LegadoEngineMock()
+        ..exploreBooks = [
+          for (var i = 1; i <= 20; i++)
+            LegadoEngineMock.bookJson((
+              name: ['风与远山的来信', '星海图书馆', '长夜之后，故事继续', '玻璃海岸'][i % 4],
+              author: '佚名',
+              url: 'https://src.example/b/tab$i',
+            )),
+        ];
+      engine.install();
+      addTearDown(engine.uninstall);
       final key = await mount(
         tester,
-        HomeShell(state: state, repository: const _TabletBooks()),
+        HomeShell(state: state, repository: const _TabletDetailBooks()),
       );
       final master = find.byKey(const ValueKey('library-master-pane'));
       expect(tester.getRect(master).center.dx, closeTo(659, .1));

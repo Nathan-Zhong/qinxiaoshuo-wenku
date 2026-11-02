@@ -22,25 +22,8 @@ import 'package:wenku8_flutter/local_scan_selection.dart';
 import 'package:wenku8_flutter/pages.dart';
 import 'package:wenku8_flutter/review_pages.dart';
 import 'package:wenku8_flutter/wenku_account.dart';
+import 'support/legado_engine_mock.dart';
 import 'support/visual_review.dart';
-
-class _Catalogue extends DemoNovelRepository {
-  final books = List.generate(
-    80,
-    (i) => Novel(
-      id: i + 1,
-      title: '书籍 ${i + 1}',
-      author: '作者',
-      genre: i.isEven ? '奇幻 冒险' : '奇幻',
-      summary: '',
-      colors: const [Colors.grey, Colors.black],
-    ),
-  );
-  @override
-  Future<List<Novel>> list() async => books;
-  @override
-  Future<List<Novel>> search(String query) async => books;
-}
 
 class _Documents extends BookDocuments {
   BookScanFolder? folder;
@@ -100,45 +83,71 @@ void main() {
     ),
   );
 
+  // 定版对齐（B2）：发现页的「分类与排序」原位置改为书源/分类选择，
+  // 旧的多标签筛选已不存在。本用例改为验证：从选源器就地切换源内
+  // 分类后发现内容整表替换、页面不跳转、原分区轮播（3D 书架）保留。
   testWidgets(
-    'multiple tags filter discovery in place and retain its 3D shelf',
+    'switching the explore kind re-scopes discovery in place and retains its 3D shelf',
     (tester) async {
       phone(tester);
       final state = await LibraryState.load();
       addTearDown(state.dispose);
+      final engine = LegadoEngineMock()
+        ..exploreKinds = [
+          {'title': '推荐', 'url': 'kind/rec', 'viewName': 'text', 'style': 3},
+          {'title': '连载', 'url': 'kind/ser', 'viewName': 'text', 'style': 3},
+        ]
+        ..exploreBooksByKind = {
+          'kind/rec': [
+            for (var i = 1; i <= 20; i++)
+              LegadoEngineMock.bookJson((
+                name: '推荐书 $i',
+                author: '佚名',
+                url: 'https://src.example/b/rec$i',
+              )),
+          ],
+          'kind/ser': [
+            for (var i = 1; i <= 20; i++)
+              LegadoEngineMock.bookJson((
+                name: '连载书 $i',
+                author: '佚名',
+                url: 'https://src.example/b/ser$i',
+              )),
+          ],
+        };
+      engine.install();
+      addTearDown(engine.uninstall);
       final capture = GlobalKey();
       await tester.pumpWidget(
-        app(HomeShell(state: state, repository: _Catalogue()), capture),
+        app(
+          HomeShell(state: state, repository: const DemoNovelRepository()),
+          capture,
+        ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(action('分类与排序'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('标签'));
-      await tester.pumpAndSettle();
-      for (final tag in ['奇幻', '冒险']) {
-        await tester.tap(find.byKey(ValueKey('discover-tag-$tag')));
-        await tester.pumpAndSettle();
-      }
-      expect(find.byKey(const ValueKey('discover-tags-apply')), findsOneWidget);
-      await captureReview(tester, capture, 'discovery-multiple-tags');
-      await tester.ensureVisible(
-        find.byKey(const ValueKey('discover-tags-apply')),
-      );
-      await tester.tap(find.byKey(const ValueKey('discover-tags-apply')));
-      await tester.pumpAndSettle();
-      expect(find.byType(TagWorksPage), findsNothing);
-      final discover = tester.widget<DiscoverPage>(find.byType(DiscoverPage));
-      expect(discover.feed!.tags.toSet(), {'奇幻', '冒险'});
+      var discover = tester.widget<DiscoverPage>(find.byType(DiscoverPage));
       expect(discover.feed!.items.length, 20);
       expect(
-        discover.feed!.items.every(
-          (book) => book.tags.contains('奇幻') && book.tags.contains('冒险'),
-        ),
+        discover.feed!.items.every((book) => book.title.startsWith('推荐书')),
+        true,
+      );
+      await tester.tap(action('分类与排序'));
+      await tester.pumpAndSettle();
+      await captureReview(tester, capture, 'discovery-source-picker');
+      await tester.tap(find.text('连载'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TagWorksPage), findsNothing);
+      discover = tester.widget<DiscoverPage>(find.byType(DiscoverPage));
+      expect(discover.feed!.items.length, 20);
+      expect(
+        discover.feed!.items.every((book) => book.title.startsWith('连载书')),
         true,
       );
       expect(find.byType(ArchiveFileCarousel), findsOneWidget);
       await captureReview(tester, capture, 'discovery-filtered-shelf');
       expect(tester.takeException(), isNull);
+      // Let the registry's debounced persistence timer fire.
+      await tester.pump(const Duration(milliseconds: 300));
     },
   );
 

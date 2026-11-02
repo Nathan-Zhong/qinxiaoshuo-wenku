@@ -8,15 +8,30 @@ import 'package:wenku8_flutter/catalog.dart';
 import 'package:wenku8_flutter/library_state.dart';
 import 'package:wenku8_flutter/main.dart';
 
+import 'support/legado_engine_mock.dart';
+
+/// B2: discovery rows are engine books; the detail chain in tests is
+/// served by the shell repository, which here echoes the novel and
+/// lends it the demo directory so detail assertions keep their data.
+class _DetailRepository extends DemoNovelRepository {
+  const _DetailRepository();
+
+  @override
+  Future<List<NovelChapter>> chapters(int id) async =>
+      demoNovels.first.chapters;
+}
+
 void main() {
   testWidgets('detail headings remain readable after changing appearance', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
+    final engine = LegadoEngineMock()..install();
+    addTearDown(engine.uninstall);
     final state = await LibraryState.load();
     await state.setReduceMotion(true);
     await tester.pumpWidget(
-      NovelApp(state: state, repository: const DemoNovelRepository()),
+      NovelApp(state: state, repository: const _DetailRepository()),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.text(demoNovels.first.title).last);
@@ -102,8 +117,10 @@ void main() {
       tester.view.padding = FakeViewPadding(top: 48 * dpr, bottom: 24 * dpr);
       addTearDown(tester.view.resetPadding);
       final state = await LibraryState.load();
+      final engine = LegadoEngineMock()..install();
+      addTearDown(engine.uninstall);
       await tester.pumpWidget(
-        NovelApp(state: state, repository: const DemoNovelRepository()),
+        NovelApp(state: state, repository: const _DetailRepository()),
       );
       await tester.pumpAndSettle();
       // In this compact safe-area fixture the taller archive bank scrolls.

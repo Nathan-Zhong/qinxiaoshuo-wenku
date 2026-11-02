@@ -9,6 +9,8 @@ import 'package:wenku8_flutter/library_state.dart';
 import 'package:wenku8_flutter/main.dart';
 import 'package:wenku8_flutter/pages.dart';
 
+import 'support/legado_engine_mock.dart';
+
 void main() {
   test(
     'peel moves down the cover and contact sweeps bottom-left to top-right',
@@ -170,6 +172,9 @@ void main() {
     'only the overlay bends; landed cover is flat and stops painting',
     (tester) async {
       SharedPreferences.setMockInitialValues({});
+      // B2: discovery books come from the engine stand-in.
+      final engine = LegadoEngineMock()..install();
+      addTearDown(engine.uninstall);
       final state = await LibraryState.load();
       await tester.pumpWidget(
         NovelApp(state: state, repository: const DemoNovelRepository()),
@@ -208,6 +213,8 @@ void main() {
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
+    final engine = LegadoEngineMock()..install();
+    addTearDown(engine.uninstall);
     final state = await LibraryState.load();
     await tester.pumpWidget(
       NovelApp(state: state, repository: const DemoNovelRepository()),

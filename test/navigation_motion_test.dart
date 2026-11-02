@@ -11,6 +11,8 @@ import 'package:wenku8_flutter/library_state.dart';
 import 'package:wenku8_flutter/main.dart';
 import 'package:wenku8_flutter/pages.dart';
 
+import 'support/legado_engine_mock.dart';
+
 Future<LibraryState> mountApp(
   WidgetTester tester, {
   NovelRepository repository = const DemoNovelRepository(),
@@ -19,6 +21,21 @@ Future<LibraryState> mountApp(
     'readerChromeVisible': true,
     'readerChromeHintSeen': true,
   });
+  // B2: discovery is engine-fed; serve a scrollable explore list
+  // whose first books keep the demo titles these motion tests tap.
+  final engine = LegadoEngineMock()
+    ..exploreBooks = [
+      LegadoEngineMock.bookJson(LegadoEngineMock.moonBook),
+      LegadoEngineMock.bookJson(LegadoEngineMock.glassBook),
+      for (var i = 3; i <= 20; i++)
+        LegadoEngineMock.bookJson((
+          name: '发现书 $i',
+          author: '佚名',
+          url: 'https://src.example/b/x$i',
+        )),
+    ];
+  engine.install();
+  addTearDown(engine.uninstall);
   final state = await LibraryState.load();
   await tester.pumpWidget(NovelApp(state: state, repository: repository));
   await tester.pumpAndSettle();
@@ -395,19 +412,22 @@ void main() {
     (tester) async {
       final repository = _DelayedDetailRepository();
       await mountApp(tester, repository: repository);
+      // B2: the discovery row's book is an engine book now; its id is
+      // allocated by the registry, so read it from the cover itself.
       final source = find.byWidgetPredicate(
         (widget) =>
             widget is NovelCover &&
-            widget.novel.id == demoNovels.first.id &&
+            widget.novel.title == demoNovels.first.title &&
             widget.heroTag != null,
       );
       final sourceRect = tester.getRect(source);
-      final tag = tester.widget<NovelCover>(source).heroTag;
+      final sourceCover = tester.widget<NovelCover>(source);
+      final tag = sourceCover.heroTag;
       await tester.tap(find.text(demoNovels.first.title).last);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 16));
       final flight = find.byKey(
-        ValueKey('cover-flight-${demoNovels.first.id}'),
+        ValueKey('cover-flight-${sourceCover.novel.id}'),
       );
       expect(flight, findsOneWidget);
       final firstRect = tester.getRect(flight);
@@ -426,7 +446,9 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 200));
       expect(tester.getRect(flight), isNot(firstRect));
-      repository.detailResult.complete(demoNovels.first);
+      // Complete with the tapped (engine) book itself: completing with
+      // a different book would swap the detail subtree's identity.
+      repository.detailResult.complete(repository.requestedNovel!);
       await tester.pump();
       repository.chapterResult.complete(demoNovels.first.chapters);
       await tester.pump();
@@ -571,9 +593,13 @@ class _LongTextRepository extends DemoNovelRepository {
 class _DelayedDetailRepository extends DemoNovelRepository {
   final detailResult = Completer<Novel>();
   final chapterResult = Completer<List<NovelChapter>>();
+  Novel? requestedNovel;
 
   @override
-  Future<Novel> detail(Novel novel) => detailResult.future;
+  Future<Novel> detail(Novel novel) {
+    requestedNovel = novel;
+    return detailResult.future;
+  }
 
   @override
   Future<List<NovelChapter>> chapters(int id) => chapterResult.future;

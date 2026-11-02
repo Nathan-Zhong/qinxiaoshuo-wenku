@@ -142,7 +142,15 @@ void main() {
         await captureReview(tester, capture, '${profile.name}-search-filter');
         await tester.tap(find.widgetWithText(GlassMenuItem, '标签'));
         await tester.pumpAndSettle();
-        expect(repository.requestedField, BookSearchField.tags);
+        // B2: the field switch re-filters the engine results locally
+        // on the search feed instead of re-querying the repository.
+        expect(
+          tester
+              .widget<InlineSearchResults>(find.byType(InlineSearchResults))
+              .feed
+              .searchField,
+          BookSearchField.tags,
+        );
         expect(
           tester
               .widget<TextField>(

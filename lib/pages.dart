@@ -37,6 +37,12 @@ import 'library_toolbar.dart';
 import 'library_workspace.dart';
 import 'library_reflow.dart';
 import 'library_search_repository.dart';
+import 'legado/legado_book_registry.dart';
+import 'legado/legado_books.dart';
+import 'legado/legado_explore.dart';
+import 'legado/legado_novel_repository.dart';
+import 'legado/legado_search_controller.dart';
+import 'legado/legado_source_section.dart';
 import 'listening/controller.dart';
 import 'listening/models.dart' show hasSpeechText;
 import 'listening/widgets.dart';
@@ -106,7 +112,6 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   late final _navigation = HomeNavigation(widget.state, widget.network);
   late List<int> _visibleTabs;
   final _visitedTabs = <int>{};
-  bool _catalogStarted = false;
   static const _dockItems = [
     GlassDockItem(CupertinoIcons.house, '发现'),
     GlassDockItem(CupertinoIcons.book, '书架'),
@@ -114,11 +119,18 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     GlassDockItem(CupertinoIcons.person_crop_circle, '我的'),
     GlassDockItem(CupertinoIcons.bookmark, '书签'),
   ];
-  late final _catalog = NovelFeedController(
-    widget.repository,
-    initialItems: 60,
+  // The discovery tab owns its explore feed (LegadoDiscoverTab); the
+  // global search feed streams from the Legado engine (PLAN items 6/7/11:
+  // no wenku online search in this app, all enabled sources together).
+  // The repository is per-shell (over the shared client + registry) so
+  // its engine-init memoisation lives exactly as long as the shell.
+  late final _legadoRepository = LegadoNovelRepository(
+    client: LegadoBooks.client,
+    registry: LegadoBooks.registry,
   );
-  late final _searchFeed = NovelFeedController(widget.repository, search: true);
+  late final _searchFeed = LegadoSearchFeedController(
+    engineRepository: _legadoRepository,
+  );
   LocalBookStore? get _localBooks => widget.repository is OfflineNovelRepository
       ? (widget.repository as OfflineNovelRepository).local
       : null;
@@ -195,14 +207,18 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     _navigation.addListener(_navigationChanged);
     _searchText.addListener(_searchEdited);
     _searchFeed.addListener(_searchSucceeded);
+    _searchFeed.onNoSourcesHint = () {
+      if (mounted) {
+        showNovelFeedback(context, '暂无可用书源，请先到「我的 → 书源管理」导入书源');
+      }
+    };
     if (widget.repository case final OfflineNovelRepository offline) {
       unawaited(offline.loadCache().catchError((Object _) {}));
     }
-    final discover = DiscoverPage(
-      books: const [],
-      feed: _catalog,
+    final discover = LegadoDiscoverTab(
       state: widget.state,
       repository: widget.repository,
+      engine: _legadoRepository,
       showHeader: false,
       onSearch: _openSearch,
     );
@@ -263,17 +279,6 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
             ]
             .map((page) => RepaintBoundary(child: Atmosphere(child: page)))
             .toList(growable: false);
-    _ensureCatalog();
-  }
-
-  void _ensureCatalog() {
-    if (_tab != 0 || !_visibleTabs.contains(0)) return;
-    if (!_catalogStarted) {
-      _catalogStarted = true;
-      _catalog.loadInitial();
-    } else if (_catalog.items.isEmpty && _catalog.error != null) {
-      _catalog.retry();
-    }
   }
 
   void _navigationChanged() {
@@ -288,7 +293,6 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     if (_searchOpen && _searchScope == 1) {
       _shelfSearch.refresh();
     }
-    _ensureCatalog();
   }
 
   @override
@@ -323,7 +327,6 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     _searchExpansion.dispose();
     _searchText.dispose();
     _searchFocus.dispose();
-    _catalog.dispose();
     _searchFeed.dispose();
     _shelfSearch.dispose();
     _localSearch.dispose();
@@ -335,6 +338,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
       widget.state.reduceMotion || MediaQuery.disableAnimationsOf(context);
 
   void _openSearch() {
+    _searchFeed.resetHint();
     _searchFocus.canRequestFocus = true;
     _searchScope = _tab;
     final feed = _activeSearch;
@@ -451,7 +455,6 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
       _tab = index;
       _visitedTabs.add(index);
     });
-    _ensureCatalog();
   }
 
   Widget _tabPlane(int index) {
@@ -3672,6 +3675,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                                 ),
                                 const SizedBox(height: 32),
                                 if (!isLocalBook(novel.id) &&
+                                    !isLegadoBookId(novel.id) &&
                                     WenkuFeaturesScope.maybeOf(context) !=
                                         null) ...[
                                   RevealFromTop(
@@ -3688,6 +3692,26 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                                   ),
                                   const SizedBox(height: 24),
                                 ],
+                                if (isLegadoBookId(novel.id) &&
+                                    LegadoBooks.registryOrNull != null)
+                                  RevealFromTop(
+                                    animation: _contentIntro,
+                                    start: .4,
+                                    placeholder: const LoadingSkeleton(
+                                      layout: SkeletonLayout.actions,
+                                    ),
+                                    child: LegadoSourceSection(
+                                      novel: novel,
+                                      registry: LegadoBooks.registryOrNull!,
+                                      onSwitch: (record) => openDetail(
+                                        context,
+                                        record.toNovel(),
+                                        state,
+                                        repository,
+                                        forceDetails: true,
+                                      ),
+                                    ),
+                                  ),
                                 RevealFromTop(
                                   key: const ValueKey(
                                     'detail-directory-reveal',
