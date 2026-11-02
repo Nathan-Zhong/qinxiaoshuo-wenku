@@ -86,7 +86,7 @@ class LegadoBrowserActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var titleView: TextView
     private lateinit var subtitleView: TextView
-    private lateinit var chromeBar: View
+    private lateinit var chromeBar: LinearLayout
     private lateinit var progressBar: ProgressBar
     private lateinit var container: FrameLayout
 
