@@ -43,6 +43,34 @@ void main() {
   Map<String, Object?> argsOf(String method) =>
       (callFor(method).arguments as Map).cast<String, Object?>();
 
+  group('engine handshake', () {
+    test('ping maps facade answer', () async {
+      responder = (call) => <String, Object?>{
+        'engineVersion': '0.1.0-spike1',
+        'includedModules': <String>[':foundation', ':data'],
+        'upstreamCommit': 'd31c0a2',
+      };
+      final result = await client.ping();
+      expect(callFor('ping').arguments, isNull);
+      expect(result.engineVersion, '0.1.0-spike1');
+      expect(result.includedModules, <String>[':foundation', ':data']);
+      expect(result.upstreamCommit, 'd31c0a2');
+    });
+
+    test('init maps engine info', () async {
+      responder = (call) => <String, Object?>{
+        'ok': true,
+        'engineVersion': '0.1.0-spike1',
+        'sourceCount': 0,
+      };
+      final info = await client.init();
+      expect(argsOf('init'), isEmpty);
+      expect(info.ok, isTrue);
+      expect(info.engineVersion, '0.1.0-spike1');
+      expect(info.sourceCount, 0);
+    });
+  });
+
   group('source management', () {
     test('listSources sends filters and maps summaries', () async {
       responder = (call) => <Object?>[

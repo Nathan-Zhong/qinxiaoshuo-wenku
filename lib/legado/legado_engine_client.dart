@@ -70,6 +70,15 @@ class LegadoEngineClient {
   // Init & source management
   // ---------------------------------------------------------------------
 
+  /// Spike-level liveness probe: the native side answers straight from
+  /// the engine facade (`LegadoEngineFacade`), proving the vendored AARs
+  /// are linked and readable by the host toolchain. No engine state is
+  /// touched, so this is safe to call before [init].
+  Future<LegadoPingResult> ping() async {
+    final result = await _invokeMap('ping');
+    return LegadoPingResult.fromMap(result ?? const {});
+  }
+
   Future<LegadoEngineInfo> init({String? dataDir}) async {
     final result = await _invokeMap('init', <String, Object?>{
       'dataDir': ?dataDir,

@@ -113,6 +113,33 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
+    // Legado engine (spike2): vendored AARs built in the legado-engine-src
+    // repo with the fork's own toolchain (Gradle 9.6 / Kotlin 2.3.20) and
+    // committed under libs/. Local AARs carry no POM, so the engine's
+    // external dependencies are declared manually below, with versions
+    // aligned to legado's gradle/libs.versions.toml.
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.squareup.okio:okio:3.18.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.11.0")
+    implementation("org.jetbrains.kotlinx:atomicfu:0.33.0")
+    implementation("androidx.room3:room3-runtime:3.0.1")
+    implementation("androidx.sqlite:sqlite-framework:2.7.0")
+    implementation("com.fleeksoft.ksoup:ksoup:0.2.6")
+    implementation("org.jetbrains.compose.runtime:runtime:1.11.1")
+    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("cn.hutool:hutool-crypto:5.8.22")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
+    implementation("androidx.collection:collection:1.6.0")
+    implementation("androidx.core:core-ktx:1.18.0")
+    implementation("androidx.documentfile:documentfile:1.1.0")
+    implementation("com.caverock:androidsvg-aar:1.4")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.4.0")
+    implementation("com.github.null2264.injekt:injekt-core:4135455a2a")
+    implementation("com.github.liuyueyi.quick-chinese-transfer:quick-transfer-core:0.2.16")
     implementation("org.jsoup:jsoup:1.23.2")
     implementation("org.commonmark:commonmark:0.30.1")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")

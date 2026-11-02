@@ -2,6 +2,9 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // Legado engine external deps that only exist on JitPack
+        // (injekt-core, quick-chinese-transfer) — see app/build.gradle.kts.
+        maven { url = uri("https://jitpack.io") }
     }
 }
 

@@ -1052,6 +1052,47 @@ class SearchGroupCount {
   int get hashCode => Object.hash(origin, originName, count);
 }
 
+/// Result of the spike-level `ping` call: proves the native engine AAR is
+/// linked into the host and its facade answers, before any business method
+/// is implemented natively.
+class LegadoPingResult {
+  const LegadoPingResult({
+    this.engineVersion = '',
+    this.includedModules = const <String>[],
+    this.upstreamCommit = '',
+  });
+
+  final String engineVersion;
+  final List<String> includedModules;
+  final String upstreamCommit;
+
+  factory LegadoPingResult.fromMap(Map<Object?, Object?> map) {
+    final m = _keyed(map);
+    return LegadoPingResult(
+      engineVersion: _str(m, 'engineVersion'),
+      includedModules: _strList(m, 'includedModules'),
+      upstreamCommit: _str(m, 'upstreamCommit'),
+    );
+  }
+
+  Map<String, Object?> toMap() => <String, Object?>{
+    'engineVersion': engineVersion,
+    'includedModules': includedModules,
+    'upstreamCommit': upstreamCommit,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is LegadoPingResult &&
+      other.engineVersion == engineVersion &&
+      other.upstreamCommit == upstreamCommit &&
+      listEquals(other.includedModules, includedModules);
+
+  @override
+  int get hashCode =>
+      Object.hash(engineVersion, upstreamCommit, Object.hashAll(includedModules));
+}
+
 /// Engine info returned by `init`.
 class LegadoEngineInfo {
   const LegadoEngineInfo({
