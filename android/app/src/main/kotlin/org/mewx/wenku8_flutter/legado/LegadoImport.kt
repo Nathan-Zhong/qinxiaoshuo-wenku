@@ -13,7 +13,6 @@ import io.legado.app.help.http.decompressed
 import io.legado.app.help.http.newCallResponseBody
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.utils.GSON
-import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.isJsonArray
 import io.legado.app.utils.isJsonObject
@@ -74,8 +73,12 @@ object LegadoImport {
 
     /** Parses one standalone source JSON (upsertSource path). */
     fun parseSingleSource(sourceJson: String): BookSource {
-        val source = GSON.fromJsonObject<BookSource>(sourceJson)
-            .getOrElse { throw LegadoParseException("不是书源") }
+        // Explicit-serializer decode: the reified fromJsonObject helper is
+        // an inline function with JVM target 21 bytecode, which cannot be
+        // inlined into this host (compiled for target 17).
+        val source = runCatching {
+            GSON.decodeFromString(BookSource.serializer(), sourceJson)
+        }.getOrElse { throw LegadoParseException("不是书源") }
         if (source.bookSourceUrl.isBlank()) throw LegadoParseException("不是书源")
         return source
     }
@@ -136,7 +139,9 @@ object LegadoImport {
                 val obj = item as? JsonObject ?: throw LegadoParseException("不是书源")
                 when {
                     obj.containsKey("bookSourceUrl") -> {
-                        val source = GSON.fromJsonObject<BookSource>(item.toString()).getOrElse {
+                        val source = runCatching {
+                            GSON.decodeFromString(BookSource.serializer(), item.toString())
+                        }.getOrElse {
                             throw LegadoParseException("不是书源")
                         }
                         if (source.bookSourceUrl.isBlank()) {
@@ -146,7 +151,9 @@ object LegadoImport {
                     }
 
                     obj.containsKey("sourceUrl") -> {
-                        val old = GSON.fromJsonObject<OldRssSource>(item.toString()).getOrElse {
+                        val old = runCatching {
+                            GSON.decodeFromString(OldRssSource.serializer(), item.toString())
+                        }.getOrElse {
                             throw LegadoParseException("不是书源")
                         }
                         if (old.sourceUrl.isBlank()) throw LegadoParseException("不是书源")

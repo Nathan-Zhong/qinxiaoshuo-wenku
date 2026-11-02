@@ -39,20 +39,25 @@ object LegadoEngine {
             return dbRef
         }
 
-    @Synchronized
+    private val initLock = Any()
+
     suspend fun init(context: Context, dataDirPath: String?): Map<String, Any?> {
         if (!initialized) {
-            val appContext = context.applicationContext
-            val dir = if (dataDirPath.isNullOrBlank()) {
-                File(appContext.filesDir, "legado")
-            } else {
-                File(dataDirPath)
+            synchronized(initLock) {
+                if (!initialized) {
+                    val appContext = context.applicationContext
+                    val dir = if (dataDirPath.isNullOrBlank()) {
+                        File(appContext.filesDir, "legado")
+                    } else {
+                        File(dataDirPath)
+                    }
+                    dir.mkdirs()
+                    val database = buildLegadoDatabase(appContext, dir)
+                    registerLegadoProviders(appContext, database, dir)
+                    dbRef = database
+                    initialized = true
+                }
             }
-            dir.mkdirs()
-            val database = buildLegadoDatabase(appContext, dir)
-            registerLegadoProviders(appContext, database, dir)
-            dbRef = database
-            initialized = true
         }
         return mapOf(
             "ok" to true,

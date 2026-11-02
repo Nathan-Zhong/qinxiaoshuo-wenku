@@ -84,13 +84,13 @@ import io.legado.app.help.source.SourceNetworkProviders
 import io.legado.app.help.storage.DataStorage
 import io.legado.app.help.storage.DataStorageProviders
 import io.legado.app.model.Debug
+import io.legado.app.model.SharedJsScope
 import io.legado.app.model.analyzeRule.AnalyzeRuleCore
 import io.legado.app.model.analyzeRule.AnalyzeRuleFactories
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
 import io.legado.app.model.script.JsEngineType
 import io.legado.app.model.script.JsEngines
-import io.legado.app.model.script.SharedJsScope
 import io.legado.app.model.script.quickjs.QuickJsJsEngine
 import io.legado.app.model.script.quickjs.QuickJsSharedJsScopeBase
 import io.legado.app.utils.MD5Utils
@@ -428,8 +428,26 @@ class LegadoCookieStore(private val db: AppDatabase) : CookieStoreBase() {
     }
 
     override fun onRemoveWebViewCookie(url: String) {
-        @Suppress("DEPRECATION")
-        android.webkit.CookieManager.getInstance().removeCookie(url)
+        // The platform CookieManager.removeCookie(String) no longer exists
+        // at this compileSdk; the fork expires each cookie by name instead
+        // (its CookieManagerExtensions), mirrored here.
+        val cookieManager = android.webkit.CookieManager.getInstance()
+        val baseUrl = NetworkUtils.getBaseUrl(url) ?: return
+        val host = NetworkUtils.getSubDomain(url)
+        val cookieGlob = cookieManager.getCookie(baseUrl) ?: return
+        val directives = listOf(
+            "Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/",
+            "Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure; SameSite=None",
+            "Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure; SameSite=None; Partitioned"
+        )
+        cookieGlob.split(";").forEach { entry ->
+            if (entry.isBlank()) return@forEach
+            val name = entry.substringBefore("=").trim()
+            directives.forEach { directive ->
+                cookieManager.setCookie(baseUrl, "$name=; $directive; Domain=.$host")
+                cookieManager.setCookie(baseUrl, "$name=; $directive")
+            }
+        }
     }
 
     override fun getCookieNoSession(url: String): String {
@@ -440,6 +458,10 @@ class LegadoCookieStore(private val db: AppDatabase) : CookieStoreBase() {
 
     override fun getSessionCookie(domain: String): String? =
         CacheManager.getFromMemory("${domain}_session_cookie") as? String
+
+    /** Public accessors for the provider (the base hooks above are protected). */
+    fun persistentCookie(url: String): String = getCookieNoSession(url)
+    fun sessionCookie(domain: String): String? = getSessionCookie(domain)
 
     fun updateSessionCookie(domain: String, cookies: String) {
         val cacheKey = "${domain}_session_cookie"
@@ -478,8 +500,8 @@ class LegadoCookieStoreProvider(private val store: LegadoCookieStore) : CookieSt
     override fun getKey(url: String, key: String): String = store.getKey(url, key)
     override fun removeCookie(url: String) = store.removeCookie(url)
     override fun removeCookie(url: String, key: String) = store.removeCookie(url, key)
-    override fun getCookieNoSession(url: String): String = store.getCookieNoSession(url)
-    override fun getSessionCookie(domain: String): String? = store.getSessionCookie(domain)
+    override fun getCookieNoSession(url: String): String = store.persistentCookie(url)
+    override fun getSessionCookie(domain: String): String? = store.sessionCookie(domain)
     override fun updateSessionCookie(domain: String, cookies: String) =
         store.updateSessionCookie(domain, cookies)
     override fun clear() = store.clear()
