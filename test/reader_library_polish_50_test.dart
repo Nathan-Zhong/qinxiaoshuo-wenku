@@ -471,7 +471,7 @@ void main() {
     final restarted = await LibraryState.load();
     addTearDown(restarted.dispose);
     expect(restarted.language, AppLanguage.taiwan);
-    await tester.tap(find.byKey(const ValueKey('dock-tab-2')));
+    await tester.tap(find.byKey(const ValueKey('dock-tab-3')));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.byKey(const ValueKey('my-settings')));
     await tester.tap(find.byKey(const ValueKey('my-settings')));

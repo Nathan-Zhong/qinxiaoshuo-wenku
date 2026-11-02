@@ -175,21 +175,23 @@ void main() {
       });
       var appearance = 0;
       state.applicationChanges.addListener(() => appearance++);
-      // 定版清单第 2 条：tabs 恒为 [0, 1, 3]（发现/书架/我的），离线与
-      // 阅读器模式只过滤书架内容，不再改变栏位；不在栏内的页落到书架(1)。
-      expect(navigation.tabs, [0, 1, 3]);
+      // 定版（2026-11-02 晚间修订）：tabs 恒为 [0, 1, 4, 3]
+      // （发现/书架/书签/我的），离线与阅读器模式只过滤书架内容，
+      // 不再改变栏位；不在栏内的页落到书架(1)。
+      expect(navigation.tabs, [0, 1, 4, 3]);
       expect(navigation.destination(0), 0);
       expect(navigation.destination(2), 1);
       await state.setNavigationMode(localReaderMode: true);
-      expect(navigation.tabs, [0, 1, 3]);
+      expect(navigation.tabs, [0, 1, 4, 3]);
       expect(navigation.destination(1), 1);
       expect(navigation.destination(3), 3);
+      expect(navigation.destination(4), 4);
       final backup = await state.createBackup();
       await state.setNavigationMode(
         localReaderMode: false,
         adaptWhenOffline: false,
       );
-      expect(navigation.tabs, [0, 1, 3]);
+      expect(navigation.tabs, [0, 1, 4, 3]);
       expect(appearance, 0);
       await state.restoreBackup(backup, importPreferences: true);
       expect(state.localReaderMode, true);
@@ -281,10 +283,11 @@ void main() {
         GlassDock dock() => tester.widget<GlassDock>(find.byType(GlassDock));
         List<String> labels() =>
             dock().items.map((item) => item.label).toList();
-        // 定版清单第 2 条：离线时 dock 仍恒为三栏 发现/书架/我的；离线
-        // 只让书架过滤为已缓存内容（下面的书目断言不变）。定版后启动
-        // 落在发现页（原版离线时落到书架），先切到书架再断言书目。
-        expect(labels(), ['发现', '书架', '我的']);
+        // 定版（2026-11-02 晚间修订）：离线时 dock 仍恒为四栏
+        // 发现/书架/书签/我的；离线只让书架过滤为已缓存内容（下面的
+        // 书目断言不变）。定版后启动落在发现页（原版离线时落到书架），
+        // 先切到书架再断言书目。
+        expect(labels(), ['发现', '书架', '书签', '我的']);
         await tester.tap(find.byKey(const ValueKey('dock-tab-1')));
         await tester.pumpAndSettle();
         expect(
@@ -304,8 +307,8 @@ void main() {
 
         final shelfElement = tester.element(find.byType(ShelfPage));
         final width = tester.getSize(find.byType(GlassDock)).width;
-        // 三栏恒定后胶囊宽度不再随在线/离线变化：恒为 3 栏宽 196。
-        expect(width, closeTo(3 * (184 / 3) + 12, .01));
+        // 四栏恒定后胶囊宽度不再随在线/离线变化：恒为 4 栏宽。
+        expect(width, closeTo(4 * (184 / 3) + 12, .01));
         f.network.value = NetworkReachability.online;
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 150));
@@ -320,7 +323,7 @@ void main() {
           reason: 'A navigation change must not re-show the warm row skeleton',
         );
         await tester.pumpAndSettle();
-        expect(labels(), ['发现', '书架', '我的']);
+        expect(labels(), ['发现', '书架', '书签', '我的']);
         expect(
           find.byKey(ValueKey('shelf-book-${f.uncached.id}')),
           findsOneWidget,
@@ -364,10 +367,10 @@ void main() {
         await tester.pumpAndSettle();
         await tester.binding.handlePopRoute();
         await tester.pumpAndSettle();
-        // 阅读器模式开启后 dock 仍恒为三栏；当前页「我的」在栏内，
-        // 选中位置是三栏中的第 3 位（index 2），不再落到旧本地栏。
-        expect(labels(), ['发现', '书架', '我的']);
-        expect(dock().selectedIndex, 2);
+        // 阅读器模式开启后 dock 仍恒为四栏；当前页「我的」在栏内，
+        // 选中位置是四栏中的第 4 位（index 3），不再落到旧本地栏。
+        expect(labels(), ['发现', '书架', '书签', '我的']);
+        expect(dock().selectedIndex, 3);
 
         // 定版后本地页不再有 dock 栏位，只能经合并书架的「本地分类与
         // 同步」管理项到达（见下方合并书架段）；先切到书架并开启合并。
@@ -381,7 +384,7 @@ void main() {
         await f.state.setNavigationMode(combinedShelf: true);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 120));
-        expect(labels(), ['发现', '书架', '我的']);
+        expect(labels(), ['发现', '书架', '书签', '我的']);
         expect(dock().selectedIndex, 1);
         await captureReview(tester, capture, 'combined-navigation-changing');
         await tester.pumpAndSettle();
@@ -414,17 +417,17 @@ void main() {
         await tester.pumpAndSettle();
         await f.state.setNavigationMode(localReaderMode: false);
         await tester.pumpAndSettle();
-        expect(labels(), ['发现', '书架', '我的']);
+        expect(labels(), ['发现', '书架', '书签', '我的']);
         expect(dock().selectedIndex, 1);
         await captureReview(tester, capture, 'combined-navigation-online');
         f.network.value = NetworkReachability.offline;
         await tester.pumpAndSettle();
         // 离线后栏位依旧恒定，仍停在书架；合并关闭后导入书离开书架。
-        expect(labels(), ['发现', '书架', '我的']);
+        expect(labels(), ['发现', '书架', '书签', '我的']);
         expect(dock().selectedIndex, 1);
         await f.state.setNavigationMode(combinedShelf: false);
         await tester.pumpAndSettle();
-        expect(labels(), ['发现', '书架', '我的']);
+        expect(labels(), ['发现', '书架', '书签', '我的']);
         expect(
           find.byKey(ValueKey('shelf-book-${f.imported.id}')),
           findsNothing,

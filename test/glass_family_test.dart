@@ -53,7 +53,7 @@ void main() {
       final state = await _mount(tester);
       await state.setReduceMotion(true);
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('dock-tab-2')));
+      await tester.tap(find.byKey(const ValueKey('dock-tab-3')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('my-settings')));
       await tester.pumpAndSettle();
@@ -210,7 +210,7 @@ void main() {
     'theme dropdown is anchored glass with the shared overlay timeline',
     (tester) async {
       final state = await _mount(tester);
-      await tester.tap(find.byKey(const ValueKey('dock-tab-2')));
+      await tester.tap(find.byKey(const ValueKey('dock-tab-3')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('my-settings')));
       await tester.pumpAndSettle();

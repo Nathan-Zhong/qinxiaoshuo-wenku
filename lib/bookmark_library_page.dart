@@ -51,9 +51,20 @@ class BookmarkLibraryPage extends StatefulWidget {
     super.key,
     required this.state,
     required this.repository,
+    this.showHeader = true,
   });
   final LibraryState state;
   final NovelRepository repository;
+
+  /// False when the page sits in the home dock as the 书签 tab: the shell
+  /// pins [buildHeader] itself, exactly like the other dock pages.
+  final bool showHeader;
+
+  Widget buildHeader(BuildContext context) => const Align(
+    alignment: Alignment.centerLeft,
+    child: ArchiveMasthead(title: '书签', code: 'PERSONAL / EXCERPTS'),
+  );
+
   @override
   State<BookmarkLibraryPage> createState() => _BookmarkLibraryPageState();
 }
@@ -129,150 +140,151 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage> {
   }
 
   @override
-  Widget build(BuildContext context) => ArchiveFeaturePage(
-    title: '书签',
-    code: 'PERSONAL / EXCERPTS',
-    child: AnimatedBuilder(
-      animation: widget.state.bookmarkChanges,
-      builder: (context, _) {
-        final query = _query.trim().toLowerCase();
-        final local = widget.repository is OfflineNovelRepository
-            ? (widget.repository as OfflineNovelRepository).local
-            : null;
-        final entries = libraryBookmarks(widget.state, books: local).where((
-          entry,
-        ) {
-          final book = _known(entry.novelId);
-          return query.isEmpty ||
-              '${entry.bookmark.quote}\n${entry.bookmark.chapterTitle}\n${book?.title ?? ''}\n${book?.author ?? ''}'
-                  .toLowerCase()
-                  .contains(query);
-        }).toList();
-        return Align(
-          alignment: Alignment.topCenter,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 760),
-            child: ListView.builder(
-              padding: featurePadding(context),
-              itemCount: entries.length + 1,
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      AppSearchField(
-                        inputKey: const ValueKey('bookmark-search'),
-                        hint: '搜索摘录、书名或作者',
-                        onChanged: (value) => setState(() => _query = value),
+  Widget build(BuildContext context) => widget.showHeader
+      ? ArchiveFeaturePage(
+          title: '书签',
+          code: 'PERSONAL / EXCERPTS',
+          child: _bookmarkList(context),
+        )
+      : _bookmarkList(context);
+
+  Widget _bookmarkList(BuildContext context) => AnimatedBuilder(
+    animation: widget.state.bookmarkChanges,
+    builder: (context, _) {
+      final query = _query.trim().toLowerCase();
+      final local = widget.repository is OfflineNovelRepository
+          ? (widget.repository as OfflineNovelRepository).local
+          : null;
+      final entries = libraryBookmarks(widget.state, books: local).where((
+        entry,
+      ) {
+        final book = _known(entry.novelId);
+        return query.isEmpty ||
+            '${entry.bookmark.quote}\n${entry.bookmark.chapterTitle}\n${book?.title ?? ''}\n${book?.author ?? ''}'
+                .toLowerCase()
+                .contains(query);
+      }).toList();
+      return Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: ListView.builder(
+            padding: featurePadding(context),
+            itemCount: entries.length + 1,
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    AppSearchField(
+                      inputKey: const ValueKey('bookmark-search'),
+                      hint: '搜索摘录、书名或作者',
+                      onChanged: (value) => setState(() => _query = value),
+                    ),
+                    const SizedBox(height: 18),
+                    AppText(
+                      '${entries.length} 条书签',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
-                      const SizedBox(height: 18),
+                    ),
+                    const SizedBox(height: 16),
+                    if (entries.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 36),
+                        child: AppText(
+                          query.isEmpty
+                              ? '长按正文选择喜欢的句子，点「书签」即可收藏。\n已有的位置书签也会显示在这里。'
+                              : '没有找到匹配的书签',
+                          style: const TextStyle(height: 1.8),
+                        ),
+                      ),
+                  ],
+                );
+              }
+              final entry = entries[index - 1], mark = entry.bookmark;
+              final novel = _known(entry.novelId);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: ContentPanel(
+                  key: ValueKey('my-bookmark-${mark.id}'),
+                  onTap: () => _open(entry.novelId, mark),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (mark.quote.isNotEmpty) ...[
+                        AppText(
+                          mark.quote,
+                          maxLines: 5,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontFamily: 'SourceHanSerifCN',
+                            fontSize: 15,
+                            height: 1.75,
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                      ],
                       AppText(
-                        '${entries.length} 条书签',
+                        novel?.title ?? '书籍 ${entry.novelId}',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      AppText(
+                        mark.chapterTitle,
                         style: TextStyle(
                           fontSize: 12,
+                          height: 1.6,
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
-                      const SizedBox(height: 16),
-                      if (entries.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 36),
-                          child: AppText(
-                            query.isEmpty
-                                ? '长按正文选择喜欢的句子，点「书签」即可收藏。\n已有的位置书签也会显示在这里。'
-                                : '没有找到匹配的书签',
-                            style: const TextStyle(height: 1.8),
-                          ),
-                        ),
-                    ],
-                  );
-                }
-                final entry = entries[index - 1], mark = entry.bookmark;
-                final novel = _known(entry.novelId);
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: ContentPanel(
-                    key: ValueKey('my-bookmark-${mark.id}'),
-                    onTap: () => _open(entry.novelId, mark),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (mark.quote.isNotEmpty) ...[
-                          AppText(
-                            mark.quote,
-                            maxLines: 5,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontFamily: 'SourceHanSerifCN',
-                              fontSize: 15,
-                              height: 1.75,
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        children: [
+                          GlassTextButton(
+                            key: ValueKey('bookmark-read-${mark.id}'),
+                            onPressed: _opening == null
+                                ? () => _open(entry.novelId, mark)
+                                : null,
+                            child: AppText(
+                              _opening == mark.id ? '正在打开…' : '回到原文',
                             ),
                           ),
-                          const SizedBox(height: 20),
-                        ],
-                        AppText(
-                          novel?.title ?? '书籍 ${entry.novelId}',
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 6),
-                        AppText(
-                          mark.chapterTitle,
-                          style: TextStyle(
-                            fontSize: 12,
-                            height: 1.6,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 6,
-                          children: [
+                          if (mark.quote.isNotEmpty)
                             GlassTextButton(
-                              key: ValueKey('bookmark-read-${mark.id}'),
-                              onPressed: _opening == null
-                                  ? () => _open(entry.novelId, mark)
-                                  : null,
-                              child: AppText(
-                                _opening == mark.id ? '正在打开…' : '回到原文',
-                              ),
-                            ),
-                            if (mark.quote.isNotEmpty)
-                              GlassTextButton(
-                                key: ValueKey('bookmark-share-${mark.id}'),
-                                onPressed: () => pushNovelPage<void>(
-                                  context,
-                                  QuoteCardPage(
-                                    data: QuoteCardData(
-                                      text: mark.quote,
-                                      book:
-                                          novel?.title ?? '书籍 ${entry.novelId}',
-                                      author: novel?.author ?? '',
-                                      chapter: mark.chapterTitle,
-                                    ),
+                              key: ValueKey('bookmark-share-${mark.id}'),
+                              onPressed: () => pushNovelPage<void>(
+                                context,
+                                QuoteCardPage(
+                                  data: QuoteCardData(
+                                    text: mark.quote,
+                                    book: novel?.title ?? '书籍 ${entry.novelId}',
+                                    author: novel?.author ?? '',
+                                    chapter: mark.chapterTitle,
                                   ),
-                                  reduceMotion: widget.state.reduceMotion,
                                 ),
-                                child: const AppText('分享图片'),
+                                reduceMotion: widget.state.reduceMotion,
                               ),
-                            GlassIconButton(
-                              icon: CupertinoIcons.trash,
-                              label: '删除书签 ${mark.id}',
-                              onPressed: () => _remove(entry.novelId, mark),
+                              child: const AppText('分享图片'),
                             ),
-                          ],
-                        ),
-                      ],
-                    ),
+                          GlassIconButton(
+                            icon: CupertinoIcons.trash,
+                            label: '删除书签 ${mark.id}',
+                            onPressed: () => _remove(entry.novelId, mark),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                );
-              },
-            ),
+                ),
+              );
+            },
           ),
-        );
-      },
-    ),
+        ),
+      );
+    },
   );
 }

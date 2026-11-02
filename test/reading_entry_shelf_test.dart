@@ -109,29 +109,30 @@ void main() {
         network.dispose();
         state.dispose();
       });
-      // 定版清单第 2 条：dock 恒为三栏 [发现 0, 书架 1, 我的 3]，模式切换
-      // 只改变书架内容范围（readableShelfOnly），不再增减栏位。
-      expect(nav.tabs, [0, 1, 3]);
+      // 定版（2026-11-02 晚间修订）：dock 恒为四栏 [发现 0, 书架 1,
+      // 书签 4, 我的 3]，模式切换只改变书架内容范围
+      // （readableShelfOnly），不再增减栏位。
+      expect(nav.tabs, [0, 1, 4, 3]);
       await state.setNavigationMode(combinedShelf: true);
-      expect(nav.tabs, [0, 1, 3]);
+      expect(nav.tabs, [0, 1, 4, 3]);
       expect(nav.destination(2), 1);
       expect(nav.destination(3), 3);
       network.value = NetworkReachability.offline;
-      expect(nav.tabs, [0, 1, 3]);
+      expect(nav.tabs, [0, 1, 4, 3]);
       await state.setNavigationMode(adaptWhenOffline: false);
-      expect(nav.tabs, [0, 1, 3]);
+      expect(nav.tabs, [0, 1, 4, 3]);
       await state.setNavigationMode(adaptWhenOffline: true);
       await state.setNavigationMode(localReaderMode: true);
-      expect(nav.tabs, [0, 1, 3]);
+      expect(nav.tabs, [0, 1, 4, 3]);
       expect(nav.destination(2), 1);
       expect(nav.readableShelfOnly, true);
       await state.setNavigationMode(combinedShelf: false);
-      expect(nav.tabs, [0, 1, 3]);
+      expect(nav.tabs, [0, 1, 4, 3]);
       expect(nav.destination(1), 1);
       await state.setNavigationMode(localReaderMode: false);
-      expect(nav.tabs, [0, 1, 3]);
+      expect(nav.tabs, [0, 1, 4, 3]);
       network.value = NetworkReachability.online;
-      expect(nav.tabs, [0, 1, 3]);
+      expect(nav.tabs, [0, 1, 4, 3]);
     },
   );
 

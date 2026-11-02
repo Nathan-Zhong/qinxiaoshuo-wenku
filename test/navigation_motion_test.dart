@@ -224,7 +224,7 @@ void main() {
       final rest = tester.getRect(lens);
       final first = tester.getCenter(find.byKey(const ValueKey('dock-tab-0')));
       final middle = tester.getCenter(find.byKey(const ValueKey('dock-tab-1')));
-      final last = tester.getCenter(find.byKey(const ValueKey('dock-tab-2')));
+      final last = tester.getCenter(find.byKey(const ValueKey('dock-tab-3')));
       final gesture = await tester.startGesture(first);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 80));
@@ -293,7 +293,7 @@ void main() {
     expect(tester.getRect(lens), rest);
     expect(tester.widget<LiquidGlass>(lens).activation, 0);
     await gesture.moveTo(
-      tester.getCenter(find.byKey(const ValueKey('dock-tab-2'))),
+      tester.getCenter(find.byKey(const ValueKey('dock-tab-3'))),
       timeStamp: const Duration(milliseconds: 300),
     );
     await tester.pump();
@@ -321,9 +321,9 @@ void main() {
     await mountApp(tester);
     final dock = tester.getRect(find.byKey(const ValueKey('liquid-dock')));
     expect(dock.size.height, 54);
-    expect(dock.size.width, closeTo(196.0, .01));
+    expect(dock.size.width, closeTo(4 * 184 / 3 + 12, .01));
     expect(dock.center.dx, 400);
-    for (var index = 0; index < 3; index++) {
+    for (var index = 0; index < 4; index++) {
       final target = tester.getRect(find.byKey(ValueKey('dock-tab-$index')));
       expect(target.width, greaterThanOrEqualTo(48));
       expect(target.height, greaterThanOrEqualTo(48));
@@ -339,7 +339,7 @@ void main() {
     final surface = find.byKey(const ValueKey('dock-fluid-surface'));
     final rest = tester.getRect(surface);
     final first = tester.getCenter(find.byKey(const ValueKey('dock-tab-0')));
-    final last = tester.getCenter(find.byKey(const ValueKey('dock-tab-2')));
+    final last = tester.getCenter(find.byKey(const ValueKey('dock-tab-3')));
     final gesture = await tester.startGesture(first);
     await tester.pump();
     for (var i = 1; i <= 12; i++) {
@@ -517,7 +517,7 @@ void main() {
       find.descendant(of: control('返回'), matching: find.byType(InkWell)).first,
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('dock-tab-2')));
+    await tester.tap(find.byKey(const ValueKey('dock-tab-3')));
     await tester.pump();
     expect(find.byKey(const ValueKey('my-settings')), findsOneWidget);
     expect(tester.takeException(), isNull);

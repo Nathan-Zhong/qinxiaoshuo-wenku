@@ -130,7 +130,7 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('inline-search-close')));
       await tester.pumpAndSettle();
       await tester.tapAt(
-        tester.getCenter(find.byKey(const ValueKey('dock-tab-2'))),
+        tester.getCenter(find.byKey(const ValueKey('dock-tab-3'))),
       );
       await _expectDismissed(tester, previous);
       expect(previous.canRequestFocus, isFalse);

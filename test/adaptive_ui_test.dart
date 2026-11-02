@@ -235,7 +235,7 @@ void main({AdaptiveCapture? capture, bool native = false}) {
       await tester.pumpAndSettle();
       await snapshot('shelf');
       await tester.tapAt(
-        tester.getCenter(find.byKey(const ValueKey('dock-tab-2'))),
+        tester.getCenter(find.byKey(const ValueKey('dock-tab-3'))),
       );
       await tester.pumpAndSettle();
       await snapshot('settings');

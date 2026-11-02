@@ -26,10 +26,11 @@ class HomeNavigation extends ChangeNotifier {
   bool get localReader => _value.localReader;
   bool get combinedShelf => _value.combinedShelf;
   bool get readableShelfOnly => cachedShelf || localReader;
-  // 定版清单第 2 条：底部导航恒为三栏 发现(0) / 书架(1) / 我的(3)。
-  // 页面编号保持稳定，本地页(2)不再加入 dock；离线/阅读器模式对书架
+  // 定版（2026-11-02 晚间修订）：底部导航恒为四栏
+  // 发现(0) / 书架(1) / 书签(4) / 我的(3)。
+  // 页面编号保持稳定，本地页(2)不加入 dock；离线/阅读器模式对书架
   // 内容的过滤仍由 readableShelfOnly 承担，与 dock 栏位无关。
-  List<int> get tabs => const [0, 1, 3];
+  List<int> get tabs => const [0, 1, 4, 3];
 
   int destination(int current) => tabs.contains(current) ? current : 1;
 

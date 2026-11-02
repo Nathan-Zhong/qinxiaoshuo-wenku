@@ -280,7 +280,7 @@ void main() {
       NovelApp(state: state, repository: const DemoNovelRepository()),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('dock-tab-2')));
+    await tester.tap(find.byKey(const ValueKey('dock-tab-3')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('my-settings')));
     await tester.pumpAndSettle();
@@ -356,7 +356,7 @@ void main() {
       NovelApp(state: state, repository: const DemoNovelRepository()),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('dock-tab-2')));
+    await tester.tap(find.byKey(const ValueKey('dock-tab-3')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('my-settings')));
     await tester.pumpAndSettle();

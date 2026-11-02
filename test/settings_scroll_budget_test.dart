@@ -20,7 +20,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tapAt(
-        tester.getCenter(find.byKey(const ValueKey('dock-tab-2'))),
+        tester.getCenter(find.byKey(const ValueKey('dock-tab-3'))),
       );
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('my-settings')));

@@ -62,7 +62,7 @@ Tomorrow we will meet again.''', id: 7123401),
   tearDown(() => state.dispose());
 
   testWidgets(
-    'My separates account, excerpts, settings and about; no duplicate account entry in settings',
+    'My separates excerpts, book sources, settings and about; no account login entry',
     (tester) async {
       tester.view.physicalSize = const Size(390, 900);
       tester.view.devicePixelRatio = 1;
@@ -79,7 +79,7 @@ Tomorrow we will meet again.''', id: 7123401),
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('dock-tab-2')));
+      await tester.tap(find.byKey(const ValueKey('dock-tab-3')));
       await tester.pumpAndSettle();
       expect(find.byType(MyPage), findsOneWidget);
       await tester.runAsync(
@@ -87,9 +87,13 @@ Tomorrow we will meet again.''', id: 7123401),
       );
       await tester.pumpAndSettle();
       await captureReview(tester, boundary, 'my-page');
+      // 定版 7B + 2026-11-02 晚间修订：「我的」页去掉登录文库账号入口，
+      // 书签与设置之间新增「书源管理」入口。
+      expect(find.byKey(const ValueKey('my-account')), findsNothing);
+      expect(find.text('登录文库账号'), findsNothing);
       for (final key in [
-        'my-account',
         'my-bookmarks',
+        'my-book-sources',
         'my-settings',
         'my-about',
       ]) {

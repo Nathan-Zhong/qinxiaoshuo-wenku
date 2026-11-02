@@ -27,6 +27,7 @@ import 'book_collection_layout.dart';
 import 'book_categories.dart';
 import 'bookshelf_scope.dart';
 import 'book_source_badge.dart';
+import 'bookmark_library_page.dart';
 import 'book_search.dart';
 import 'catalog.dart';
 import 'glass_dock.dart';
@@ -111,6 +112,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     GlassDockItem(CupertinoIcons.book, '书架'),
     GlassDockItem(CupertinoIcons.folder, '本地'),
     GlassDockItem(CupertinoIcons.person_crop_circle, '我的'),
+    GlassDockItem(CupertinoIcons.bookmark, '书签'),
   ];
   late final _catalog = NovelFeedController(
     widget.repository,
@@ -217,6 +219,11 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
       repository: widget.repository,
       showHeader: false,
     );
+    final bookmarks = BookmarkLibraryPage(
+      state: widget.state,
+      repository: widget.repository,
+      showHeader: false,
+    );
     final local = widget.repository is OfflineNovelRepository
         ? (widget.repository as OfflineNovelRepository).local
         : null;
@@ -244,6 +251,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
       localPage?.buildHeader ??
           (_) => const ArchiveMasthead(title: '本地', code: '03 / LOCAL ARCHIVE'),
       settings.buildHeader,
+      bookmarks.buildHeader,
     ];
     _pageWidgets =
         [
@@ -251,6 +259,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
               shelf,
               localPage ?? const Center(child: AppText('当前演示数据源未启用本地书库')),
               settings,
+              bookmarks,
             ]
             .map((page) => RepaintBoundary(child: Atmosphere(child: page)))
             .toList(growable: false);

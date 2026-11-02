@@ -215,7 +215,7 @@ void main() {
       expect(find.byKey(const ValueKey('shelf-book-5000')), findsOneWidget);
       expect(find.text('2/2'), findsOneWidget);
       expect(repository.findCalls, 0);
-      await tester.tap(find.byKey(const ValueKey('dock-tab-2')));
+      await tester.tap(find.byKey(const ValueKey('dock-tab-3')));
       await tester.pumpAndSettle();
       expect(find.byType(MyPage), findsOneWidget);
       expect(find.text('书籍加载失败'), findsNothing);
