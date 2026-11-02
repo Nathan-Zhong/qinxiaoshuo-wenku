@@ -17,7 +17,11 @@ check(!catalogProbe || readerPreview) { "Account read probes are restricted to t
 
 android {
     namespace = "org.mewx.wenku8_flutter"
-    compileSdk = flutter.compileSdkVersion
+    // Legado engine AARs (libs/) were built against compileSdk 37 and AGP's
+    // checkDebugAarMetadata refuses them under 36, so the host compiles
+    // against 37. targetSdk/minSdk stay on the Flutter defaults below —
+    // compileSdk alone changes no runtime behavior.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
     // The separately authorized API runtime must remain byte-for-byte intact.
     // AGP otherwise strips its symbols even when jniLibs contains original files.
