@@ -1,20 +1,32 @@
 package org.mewx.wenku8_flutter.legado
 
 import android.content.Context
+import io.legado.app.constant.AppConst
+import io.legado.app.constant.AppLog
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.book.ContentProcessorProviders
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.exploreKinds
+import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
+import io.legado.app.model.analyzeRule.RuleData
+import io.legado.app.model.script.JsBindings
+import io.legado.app.model.script.JsEngines
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.ui.book.search.SearchScope
 import io.legado.app.utils.NetworkUtils
 import io.legado.engine.LegadoEngineFacade
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import org.jsoup.Jsoup
+
+/** One-line exception summary (class + message) for events and self-checks. */
+internal fun Throwable.legadoBrief(max: Int = 400): String =
+    "${javaClass.name}: ${message ?: ""}".take(max)
 
 /**
  * Engine state + the bridge's business operations (sources and the
@@ -30,6 +42,9 @@ object LegadoEngine {
     private var initialized = false
 
     private lateinit var dbRef: AppDatabase
+
+    @Volatile
+    private var dbFilePath: String = ""
 
     val isInitialized: Boolean get() = initialized
 
@@ -55,6 +70,7 @@ object LegadoEngine {
                     val database = buildLegadoDatabase(appContext, dir)
                     registerLegadoProviders(appContext, database, dir)
                     dbRef = database
+                    dbFilePath = File(dir, AppDatabase.DATABASE_NAME).absolutePath
                     initialized = true
                 }
             }
@@ -70,6 +86,108 @@ object LegadoEngine {
         if (!initialized) {
             throw LegadoBridgeException("ENGINE_NOT_INIT", "Legado engine not initialized")
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Error observability + self check
+    // ------------------------------------------------------------------
+
+    private val bridgeErrorLock = Any()
+    private val bridgeErrors = ArrayDeque<String>()
+
+    /**
+     * Records a bridge-layer failure in a small in-memory ring so the
+     * next [selfCheck] can report what actually went wrong on device
+     * (engine internals deliberately swallow per-source failures, which
+     * is how the 2026-11-03 "search returns nothing, no error" bug hid).
+     */
+    fun recordBridgeError(where: String, e: Throwable) {
+        val entry = "${System.currentTimeMillis()} $where | ${e.legadoBrief(300)}"
+        synchronized(bridgeErrorLock) {
+            bridgeErrors.addFirst(entry)
+            while (bridgeErrors.size > 12) bridgeErrors.removeLast()
+        }
+    }
+
+    fun recentBridgeErrors(): List<String> =
+        synchronized(bridgeErrorLock) { bridgeErrors.toList() }
+
+    /**
+     * Staged probe of the exact shared path search/explore depend on,
+     * one link at a time, so a device run can say WHERE the chain
+     * breaks instead of just "empty": DB counts -> SearchScope source
+     * resolution (via AppDbProviders, exactly like SearchModel) -> JS
+     * eval smoke -> explore kinds of the first enabled source ->
+     * AnalyzeUrl template resolution ({{key}}/{{page}} JS evaluation)
+     * -> a real WebBook search for 「斗破」. Every stage is isolated in
+     * runCatching; failures are reported as text, never thrown.
+     */
+    suspend fun selfCheck(): Map<String, Any?> {
+        requireInit()
+        val dao = db.bookSourceDao
+        val enabledList = dao.enabled(true)
+        val first = enabledList.firstOrNull()
+        val out = linkedMapOf<String, Any?>(
+            "dbPath" to dbFilePath,
+            "sourceTotal" to dao.allCount(),
+            "enabledCount" to enabledList.size
+        )
+        out["scopeAllCount"] = runCatching {
+            SearchScope("").getBookSources().size.toString()
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.scopeAll", e)
+            "ERROR ${e.legadoBrief()}"
+        }
+        out["jsEval"] = runCatching {
+            "ok: 1+1=${JsEngines.get().eval("1+1", JsBindings())}"
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.jsEval", e)
+            "ERROR ${e.legadoBrief()}"
+        }
+        if (first == null) {
+            out["firstSource"] = "(none enabled)"
+        } else {
+            out["firstSource"] =
+                "${first.bookSourceName} <${first.bookSourceUrl}> " +
+                    "enabled=${first.enabled} enabledExplore=${first.enabledExplore}"
+            out["exploreKinds"] = runCatching {
+                val kinds = first.exploreKinds()
+                "ok: ${kinds.size} kinds [${kinds.take(6).joinToString { it.title }}]"
+            }.getOrElse { e ->
+                recordBridgeError("selfCheck.exploreKinds", e)
+                "ERROR ${e.legadoBrief()}"
+            }
+            out["searchUrlResolved"] = runCatching {
+                val analyzeUrl = AnalyzeUrlFactories.create(
+                    rawUrl = first.searchUrl ?: "",
+                    baseUrl = first.bookSourceUrl,
+                    source = first,
+                    ruleData = RuleData(),
+                    coroutineContext = currentCoroutineContext(),
+                    variables = mapOf(
+                        AppConst.JsVarName.KEY to "斗破",
+                        AppConst.JsVarName.PAGE to 1
+                    )
+                )
+                "ok: ${analyzeUrl.url}"
+            }.getOrElse { e ->
+                recordBridgeError("selfCheck.analyzeUrl", e)
+                "ERROR ${e.legadoBrief()}"
+            }
+            out["webBookSearch"] = runCatching {
+                val page = WebBook.getBookListAwait(first, "斗破", 1)
+                "ok: ${page.books.size} books, hasNext=${page.hasNextPage}"
+            }.getOrElse { e ->
+                recordBridgeError("selfCheck.webBookSearch", e)
+                "ERROR ${e.legadoBrief()}"
+            }
+        }
+        out["recentBridgeErrors"] = recentBridgeErrors().take(6)
+        out["recentAppLog"] = AppLog.logs.take(5).map { (_, message, throwable) ->
+            val head = message.lineSequence().firstOrNull() ?: ""
+            if (throwable != null) "$head | ${throwable.legadoBrief(200)}" else head
+        }
+        return out
     }
 
     // ------------------------------------------------------------------
@@ -194,7 +312,15 @@ object LegadoEngine {
     suspend fun getExploreKinds(sourceUrl: String): List<Map<String, Any?>> {
         requireInit()
         val source = sourceOrThrow(sourceUrl)
-        return source.exploreKinds().map { LegadoDto.exploreKind(it) }
+        return try {
+            source.exploreKinds().map { LegadoDto.exploreKind(it) }
+        } catch (e: Throwable) {
+            // A failing kinds parse must stay distinguishable from
+            // "this source has no kinds": record it, then let the
+            // platform error reach Dart as before.
+            recordBridgeError("getExploreKinds:$sourceUrl", e)
+            throw e
+        }
     }
 
     suspend fun getExploreBooks(

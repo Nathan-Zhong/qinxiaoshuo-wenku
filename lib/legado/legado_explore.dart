@@ -73,39 +73,56 @@ class LegadoExploreSelection extends ChangeNotifier {
     return null;
   }
 
-  /// Loads (once) the eligible source list and restores the remembered
-  /// selection, falling back to the first browsable source/kind.
+  /// (Re)loads the eligible source list and resolves the selection.
+  ///
+  /// The source list is re-queried on EVERY call: this tab is the
+  /// app's landing page, so a load-once latch here meant a source
+  /// imported after the first bootstrap stayed invisible to the
+  /// picker (and to [LegadoExploreRepository.browse]) until the
+  /// process restarted — the discovery side of the 2026-11-03
+  /// "imported but nothing shows" bug. Selection resolution only
+  /// re-runs when there is no still-valid selection, so paging the
+  /// feed does not re-fetch kind lists.
   Future<void> load() async {
-    if (_loaded || _loading) return;
+    if (_loading) return;
     _loading = true;
     try {
       final prefs = await _prefsFuture;
       final sources = await repository.eligibleSources(exploreOnly: true);
       _sources = sources;
-      final rememberedSource = prefs.getString(_sourceKey);
-      final rememberedKind = prefs.getString(_kindKey);
-      final candidates = <String>[
-        ?rememberedSource,
-        for (final source in sources) source.sourceUrl,
-      ];
-      for (final candidate in candidates) {
-        final kinds = await _kinds(candidate);
-        final browsable = kinds
-            .where((kind) => !kind.isGroupHeading)
-            .toList(growable: false);
-        if (browsable.isEmpty) continue;
-        _sourceUrl = candidate;
-        _kindUrl = browsable.any((kind) => kind.url == rememberedKind)
-            ? rememberedKind
-            : browsable.first.url;
-        break;
+      _kindsBySource.removeWhere(
+        (url, _) => !sources.any((source) => source.sourceUrl == url),
+      );
+      final selectionValid =
+          _sourceUrl != null &&
+          sources.any((source) => source.sourceUrl == _sourceUrl);
+      if (!selectionValid) {
+        _sourceUrl = null;
+        _kindUrl = null;
+        final rememberedSource = prefs.getString(_sourceKey);
+        final rememberedKind = prefs.getString(_kindKey);
+        final candidates = <String>[
+          ?rememberedSource,
+          for (final source in sources) source.sourceUrl,
+        ];
+        for (final candidate in candidates) {
+          final kinds = await _kinds(candidate);
+          final browsable = kinds
+              .where((kind) => !kind.isGroupHeading)
+              .toList(growable: false);
+          if (browsable.isEmpty) continue;
+          _sourceUrl = candidate;
+          _kindUrl = browsable.any((kind) => kind.url == rememberedKind)
+              ? rememberedKind
+              : browsable.first.url;
+          break;
+        }
       }
       _loaded = true;
       _loadError = null;
     } catch (error) {
       // Surfaced through the feed as the discovery page's usual load
-      // error (with retry), not swallowed. `_loaded` stays false so a
-      // retry re-runs the load instead of serving the failure forever.
+      // error (with retry), not swallowed.
       _loadError = error;
       rethrow;
     } finally {

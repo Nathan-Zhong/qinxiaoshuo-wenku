@@ -251,6 +251,64 @@ void main() {
     expect(hintCount, 2);
   });
 
+  test('bridge searchError + empty finish surfaces as feed error', () async {
+    await controller.searchFor('斗破');
+    await settle();
+    final taskId = taskIdOfSearch();
+    sink!.success({
+      'type': 'searchError',
+      'taskId': taskId,
+      'sourceUrl': 'https://a.example',
+      'errorCode': 'IllegalStateException',
+      'message': 'java.lang.IllegalStateException: boom',
+    });
+    await settle();
+    // Recorded only; the round has not finished yet.
+    expect(controller.error, isNull);
+    expect(controller.loading, isTrue);
+    sink!.success({
+      'type': 'searchFinish',
+      'taskId': taskId,
+      'isEmpty': true,
+      'hasMore': false,
+    });
+    await settle();
+    expect(controller.loading, isFalse);
+    expect(controller.items, isEmpty);
+    expect(controller.error, isNotNull);
+  });
+
+  test('searchError with partial results keeps items, no error', () async {
+    await controller.searchFor('斗破');
+    await settle();
+    final taskId = taskIdOfSearch();
+    sink!.success({
+      'type': 'searchSnapshot',
+      'taskId': taskId,
+      'books': [_book(origin: 'https://a.example', name: '斗破苍穹')],
+      'groups': [],
+      'hasMore': false,
+    });
+    await settle();
+    sink!.success({
+      'type': 'searchError',
+      'taskId': taskId,
+      'sourceUrl': 'https://b.example',
+      'errorCode': 'NoStackTraceException',
+      'message': 'boom',
+    });
+    sink!.success({
+      'type': 'searchFinish',
+      'taskId': taskId,
+      'isEmpty': false,
+      'hasMore': false,
+    });
+    await settle();
+    expect(controller.items, hasLength(1));
+    expect(controller.error, isNull);
+    expect(controller.loading, isFalse);
+  });
+
   test(
     'engine failure surfaces as the feed error and retry recovers',
     () async {

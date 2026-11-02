@@ -42,6 +42,14 @@ class LegadoEngineMock {
   /// When set, getExploreBooks waits for this completer first.
   Completer<void>? exploreGate;
 
+  /// Report served by engineSelfCheck.
+  Map<String, Object?> selfCheckResult = {
+    'dbPath': '/data/legado/legado.db',
+    'sourceTotal': 1,
+    'enabledCount': 1,
+    'jsEval': 'ok: 1+1=2',
+  };
+
   final exploreCalls = <int>[];
   final searchTaskIds = <int>[];
   final searchKeywords = <String>[];
@@ -115,6 +123,8 @@ class LegadoEngineMock {
           searchTaskIds.add(args['taskId'] as int);
           searchKeywords.add(args['keyword'] as String);
           return null;
+        case 'engineSelfCheck':
+          return selfCheckResult;
       }
       return null;
     });
@@ -174,6 +184,27 @@ class LegadoEngineMock {
     _messenger.handlePlatformMessage(
       searchChannelName,
       _codec.encodeErrorEnvelope(code: 'NET', message: 'boom'),
+      (_) {},
+    );
+  }
+
+  /// A bridge searchError event (per-source failure re-emitted by the
+  /// native side before the round's finish).
+  void pushSearchError(
+    int taskId, {
+    String? sourceUrl,
+    String errorCode = 'IllegalStateException',
+    String message = 'java.lang.IllegalStateException: boom',
+  }) {
+    _messenger.handlePlatformMessage(
+      searchChannelName,
+      _codec.encodeSuccessEnvelope({
+        'type': 'searchError',
+        'taskId': taskId,
+        'sourceUrl': sourceUrl,
+        'errorCode': errorCode,
+        'message': message,
+      }),
       (_) {},
     );
   }

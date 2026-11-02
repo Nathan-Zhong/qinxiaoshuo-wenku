@@ -286,6 +286,32 @@ void main() {
       },
     );
 
+    test('load picks up a source imported after the first load', () async {
+      // Regression (2026-11-03): the discovery tab bootstraps before
+      // any source exists; load() must re-query instead of latching
+      // the empty list for the rest of the process.
+      final base = responder;
+      var imported = false;
+      responder = (call) {
+        if (call.method == 'listSources') {
+          return imported ? [_sourceMap()] : <Object?>[];
+        }
+        return base?.call(call);
+      };
+      final selection = LegadoExploreSelection(
+        repository: repository,
+        preferences: SharedPreferences.getInstance(),
+      );
+      await selection.load();
+      expect(selection.sources, isEmpty);
+      expect(selection.sourceUrl, isNull);
+      imported = true;
+      await selection.load();
+      expect(selection.sources, hasLength(1));
+      expect(selection.sourceUrl, _sourceUrl);
+      expect(selection.kindUrl, 'kind/xh');
+    });
+
     test('selection is remembered across instances', () async {
       final first = LegadoExploreSelection(
         repository: repository,

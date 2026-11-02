@@ -34,6 +34,7 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
 
   bool _loading = true;
   bool _deleting = false;
+  bool _checking = false;
   String? _error;
   List<BookSourceSummary> _sources = const [];
   List<String> _groups = const [];
@@ -190,6 +191,29 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
     }
   }
 
+  /// Runs the bridge's staged self-check (DB counts, JS eval, explore
+  /// kinds, one real search) and shows the raw report in a jelly sheet
+  /// — the fastest way to see WHERE the engine chain breaks on device.
+  Future<void> _runSelfCheck() async {
+    if (_checking) return;
+    setState(() => _checking = true);
+    try {
+      await _client.init();
+      final result = await _client.engineSelfCheck();
+      if (!mounted) return;
+      await showJellySheet<void>(
+        context: context,
+        reduceMotion: MediaQuery.disableAnimationsOf(context),
+        builder: (_) => _SelfCheckSheet(result: result),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      showNovelFeedback(context, '自检失败，请重试');
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
   Future<void> _openImport() async {
     final result = await showJellySheet<ImportResult>(
       context: context,
@@ -243,6 +267,15 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
                           ? null
                           : () => setState(_selected.clear),
                       child: const AppText('清空选择'),
+                    ),
+                  if (!_selecting)
+                    GlassTextButton(
+                      key: const ValueKey('book-source-self-check'),
+                      compact: true,
+                      onPressed: _loading || _checking
+                          ? null
+                          : () => unawaited(_runSelfCheck()),
+                      child: AppText(_checking ? '自检中…' : '引擎自检'),
                     ),
                   if (!_selecting)
                     GlassTextButton(
@@ -600,6 +633,61 @@ class _ImportSourceSheetState extends State<_ImportSourceSheet> {
           child: const AppText('取消'),
         ),
       ],
+    ),
+  );
+}
+
+/// Self-check report sheet: renders the bridge's staged probe results
+/// as plain label/value lines, in the same sheet typography as the
+/// import sheet. Deliberately raw — this is a diagnostic surface.
+class _SelfCheckSheet extends StatelessWidget {
+  const _SelfCheckSheet({required this.result});
+
+  final Map<String, Object?> result;
+
+  static String _format(Object? value) {
+    if (value is List) {
+      return value.isEmpty ? '(无)' : value.map(_format).join('\n');
+    }
+    if (value is Map) {
+      return value.entries
+          .map((entry) => '${entry.key}: ${_format(entry.value)}')
+          .join('\n');
+    }
+    return value?.toString() ?? '';
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.all(24),
+    child: SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const AppText(
+            '引擎自检',
+            style: TextStyle(fontSize: 21, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 14),
+          for (final entry in result.entries) ...[
+            AppText(
+              entry.key,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 4),
+            AppText(_format(entry.value), style: const TextStyle(height: 1.6)),
+            const SizedBox(height: 12),
+          ],
+          GlassTextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const AppText('关闭'),
+          ),
+        ],
+      ),
     ),
   );
 }

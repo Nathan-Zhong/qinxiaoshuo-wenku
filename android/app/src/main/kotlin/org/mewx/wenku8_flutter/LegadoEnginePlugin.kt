@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import org.mewx.wenku8_flutter.legado.LegadoBridgeException
 import org.mewx.wenku8_flutter.legado.LegadoDto
 import org.mewx.wenku8_flutter.legado.LegadoEngine
+import org.mewx.wenku8_flutter.legado.legadoBrief
 import org.mewx.wenku8_flutter.legado.legadoErrorCode
 
 /**
@@ -115,6 +116,10 @@ class LegadoEnginePlugin : FlutterPlugin {
                 LegadoEngine.init(context, call.argument<String>("dataDir"))
             }
 
+            "engineSelfCheck" -> launchEngine(result) {
+                LegadoEngine.selfCheck()
+            }
+
             "listSources" -> launchEngine(result) {
                 LegadoEngine.listSources(
                     group = call.argument<String>("group"),
@@ -204,6 +209,22 @@ class LegadoEnginePlugin : FlutterPlugin {
                     runCatching {
                         startSearch(taskId, keyword, scopeArg, precision)
                     }.onFailure { e ->
+                        // Surface the failure BEFORE the synthetic empty
+                        // finish, so Dart can tell "search broke" apart
+                        // from "searched, found nothing" (the finish
+                        // alone made the two indistinguishable).
+                        if (e !is CancellationException) {
+                            LegadoEngine.recordBridgeError("startSearch", e)
+                            emitSearchEvent(
+                                mapOf(
+                                    "type" to "searchError",
+                                    "taskId" to taskId,
+                                    "sourceUrl" to null,
+                                    "errorCode" to legadoErrorCode(e),
+                                    "message" to e.legadoBrief()
+                                )
+                            )
+                        }
                         emitSearchEvent(
                             mapOf(
                                 "type" to "searchFinish",
@@ -387,12 +408,31 @@ private class LegadoSearchSession(
     private val unitGroups = ConcurrentHashMap<Int, List<SourceSearchGroup>>()
     private val unitHasMore = ConcurrentHashMap<Int, Boolean>()
     private val unitFinished = ConcurrentHashMap<Int, Boolean>()
+
+    /** Per-unit failures captured from onSearchCancel (engine semantics
+     *  swallow them into a silent zero-result unit otherwise). */
+    private val unitErrors = ConcurrentHashMap<Int, Map<String, Any?>>()
     private val finishedCount = AtomicInteger(0)
     private val roundFinishEmitted = AtomicBoolean(false)
     private val active = AtomicBoolean(true)
 
     fun start() {
         if (scopes.isEmpty()) {
+            // No Dart-passed source URL resolved against the DB. Say so
+            // explicitly instead of faking a clean empty result.
+            val message = "搜索范围为空：书源未在引擎库中命中"
+            LegadoEngine.recordBridgeError(
+                "searchStart", IllegalStateException(message)
+            )
+            emit(
+                mapOf(
+                    "type" to "searchError",
+                    "taskId" to taskId,
+                    "sourceUrl" to null,
+                    "errorCode" to "EMPTY_SCOPE",
+                    "message" to message
+                )
+            )
             emit(
                 mapOf(
                     "type" to "searchFinish",
@@ -416,6 +456,7 @@ private class LegadoSearchSession(
     fun loadMore() {
         if (!active.get()) return
         unitFinished.clear()
+        unitErrors.clear()
         finishedCount.set(0)
         roundFinishEmitted.set(false)
         LegadoEngine.scope.launch {
@@ -467,7 +508,23 @@ private class LegadoSearchSession(
         override fun onSearchCancel(exception: Throwable?) {
             // A unit cancelling on its own (empty scope, hard failure)
             // finishes that unit; user cancel is handled by cancelByUser.
+            // The SearchModel layer reports real per-source failures
+            // ONLY through this callback (its flow catch), so capture
+            // the exception here — dropping it is what turned every
+            // engine failure into a silent "no results" on device.
             if (!active.get()) return
+            if (exception != null) {
+                LegadoEngine.recordBridgeError("searchUnit", exception)
+                unitErrors[unit] = mapOf(
+                    "sourceUrl" to if (scope.isSource()) {
+                        scope.toString().substringAfter("::")
+                    } else {
+                        null
+                    },
+                    "errorCode" to exception.javaClass.simpleName,
+                    "message" to exception.legadoBrief()
+                )
+            }
             markUnitFinished(unit)
         }
     }
@@ -481,6 +538,26 @@ private class LegadoSearchSession(
         ) {
             val isEmpty = unitBooks.values.all { it.isEmpty() }
             val hasMore = unitHasMore.values.any { it }
+            // Failures first: Dart keys its error state off receiving a
+            // searchError for this round before the finish lands.
+            val errors = unitErrors.values.toList()
+            if (errors.isNotEmpty()) {
+                val head = errors.first()
+                val extra = if (errors.size > 1) {
+                    "（另有 ${errors.size - 1} 个书源搜索失败）"
+                } else {
+                    ""
+                }
+                emit(
+                    mapOf(
+                        "type" to "searchError",
+                        "taskId" to taskId,
+                        "sourceUrl" to head["sourceUrl"],
+                        "errorCode" to head["errorCode"],
+                        "message" to "${head["message"]}$extra"
+                    )
+                )
+            }
             emit(
                 mapOf(
                     "type" to "searchFinish",

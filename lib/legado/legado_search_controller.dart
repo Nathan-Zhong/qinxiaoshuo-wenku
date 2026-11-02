@@ -94,6 +94,12 @@ class LegadoSearchFeedController extends NovelFeedController {
   bool _hintShown = false;
   bool _disposed = false;
 
+  /// First bridge-reported failure of the current search round. The
+  /// engine swallows per-source failures into a zero-result finish;
+  /// the bridge re-emits them as [SearchErrorEvent]s, and a round that
+  /// ends empty WITH a recorded failure is an error, not "no results".
+  SearchErrorEvent? _roundError;
+
   // -------------------------------------------------------------------
   // NovelFeedController surface
   // -------------------------------------------------------------------
@@ -249,6 +255,7 @@ class LegadoSearchFeedController extends NovelFeedController {
     }
     if (_errorValue != null) return;
     _loadingValue = true;
+    _roundError = null;
     _roundStartIndex = _rawItems.length;
     notifyListeners();
     try {
@@ -285,6 +292,7 @@ class LegadoSearchFeedController extends NovelFeedController {
     _loadingValue = false;
     _refreshingValue = false;
     _resultStartIndexValue = 0;
+    _roundError = null;
   }
 
   Future<void> _warmSources() async {
@@ -324,6 +332,7 @@ class LegadoSearchFeedController extends NovelFeedController {
     _errorValue = null;
     _refreshFailedValue = false;
     _roundStartIndex = 0;
+    _roundError = null;
     notifyListeners();
     try {
       final sourceUrls = await _eligibleSourceUrls();
@@ -377,10 +386,23 @@ class LegadoSearchFeedController extends NovelFeedController {
           _resultRevisionValue++;
         }
         notifyListeners();
+      case SearchErrorEvent():
+        // Recorded, not yet surfaced: the round's finish decides
+        // whether this was a hard failure (still no items) or a
+        // partial success (items from other sources stay usable).
+        _roundError ??= event;
       case SearchFinishEvent():
         _loadingValue = false;
         _hasMoreValue = event.hasMore;
         if (_pageValue == 0) _pageValue = 1;
+        final roundError = _roundError;
+        if (_items.isEmpty && roundError != null) {
+          _errorValue = FormatException(
+            roundError.message.isEmpty
+                ? '书源搜索失败（${roundError.errorCode}）'
+                : roundError.message,
+          );
+        }
         _totalItemsValue = _items.length;
         notifyListeners();
       case SearchCancelEvent():

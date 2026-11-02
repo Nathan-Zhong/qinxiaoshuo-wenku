@@ -86,6 +86,19 @@ class LegadoEngineClient {
     return LegadoEngineInfo.fromMap(result ?? const {});
   }
 
+  /// Staged on-device probe of the shared search/explore path (DB
+  /// counts, scope resolution, JS eval, explore kinds, AnalyzeUrl
+  /// template resolution, one real WebBook search). Returns the raw
+  /// report map; values are scalars or string lists, formatted for
+  /// display by the caller. Requires [init] to have run.
+  Future<Map<String, Object?>> engineSelfCheck() async {
+    final result = await _invokeMap('engineSelfCheck');
+    return <String, Object?>{
+      for (final entry in (result ?? const {}).entries)
+        entry.key.toString(): entry.value,
+    };
+  }
+
   Future<List<BookSourceSummary>> listSources({
     String? group,
     bool enabledOnly = false,
@@ -581,6 +594,13 @@ sealed class LegadoSearchEvent {
           isEmpty: m['isEmpty'] == true,
           hasMore: m['hasMore'] == true,
         );
+      case 'searchError':
+        return SearchErrorEvent(
+          taskId,
+          sourceUrl: m['sourceUrl']?.toString(),
+          errorCode: m['errorCode']?.toString() ?? 'UNKNOWN',
+          message: m['message']?.toString() ?? '',
+        );
       case 'searchCancel':
         return SearchCancelEvent(taskId);
       default:
@@ -616,6 +636,24 @@ class SearchFinishEvent extends LegadoSearchEvent {
 
 class SearchCancelEvent extends LegadoSearchEvent {
   const SearchCancelEvent(super.taskId);
+}
+
+/// A per-source (or whole-task) search failure. The engine's own
+/// semantics swallow these into a silent zero-result finish; the
+/// bridge re-emits them as events (always before the round's finish)
+/// so "search broke" stays distinguishable from "found nothing".
+class SearchErrorEvent extends LegadoSearchEvent {
+  const SearchErrorEvent(
+    super.taskId, {
+    this.sourceUrl,
+    required this.errorCode,
+    required this.message,
+  });
+
+  /// The failing source, when the failure is source-scoped.
+  final String? sourceUrl;
+  final String errorCode;
+  final String message;
 }
 
 class UnknownSearchEvent extends LegadoSearchEvent {

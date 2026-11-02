@@ -457,6 +457,56 @@ void main() {
         await subscription.cancel();
       },
     );
+
+    test('searchError events parse with source, code and message', () async {
+      MockStreamHandlerEventSink? sink;
+      messenger.setMockStreamHandler(
+        searchChannel,
+        MockStreamHandler.inline(
+          onListen: (arguments, events) => sink = events,
+          onCancel: (arguments) {},
+        ),
+      );
+      responder = (call) => null;
+
+      final handle = client.startSearch(keyword: '斗破');
+      final received = <LegadoSearchEvent>[];
+      final subscription = handle.events.listen(received.add);
+      await pumpEventQueue();
+
+      sink!.success(<String, Object?>{
+        'type': 'searchError',
+        'taskId': handle.taskId,
+        'sourceUrl': 'https://a.example',
+        'errorCode': 'IllegalStateException',
+        'message': 'java.lang.IllegalStateException: boom',
+      });
+      await pumpEventQueue();
+
+      final event = received.single as SearchErrorEvent;
+      expect(event.sourceUrl, 'https://a.example');
+      expect(event.errorCode, 'IllegalStateException');
+      expect(event.message, contains('boom'));
+      await subscription.cancel();
+    });
+
+    test('engineSelfCheck returns the raw report map', () async {
+      responder = (call) {
+        if (call.method == 'engineSelfCheck') {
+          return <String, Object?>{
+            'dbPath': '/data/legado/x.db',
+            'sourceTotal': 3,
+            'jsEval': 'ok: 1+1=2',
+            'recentBridgeErrors': <String>['e1'],
+          };
+        }
+        return null;
+      };
+      final report = await client.engineSelfCheck();
+      expect(report['sourceTotal'], 3);
+      expect(report['jsEval'], 'ok: 1+1=2');
+      expect(report['recentBridgeErrors'], ['e1']);
+    });
   });
 
   group('task events', () {
