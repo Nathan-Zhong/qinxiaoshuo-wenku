@@ -188,6 +188,94 @@ class LegadoEngineClient {
   }
 
   // ---------------------------------------------------------------------
+  // Source login (fork SourceLoginDialog semantics, over the bridge)
+  // ---------------------------------------------------------------------
+
+  /// The source's login form: parsed loginUi rows, the saved values
+  /// the form prefills with, and the login kind. The [LegadoLoginData]
+  /// values can hold the user's own saved credentials — never log
+  /// the result of this call.
+  Future<LegadoLoginData> getLoginData(String sourceUrl) async {
+    final result = await _invokeMap('getLoginData', {'sourceUrl': sourceUrl});
+    return LegadoLoginData.fromMap(result ?? const {});
+  }
+
+  /// Submits the login form (fork confirm): an empty [data] map
+  /// removes the saved login info; otherwise the info is saved and
+  /// the source's `login()` script runs. Throws [PlatformException]
+  /// with the engine's message when saving or the script fails.
+  Future<void> loginSource(String sourceUrl, Map<String, String> data) async {
+    await _invokeMap('login', {'sourceUrl': sourceUrl, 'data': data});
+  }
+
+  /// Runs one login row's action (fork button handling): [action] is
+  /// the row's JS snippet — evaluated as loginJs + action with the
+  /// current form [data] bound as `result` — or an absolute URL,
+  /// which the native side opens in a browser. Select/toggle changes
+  /// run through this too, exactly as in the fork dialog.
+  Future<void> runLoginAction(
+    String sourceUrl, {
+    required String action,
+    Map<String, String> data = const <String, String>{},
+  }) async {
+    await _invokeMap('runLoginAction', {
+      'sourceUrl': sourceUrl,
+      'action': action,
+      'data': data,
+    });
+  }
+
+  /// Dispatches a login the way the fork's showSourceLogin does and
+  /// reports the kind actually dispatched: [LegadoLoginKind.form]
+  /// means the caller should open the login sheet itself (nothing was
+  /// launched natively); web opens the login browser window; js runs
+  /// the source's `login()` script (which may itself raise browser /
+  /// captcha UI through the engine's channels).
+  Future<LegadoLoginKind> openSourceLogin(String sourceUrl) async {
+    final result = await _invokeMap('openSourceLogin', {
+      'sourceUrl': sourceUrl,
+    });
+    return switch (result?['kind']) {
+      'web' => LegadoLoginKind.web,
+      'js' => LegadoLoginKind.js,
+      'none' => LegadoLoginKind.none,
+      _ => LegadoLoginKind.form,
+    };
+  }
+
+  /// Removes the saved login info AND the login header (with its
+  /// cookies) for the source — the fork's two removal paths composed.
+  Future<void> logoutSource(String sourceUrl) async {
+    await _invokeMap('logoutSource', {'sourceUrl': sourceUrl});
+  }
+
+  /// The saved login header text, or null when none is saved.
+  Future<String?> getLoginHeader(String sourceUrl) async {
+    final result = await _invokeMap('getLoginHeader', {
+      'sourceUrl': sourceUrl,
+    });
+    final header = result?['header'];
+    return header is String ? header : null;
+  }
+
+  /// Deletes the saved login header (and its cookies).
+  Future<void> removeLoginHeader(String sourceUrl) async {
+    await _invokeMap('removeLoginHeader', {'sourceUrl': sourceUrl});
+  }
+
+  /// Saved-login flags for a batch of sources (management list
+  /// markers). Every requested URL is present in the result.
+  Future<Map<String, bool>> getLoginStates(List<String> sourceUrls) async {
+    final result = await _invokeMap('getLoginStates', {
+      'sourceUrls': sourceUrls,
+    });
+    return <String, bool>{
+      for (final entry in (result ?? const {}).entries)
+        entry.key.toString(): entry.value == true,
+    };
+  }
+
+  // ---------------------------------------------------------------------
   // Import (Legado semantics: a payload is JSON text, a URL to download,
   // or a local file path; absolute URLs inside text payloads are followed
   // by the engine, `sourceUrls` bundles are expanded, legacy subscription

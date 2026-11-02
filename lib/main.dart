@@ -11,6 +11,7 @@ import 'app_licenses.dart';
 import 'catalog.dart';
 import 'legacy_wenku_repository.dart';
 import 'legado/legado_books.dart';
+import 'legado/legado_login_ui.dart';
 import 'legado/legado_verification_ui.dart';
 import 'library_state.dart';
 import 'local_books.dart';
@@ -90,6 +91,13 @@ Future<void> main() async {
     // client already exists (created by LegadoBooks.dispatch above);
     // the sheet is presented over the root navigator.
     LegadoVerificationUi.install(
+      client: LegadoBooks.client,
+      contextProvider: () => LegadoUiHost.navigatorKey.currentContext,
+    );
+    // Source login UI (P5.3): wraps the handler installed above —
+    // `showSourceLogin` (a source's JS asked for its login form) is
+    // served by the login sheet, captcha calls forward through.
+    LegadoLoginUi.install(
       client: LegadoBooks.client,
       contextProvider: () => LegadoUiHost.navigatorKey.currentContext,
     );

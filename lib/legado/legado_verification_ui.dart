@@ -52,6 +52,10 @@ class LegadoVerificationUi {
 
   static LegadoVerificationUi? _installed;
 
+  /// The installed instance, if any (the login UI's combined
+  /// platform-call handler forwards captcha calls here).
+  static LegadoVerificationUi? get installed => _installed;
+
   /// Installs the platform-call handler on the shared engine client.
   /// Idempotent per client; production installs once from main().
   static LegadoVerificationUi install({

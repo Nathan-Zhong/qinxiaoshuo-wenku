@@ -48,6 +48,13 @@ bool _bool(Map<String, Object?> map, String key, [bool fallback = false]) {
   return fallback;
 }
 
+double _double(Map<String, Object?> map, String key, [double fallback = 0]) {
+  final value = map[key];
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value) ?? fallback;
+  return fallback;
+}
+
 List<String> _strList(Map<String, Object?> map, String key) {
   final value = map[key];
   if (value is List) {
@@ -962,6 +969,144 @@ class ImageRequest {
       headers.entries.map((e) => Object.hash(e.key, e.value)),
     ),
   );
+}
+
+/// How a source expects to be logged in (bridge `getLoginData`).
+enum LegadoLoginKind {
+  /// A loginUi form exists; render [LegadoLoginData.rows].
+  form,
+
+  /// loginUrl is a web page; login happens in the browser window.
+  web,
+
+  /// loginUrl is a script with no form; `login()` runs unattended.
+  js,
+
+  /// The source carries no usable login configuration.
+  none,
+}
+
+/// One row of a source's login form — the engine's `RowUi`, carried
+/// field-for-field. [type] is one of the fork's RowUi.Type values
+/// (`text`, `password`, `button`, `toggle`, `title`, `select`);
+/// unknown types render as buttons, as the fork's dialog does.
+class LegadoLoginRow {
+  const LegadoLoginRow({
+    required this.name,
+    required this.type,
+    this.action,
+    this.chars = const <String>[],
+    this.flexBasisPercent = 0,
+  });
+
+  /// Field label; doubles as the login-info key for input rows.
+  final String name;
+  final String type;
+
+  /// Button/select/toggle rows: a JS snippet from the source's login
+  /// script, or an absolute URL to open. Null for plain input rows.
+  final String? action;
+
+  /// Options for `select` rows.
+  final List<String> chars;
+
+  /// The fork's grid width hint (layout_flexBasisPercent). Carried
+  /// for fidelity; the Wenku sheet stacks rows full-width.
+  final double flexBasisPercent;
+
+  bool get isInput =>
+      type == 'text' || type == 'password' || type == 'select' || type == 'toggle';
+
+  factory LegadoLoginRow.fromMap(Map<Object?, Object?> map) {
+    final m = _keyed(map);
+    final charsRaw = m['chars'];
+    return LegadoLoginRow(
+      name: _str(m, 'name'),
+      type: _str(m, 'type', 'text'),
+      action: _strOrNull(m, 'action'),
+      chars: <String>[
+        if (charsRaw is List)
+          for (final item in charsRaw) item?.toString() ?? '',
+      ],
+      flexBasisPercent: _double(m, 'flexBasisPercent'),
+    );
+  }
+
+  Map<String, Object?> toMap() => <String, Object?>{
+    'name': name,
+    'type': type,
+    'action': action,
+    'chars': chars,
+    'flexBasisPercent': flexBasisPercent,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is LegadoLoginRow &&
+      other.name == name &&
+      other.type == type &&
+      other.action == action &&
+      listEquals(other.chars, chars) &&
+      other.flexBasisPercent == flexBasisPercent;
+
+  @override
+  int get hashCode =>
+      Object.hash(name, type, action, Object.hashAll(chars), flexBasisPercent);
+}
+
+/// Result of `getLoginData`: everything the login sheet renders.
+///
+/// [values] holds the saved login info the fork's dialog would
+/// prefill (input rows only, keyed by row name) — it can contain the
+/// user's own saved password, on its way back into the form where it
+/// started. Never log it.
+class LegadoLoginData {
+  const LegadoLoginData({
+    required this.sourceUrl,
+    required this.sourceName,
+    required this.kind,
+    this.loginUrl,
+    this.rows = const <LegadoLoginRow>[],
+    this.values = const <String, String>{},
+    this.hasLoginInfo = false,
+    this.hasLoginHeader = false,
+  });
+
+  final String sourceUrl;
+  final String sourceName;
+  final LegadoLoginKind kind;
+
+  /// The login page URL; only present when [kind] is web.
+  final String? loginUrl;
+  final List<LegadoLoginRow> rows;
+
+  /// Prefill values for input rows (see class doc).
+  final Map<String, String> values;
+
+  /// Whether the engine holds saved login info for this source.
+  final bool hasLoginInfo;
+
+  /// Whether a login header is saved for this source.
+  final bool hasLoginHeader;
+
+  factory LegadoLoginData.fromMap(Map<Object?, Object?> map) {
+    final m = _keyed(map);
+    return LegadoLoginData(
+      sourceUrl: _str(m, 'sourceUrl'),
+      sourceName: _str(m, 'sourceName'),
+      kind: switch (_str(m, 'kind')) {
+        'web' => LegadoLoginKind.web,
+        'js' => LegadoLoginKind.js,
+        'none' => LegadoLoginKind.none,
+        _ => LegadoLoginKind.form,
+      },
+      loginUrl: _strOrNull(m, 'loginUrl'),
+      rows: _mapList(m, 'rows', LegadoLoginRow.fromMap),
+      values: _strMap(m, 'values'),
+      hasLoginInfo: _bool(m, 'hasLoginInfo'),
+      hasLoginHeader: _bool(m, 'hasLoginHeader'),
+    );
+  }
 }
 
 /// Result of `getChapterList`: the book snapshot with the fields the

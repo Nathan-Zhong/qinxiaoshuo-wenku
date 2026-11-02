@@ -35,9 +35,12 @@ import org.mewx.wenku8_flutter.legado.legadoErrorCode
  * delete/enable/meta/groups), explore (getExploreKinds /
  * getExploreBooks), streaming multi-source search over the search
  * EventChannel, the book chain getBookInfo / getChapterList /
- * getChapterContent, and resolveImageRequest (G7: real URL + headers
- * for source images via the engine's AnalyzeUrl). All other contract
- * methods return notImplemented.
+ * getChapterContent, resolveImageRequest (G7: real URL + headers
+ * for source images via the engine's AnalyzeUrl), and the source
+ * login surface (G3: getLoginData / login / runLoginAction /
+ * openSourceLogin / logoutSource / getLoginHeader /
+ * removeLoginHeader / getLoginStates — see legado/LegadoLogin.kt).
+ * All other contract methods return notImplemented.
  *
  * Threading: engine work runs on [LegadoEngine.scope] (IO); channel
  * results and event sinks are always delivered on the main thread.
@@ -222,6 +225,49 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
                 LegadoEngine.listSourceGroups()
             }
 
+            "getLoginData" -> launchEngine(result) {
+                LegadoEngine.getLoginData(reqString(call, "sourceUrl"))
+            }
+
+            "login" -> launchEngine(result) {
+                LegadoEngine.login(
+                    sourceUrl = reqString(call, "sourceUrl"),
+                    data = stringMapArg(call, "data")
+                )
+            }
+
+            "runLoginAction" -> launchEngine(result) {
+                LegadoEngine.runLoginAction(
+                    sourceUrl = reqString(call, "sourceUrl"),
+                    action = reqString(call, "action"),
+                    data = stringMapArg(call, "data")
+                )
+            }
+
+            "openSourceLogin" -> launchEngine(result) {
+                LegadoEngine.openSourceLogin(reqString(call, "sourceUrl"))
+            }
+
+            "logoutSource" -> launchEngine(result) {
+                LegadoEngine.logoutSource(reqString(call, "sourceUrl"))
+                mapOf("ok" to true)
+            }
+
+            "getLoginHeader" -> launchEngine(result) {
+                LegadoEngine.getLoginHeader(reqString(call, "sourceUrl"))
+            }
+
+            "removeLoginHeader" -> launchEngine(result) {
+                LegadoEngine.removeLoginHeader(reqString(call, "sourceUrl"))
+                mapOf("ok" to true)
+            }
+
+            "getLoginStates" -> launchEngine(result) {
+                val urls = call.argument<List<*>>("sourceUrls")
+                    ?.filterIsInstance<String>() ?: emptyList()
+                LegadoEngine.getLoginStates(urls)
+            }
+
             "getExploreKinds" -> launchEngine(result) {
                 LegadoEngine.getExploreKinds(reqString(call, "sourceUrl"))
             }
@@ -374,6 +420,14 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
     private fun reqString(call: MethodCall, key: String): String =
         call.argument<String>(key)
             ?: throw LegadoBridgeException("UNKNOWN", "missing argument: $key")
+
+    /** A string->string argument map (login form data); absent = empty. */
+    private fun stringMapArg(call: MethodCall, key: String): Map<String, String> {
+        val raw = call.argument<Map<*, *>>(key) ?: return emptyMap()
+        return raw.entries.associate { (k, v) ->
+            k.toString() to (v?.toString() ?: "")
+        }
+    }
 
     // ------------------------------------------------------------------
     // Search sessions

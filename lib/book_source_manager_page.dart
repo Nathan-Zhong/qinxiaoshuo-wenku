@@ -9,6 +9,7 @@ import 'app_ui.dart';
 import 'book_documents.dart';
 import 'feature_pages.dart';
 import 'legado/legado.dart';
+import 'legado/legado_login_ui.dart';
 
 /// Book-source management for the embedded Legado engine.
 ///
@@ -41,6 +42,11 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
   bool _selecting = false;
   final Set<String> _selected = {};
 
+  /// Sources with saved login state in the engine (info or header),
+  /// shown as a 「已登录」 subtitle marker. Best-effort decoration:
+  /// refreshed after loads and logins, never blocking the list.
+  Set<String> _loggedIn = const {};
+
   @override
   void initState() {
     super.initState();
@@ -66,6 +72,7 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
         );
         if (_sources.isEmpty) _selecting = false;
       });
+      unawaited(_loadLoginStates(sources));
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -109,11 +116,74 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
   String _subtitle(BookSourceSummary source) {
     final host = Uri.tryParse(source.sourceUrl)?.host;
     return [
+      if (_loggedIn.contains(source.sourceUrl)) '已登录',
       if (source.group != null && source.group!.trim().isNotEmpty)
         source.group!.trim(),
       _typeLabel(source.type),
       if (host != null && host.isNotEmpty) host else source.sourceUrl,
     ].join(' · ');
+  }
+
+  /// Refreshes the 「已登录」 markers for the login-capable sources
+  /// in [sources] (one batched bridge call; failures just leave the
+  /// previous markers — they are decoration, not state of record).
+  Future<void> _loadLoginStates(List<BookSourceSummary> sources) async {
+    final urls = [
+      for (final source in sources)
+        if (source.hasLogin) source.sourceUrl,
+    ];
+    if (urls.isEmpty) {
+      if (mounted && _loggedIn.isNotEmpty) {
+        setState(() => _loggedIn = const {});
+      }
+      return;
+    }
+    try {
+      final states = await _client.getLoginStates(urls);
+      if (!mounted) return;
+      setState(() {
+        _loggedIn = {
+          for (final entry in states.entries)
+            if (entry.value) entry.key,
+        };
+      });
+    } catch (_) {
+      // Markers are best-effort; a failed probe keeps the old ones.
+    }
+  }
+
+  /// The row's login entry (login sources only), dispatched like the
+  /// fork's showSourceLogin: form sources open the login sheet here;
+  /// web sources have already opened the login browser natively;
+  /// script sources ran their login() in the engine.
+  Future<void> _openLogin(BookSourceSummary source) async {
+    try {
+      await _client.init();
+      final kind = await _client.openSourceLogin(source.sourceUrl);
+      if (!mounted) return;
+      switch (kind) {
+        case LegadoLoginKind.form:
+          await showSourceLoginSheet(
+            context,
+            client: _client,
+            sourceUrl: source.sourceUrl,
+            sourceName: source.sourceName,
+          );
+        case LegadoLoginKind.web:
+          showNovelFeedback(context, '已打开登录页，在网页里登录后返回即可');
+        case LegadoLoginKind.js:
+          showNovelFeedback(context, '已执行登录脚本');
+        case LegadoLoginKind.none:
+          showNovelFeedback(context, '该书源没有可用的登录方式');
+      }
+      await _loadLoginStates(_sources);
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      showNovelFeedback(context, '登录出错：${error.message ?? '请重试'}');
+    } catch (_) {
+      if (!mounted) return;
+      showNovelFeedback(context, '登录出错，请重试');
+    }
   }
 
   Future<void> _setEnabled(BookSourceSummary source, bool value) async {
@@ -445,6 +515,13 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
                   value: source.enabled,
                   onChanged: (value) => _setEnabled(source, value),
                 ),
+                if (source.hasLogin)
+                  GlassIconButton(
+                    key: ValueKey('book-source-login-${source.sourceUrl}'),
+                    icon: CupertinoIcons.person_crop_circle,
+                    label: '登录书源 ${source.sourceName}',
+                    onPressed: () => unawaited(_openLogin(source)),
+                  ),
                 GlassIconButton(
                   icon: CupertinoIcons.trash,
                   label: '删除书源 ${source.sourceName}',

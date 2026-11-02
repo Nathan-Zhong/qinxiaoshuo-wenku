@@ -85,6 +85,12 @@ object LegadoEngine {
                     dir.mkdirs()
                     val database = buildLegadoDatabase(appContext, dir)
                     registerLegadoProviders(appContext, database, dir)
+                    // Source login (G3): the JS showLoginDialog path
+                    // needs its FlowBus consumer standing before any
+                    // source JS can emit, and the login surface needs
+                    // an application context for browser launches.
+                    LegadoLoginHost.appContext = appContext
+                    LegadoLoginEventBridge.start(scope)
                     dbRef = database
                     dbFilePath = File(dir, AppDatabase.DATABASE_NAME).absolutePath
                     initialized = true
@@ -370,6 +376,23 @@ object LegadoEngine {
             recordBridgeError("selfCheck.webViewUa", e)
             "ERROR ${e.legadoBrief()}"
         }
+        // Source login surface (G3, P5.3): the FlowBus consumer must
+        // be standing (a JS showLoginDialog with no consumer parks
+        // until its 30-minute timeout), and the login-capable sources
+        // are listed by name — flags and counts only, never values:
+        // login info and headers carry credentials.
+        out["sourceLogin"] = runCatching {
+            val loginSources = dao.all().filter { it.hasLogin() }
+            val states = LegadoLogin.loginStates(loginSources)
+            val loggedIn = states.values.count { it }
+            "ok: eventBridge=${LegadoLoginEventBridge.running}, " +
+                "loginSources=${loginSources.size} " +
+                "[${loginSources.take(6).joinToString { it.bookSourceName }}], " +
+                "withSavedLogin=$loggedIn"
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.sourceLogin", e)
+            "ERROR ${e.legadoBrief()}"
+        }
         out["recentBridgeErrors"] = recentBridgeErrors().take(6)
         out["recentAppLog"] = AppLog.logs.take(5).map { (_, message, throwable) ->
             val head = message.lineSequence().firstOrNull() ?: ""
@@ -512,6 +535,63 @@ object LegadoEngine {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .distinct()
+    }
+
+    // ------------------------------------------------------------------
+    // Source login (G3): form data, submit, button actions, web login
+    // ------------------------------------------------------------------
+
+    suspend fun getLoginData(sourceUrl: String): Map<String, Any?> {
+        requireInit()
+        return LegadoLogin.loginData(sourceOrThrow(sourceUrl))
+    }
+
+    suspend fun login(
+        sourceUrl: String,
+        data: Map<String, String>
+    ): Map<String, Any?> {
+        requireInit()
+        return LegadoLogin.login(sourceOrThrow(sourceUrl), data)
+    }
+
+    suspend fun runLoginAction(
+        sourceUrl: String,
+        action: String,
+        data: Map<String, String>
+    ): Map<String, Any?> {
+        requireInit()
+        return LegadoLogin.runLoginAction(sourceOrThrow(sourceUrl), action, data)
+    }
+
+    suspend fun openSourceLogin(sourceUrl: String): Map<String, Any?> {
+        requireInit()
+        return LegadoLogin.openSourceLogin(sourceOrThrow(sourceUrl))
+    }
+
+    suspend fun logoutSource(sourceUrl: String) {
+        requireInit()
+        LegadoLogin.logout(sourceOrThrow(sourceUrl))
+    }
+
+    /** The saved login header text (the fork dialog's 查看登录头 menu). */
+    suspend fun getLoginHeader(sourceUrl: String): Map<String, Any?> {
+        requireInit()
+        return mapOf("header" to sourceOrThrow(sourceUrl).getLoginHeader())
+    }
+
+    suspend fun removeLoginHeader(sourceUrl: String) {
+        requireInit()
+        sourceOrThrow(sourceUrl).removeLoginHeader()
+    }
+
+    /** Saved-login flags for a batch of sources (management list). */
+    suspend fun getLoginStates(sourceUrls: List<String>): Map<String, Boolean> {
+        requireInit()
+        val sources = db.bookSourceDao.getBookSources(sourceUrls)
+        val states = LegadoLogin.loginStates(sources)
+        // Unknown URLs report false rather than vanishing, so the
+        // caller can treat the answer as total over its input.
+        return sourceUrls.associateWith { states[it] ?: false }
     }
 
     // ------------------------------------------------------------------

@@ -202,7 +202,9 @@ class LegadoBrowserActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(56)
             ),
         )
-        if (request.saveResult) {
+        if (request.saveResult ||
+            request.resultMode == LegadoBrowserRequest.RESULT_LOGIN
+        ) {
             val okButton = TextView(this).apply {
                 text = "确定"
                 setTextColor(colorInk)
@@ -210,7 +212,18 @@ class LegadoBrowserActivity : Activity() {
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 setPadding(dp(12), dp(4), dp(6), dp(4))
-                setOnClickListener { saveVerificationResult() }
+                setOnClickListener {
+                    // Verification windows save their result; the
+                    // login window's confirm is the fork's isLogin
+                    // semantic — sync cookies, reload, stay open.
+                    if (request.resultMode ==
+                        LegadoBrowserRequest.RESULT_LOGIN
+                    ) {
+                        confirmLoginCookies()
+                    } else {
+                        saveVerificationResult()
+                    }
+                }
             }
             chromeBar.addView(
                 okButton,
@@ -539,8 +552,46 @@ class LegadoBrowserActivity : Activity() {
         SourceVerificationHelpShared.notifyResultArrived(key)
     }
 
+    /**
+     * The fork's login-window confirm (WebViewActivity isLogin):
+     * push the WebView's cookies into the engine store for the
+     * current page, then reload so the page itself renders in the
+     * logged-in state for the user to see before closing. The window
+     * stays open — finishing is the close path's job, not confirm's.
+     */
+    private fun confirmLoginCookies() {
+        val url = webView.url ?: request.url
+        val webCookie = CookieManager.getInstance().getCookie(url)
+        runCatching {
+            CookieStoreProviders.get()?.setCookie(url, webCookie)
+        }
+        webView.reload()
+    }
+
+    /**
+     * Close hand-back by request mode: verification windows fill/wake
+     * the verification result (fork checkResult); login windows wake
+     * the parked login JS (fork overlay onDispose ->
+     * notifyLoginFinished) and never touch the verification slot —
+     * a login in progress may itself be waiting on a captcha result
+     * under the same source key; auxiliary pages hand back nothing.
+     * Safe to call twice (close + onDestroy backstop): both engine
+     * signals are idempotent fills/markers.
+     */
+    private fun handBackOnClose() {
+        when (request.resultMode) {
+            LegadoBrowserRequest.RESULT_LOGIN ->
+                SourceVerificationHelpShared.notifyLoginFinished(
+                    request.sourceKey
+                )
+
+            LegadoBrowserRequest.RESULT_NONE -> Unit
+            else -> ensureResultFilled()
+        }
+    }
+
     private fun closeBrowser() {
-        ensureResultFilled()
+        handBackOnClose()
         finish()
     }
 
@@ -560,7 +611,7 @@ class LegadoBrowserActivity : Activity() {
         // Backstop for every exit path (including system teardown):
         // the fork fills the result from onDispose the same way.
         if (::request.isInitialized) {
-            runCatching { ensureResultFilled() }
+            runCatching { handBackOnClose() }
         }
         if (::webView.isInitialized) {
             (webView.parent as? ViewGroup)?.removeView(webView)

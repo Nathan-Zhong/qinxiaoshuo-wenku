@@ -84,8 +84,24 @@ class LegadoBrowserRequest(
     val refetchAfterSuccess: Boolean,
     val asBottomSheet: Boolean,
     val spec: WebViewLoadSpec,
+    /**
+     * What closing the browser hands back (P5.3 added the two
+     * non-verification modes): [RESULT_VERIFICATION] is the P5.2
+     * behaviour — fill/wake the verification result; [RESULT_LOGIN]
+     * is the fork's login window — closing signals login-finished
+     * (cookies were already synced on every page finish) and never
+     * touches the verification slot; [RESULT_NONE] is an auxiliary
+     * page (a login form's URL action) that hands back nothing.
+     */
+    val resultMode: String = RESULT_VERIFICATION,
     val stashedAt: Long = System.currentTimeMillis(),
-)
+) {
+    companion object {
+        const val RESULT_VERIFICATION = "verification"
+        const val RESULT_LOGIN = "login"
+        const val RESULT_NONE = "none"
+    }
+}
 
 /**
  * In-memory hand-off for browser requests: the load spec can carry a

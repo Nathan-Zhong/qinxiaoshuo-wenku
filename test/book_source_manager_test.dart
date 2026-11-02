@@ -71,6 +71,10 @@ void main() {
             }
           }
           return null;
+        case 'getLoginStates':
+          return <String, Object?>{'https://login.example': true};
+        case 'openSourceLogin':
+          return <String, Object?>{'kind': 'web'};
         case 'deleteSources':
           final urls = (args['sourceUrls'] as List).cast<String>();
           final before = store.length;
@@ -304,6 +308,55 @@ void main() {
     await pumpPage(tester);
     expect(find.text('0 个书源'), findsOneWidget);
     expect(find.textContaining('还没有导入书源'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('login source shows a login button and the logged-in marker', (
+    tester,
+  ) async {
+    store = [
+      <String, Object?>{
+        'sourceUrl': 'https://login.example',
+        'sourceName': '登录源',
+        'type': 0,
+        'enabled': true,
+        'enabledExplore': false,
+        'hasLogin': true,
+      },
+    ];
+    await pumpPage(tester);
+    // The states probe is only asked about login-capable sources.
+    final statesArgs = (callFor('getLoginStates').arguments as Map)
+        .cast<String, Object?>();
+    expect(statesArgs['sourceUrls'], ['https://login.example']);
+    // The marker rides the existing subtitle line, nothing new drawn.
+    expect(find.text('已登录 · 小说 · login.example'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('book-source-login-https://login.example')),
+      findsOneWidget,
+    );
+    // Tapping dispatches the login natively (web kind here).
+    await tester.tap(
+      find.byKey(const ValueKey('book-source-login-https://login.example')),
+    );
+    await tester.pumpAndSettle();
+    final loginArgs = (callFor('openSourceLogin').arguments as Map)
+        .cast<String, Object?>();
+    expect(loginArgs['sourceUrl'], 'https://login.example');
+    expect(find.textContaining('已打开登录页'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('plain sources get no login button', (tester) async {
+    await pumpPage(tester);
+    expect(
+      find.byKey(const ValueKey('book-source-login-https://a.example')),
+      findsNothing,
+    );
+    expect(
+      calls.where((call) => call.method == 'getLoginStates'),
+      isEmpty,
+    );
     expect(tester.takeException(), isNull);
   });
 }
