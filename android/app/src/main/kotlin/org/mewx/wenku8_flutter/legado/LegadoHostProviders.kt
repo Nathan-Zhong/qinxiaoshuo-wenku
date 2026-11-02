@@ -39,6 +39,10 @@ import io.legado.app.data.entities.Cookie
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.help.AppCacheManager
 import io.legado.app.help.CacheManager
+import io.legado.app.help.FileCacheProviders
+import io.legado.app.help.archive.ArchiveProviders
+import io.legado.app.help.image.BitmapImageOps
+import io.legado.app.help.ui.OpenUrlProviders
 import io.legado.app.help.ExploreKindsCacheProvider
 import io.legado.app.help.ExploreKindsCacheProviders
 import io.legado.app.help.IntentData
@@ -89,6 +93,7 @@ import io.legado.app.model.analyzeRule.AnalyzeRuleCore
 import io.legado.app.model.analyzeRule.AnalyzeRuleFactories
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
+import io.legado.app.model.script.JsBindingInjector
 import io.legado.app.model.script.JsEngineType
 import io.legado.app.model.script.JsEngines
 import io.legado.app.model.script.quickjs.QuickJsJsEngine
@@ -111,12 +116,24 @@ import kotlinx.coroutines.runBlocking
  * host code, following the fork's registration patterns (WebBookProvidersImpl
  * / JsEnginesAndroid / App.kt) without modifying fork code.
  *
- * Deliberately not registered in this phase (not touched by the minimal
- * loop): VerificationUi (login/captcha UI), BackstageWebView, Cronet,
- * plugin-source delegates (Manga/Video virtual sources stay inactive),
- * BookStorage/BookImageStorage (cache-download phase), ThemeConfig,
- * ImageController/ReadBookState (web API), Bitmap/Zip factories (local
- * file books), JsBindingInjector image ops (captcha image JS helpers).
+ * Deliberately not registered (audited 2026-11-03, see
+ * FIX2-imageops-report.md for reachability evidence): VerificationUi
+ * (login/captcha UI; only fires when a source actually demands a
+ * captcha), BackstageWebView (only fires for rules requesting WebView
+ * rendering), Cronet (OkHttp fallback is the fork's own default
+ * behaviour), plugin-source delegates (Manga/Video virtual sources
+ * stay inactive), BookStorage (only the cache-download / bookshelf
+ * TOC-updater paths call it, not the bridge's book chain),
+ * ThemeConfig, ImageController/ReadBookState (web API / reader UI),
+ * Bitmap/Zip/Pdf/FileBook factories (local file books, excluded by
+ * product decision).
+ *
+ * Registered since the 2026-11-03 ImageOps fix: JsBindingInjector
+ * image ops — JsBindings reads `JsBindingInjector.image`
+ * UNCONDITIONALLY for every JS eval, so leaving it unregistered killed
+ * all search/explore traffic while looking like "no results" — plus
+ * the FileCache / Archive / OpenUrl providers reachable through
+ * CacheManager and the JS extension surface (LegadoAuxProviders.kt).
  */
 
 /** Builds the engine Room database under the host's private storage. */
@@ -660,8 +677,18 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     CookieStoreProviders.register(LegadoCookieStoreProvider(cookieStore))
     registerSharedCookieJarBridge()
 
-    // JS stack. (JsBindingInjector image ops are not registered: they only
-    // serve captcha/image JS helpers, outside the minimal loop.)
+    // JS stack. Registration order mirrors the fork's
+    // registerAndroidJsEngines(): ImageOps FIRST, before any JS eval —
+    // JsBindings unconditionally injects JsBindingInjector.image into
+    // every bindings map, so a missing registration makes every eval
+    // (even "1+1") throw IllegalStateException. The aux providers sit
+    // alongside: CacheManager.delete() and the JS `cache`/`java`
+    // extension surface reach FileCacheProviders / ArchiveProviders /
+    // OpenUrlProviders the same unconditional way.
+    JsBindingInjector.registerImageOps(BitmapImageOps)
+    FileCacheProviders.impl = LegadoFileCache(dataDir)
+    ArchiveProviders.register(LegadoArchiveProvider(appContext))
+    OpenUrlProviders.register(LegadoOpenUrlProvider(appContext))
     JsEngines.registerProvider { type ->
         when (type) {
             JsEngineType.QUICKJS -> QuickJsJsEngine

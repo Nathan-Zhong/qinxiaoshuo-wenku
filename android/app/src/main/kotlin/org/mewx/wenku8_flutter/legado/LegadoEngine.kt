@@ -11,6 +11,7 @@ import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.exploreKinds
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
 import io.legado.app.model.analyzeRule.RuleData
+import io.legado.app.model.script.JsBindingInjector
 import io.legado.app.model.script.JsBindings
 import io.legado.app.model.script.JsEngines
 import io.legado.app.model.webBook.WebBook
@@ -117,10 +118,20 @@ object LegadoEngine {
      * one link at a time, so a device run can say WHERE the chain
      * breaks instead of just "empty": DB counts -> SearchScope source
      * resolution (via AppDbProviders, exactly like SearchModel) -> JS
-     * eval smoke -> explore kinds of the first enabled source ->
-     * AnalyzeUrl template resolution ({{key}}/{{page}} JS evaluation)
-     * -> a real WebBook search for 「斗破」. Every stage is isolated in
-     * runCatching; failures are reported as text, never thrown.
+     * eval smoke -> ImageOps registration + decode smoke -> explore
+     * kinds of the first enabled source -> AnalyzeUrl template
+     * resolution ({{key}}/{{page}} JS evaluation) -> a real WebBook
+     * search for 「斗破」 -> a real explore-books fetch for the first
+     * kind (the exact call the Discovery page makes). Every stage is
+     * isolated in runCatching; failures are reported as text, never
+     * thrown.
+     *
+     * Post-ImageOps-fix expectations (2026-11-03): on the broken build
+     * jsEval / searchUrlResolved / webBookSearch ALL failed with
+     * "IllegalStateException: ImageOps 未注册" because JsBindings reads
+     * the ImageOps registry for every eval; with BitmapImageOps
+     * registered they must read ok, imageOps must report a successful
+     * 1x1 decode, and exploreBooks must return the first kind's books.
      */
     suspend fun selfCheck(): Map<String, Any?> {
         requireInit()
@@ -142,6 +153,23 @@ object LegadoEngine {
             "ok: 1+1=${JsEngines.get().eval("1+1", JsBindings())}"
         }.getOrElse { e ->
             recordBridgeError("selfCheck.jsEval", e)
+            "ERROR ${e.legadoBrief()}"
+        }
+        out["imageOps"] = runCatching {
+            val ops = JsBindingInjector.imageOpsOrNull
+                ?: error("ImageOps not registered (JsBindingInjector)")
+            // Mint a real 1x1 PNG with the platform codec and run it
+            // through the registered implementation's decode + size:
+            // exercises the impl itself, not just the registry slot.
+            val png = java.io.ByteArrayOutputStream().also { outStream ->
+                android.graphics.Bitmap.createBitmap(
+                    1, 1, android.graphics.Bitmap.Config.ARGB_8888
+                ).compress(android.graphics.Bitmap.CompressFormat.PNG, 100, outStream)
+            }.toByteArray()
+            val size = ops.size(ops.decode(png))
+            "ok: registered (${ops.javaClass.name}), decode 1x1 png -> ${size["w"]}x${size["h"]}"
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.imageOps", e)
             "ERROR ${e.legadoBrief()}"
         }
         if (first == null) {
@@ -179,6 +207,24 @@ object LegadoEngine {
                 "ok: ${page.books.size} books, hasNext=${page.hasNextPage}"
             }.getOrElse { e ->
                 recordBridgeError("selfCheck.webBookSearch", e)
+                "ERROR ${e.legadoBrief()}"
+            }
+            out["exploreBooks"] = runCatching {
+                val kinds = first.exploreKinds()
+                val kind = kinds.firstOrNull()
+                val kindUrl = kind?.url
+                if (kind == null || kindUrl.isNullOrBlank()) {
+                    "skip: first source has no explore kind with a url"
+                } else {
+                    // The bridge's own getExploreBooks — the exact call
+                    // the Discovery page makes for the selected kind.
+                    val result = getExploreBooks(first.bookSourceUrl, kindUrl, 1)
+                    val books = result["books"] as? List<*>
+                    "ok: kind「${kind.title}」-> ${books?.size ?: 0} books, " +
+                        "hasMore=${result["hasMore"]}"
+                }
+            }.getOrElse { e ->
+                recordBridgeError("selfCheck.exploreBooks", e)
                 "ERROR ${e.legadoBrief()}"
             }
         }
