@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import io.flutter.embedding.engine.plugins.FlutterPlugin
+import io.flutter.embedding.engine.plugins.activity.ActivityAware
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -20,6 +22,7 @@ import kotlinx.coroutines.launch
 import org.mewx.wenku8_flutter.legado.LegadoBridgeException
 import org.mewx.wenku8_flutter.legado.LegadoDto
 import org.mewx.wenku8_flutter.legado.LegadoEngine
+import org.mewx.wenku8_flutter.legado.LegadoUiHost
 import org.mewx.wenku8_flutter.legado.legadoBrief
 import org.mewx.wenku8_flutter.legado.legadoErrorCode
 
@@ -38,8 +41,17 @@ import org.mewx.wenku8_flutter.legado.legadoErrorCode
  *
  * Threading: engine work runs on [LegadoEngine.scope] (IO); channel
  * results and event sinks are always delivered on the main thread.
+ *
+ * The plugin is also the verification UI's bridgehead (P5.2): its
+ * MethodChannel is registered in [LegadoUiHost] so the engine's
+ * VerificationUiProvider can call INTO Dart (image captcha sheet),
+ * and ActivityAware keeps [LegadoUiHost.activity] pointing at the
+ * foreground Activity the visible browser launches from. Channels of
+ * every attached engine are kept (the audio-service engine's Dart
+ * isolate installs no UI handler and answers notImplemented; the
+ * provider falls through to the UI engine's channel).
  */
-class LegadoEnginePlugin : FlutterPlugin {
+class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
     private var methodChannel: MethodChannel? = null
     private var searchEventChannel: EventChannel? = null
     private var taskEventChannel: EventChannel? = null
@@ -59,6 +71,7 @@ class LegadoEnginePlugin : FlutterPlugin {
         appContext = binding.applicationContext
         methodChannel = MethodChannel(binding.binaryMessenger, METHOD_CHANNEL).also {
             it.setMethodCallHandler { call, result -> onMethodCall(call, result) }
+            LegadoUiHost.registerChannel(it)
         }
         searchEventChannel = EventChannel(binding.binaryMessenger, SEARCH_EVENTS_CHANNEL).also {
             it.setStreamHandler(object : EventChannel.StreamHandler {
@@ -87,6 +100,7 @@ class LegadoEnginePlugin : FlutterPlugin {
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         searchSessions.values.forEach { it.shutdown() }
         searchSessions.clear()
+        methodChannel?.let { LegadoUiHost.unregisterChannel(it) }
         methodChannel?.setMethodCallHandler(null)
         searchEventChannel?.setStreamHandler(null)
         taskEventChannel?.setStreamHandler(null)
@@ -96,6 +110,28 @@ class LegadoEnginePlugin : FlutterPlugin {
         searchSink = null
         taskSink = null
         appContext = null
+    }
+
+    // ------------------------------------------------------------------
+    // ActivityAware: foreground Activity for the visible browser
+    // ------------------------------------------------------------------
+
+    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+        LegadoUiHost.activity = binding.activity
+    }
+
+    override fun onDetachedFromActivityForConfigChanges() {
+        LegadoUiHost.activity = null
+    }
+
+    override fun onReattachedToActivityForConfigChanges(
+        binding: ActivityPluginBinding
+    ) {
+        onAttachedToActivity(binding)
+    }
+
+    override fun onDetachedFromActivity() {
+        LegadoUiHost.activity = null
     }
 
     // ------------------------------------------------------------------

@@ -328,6 +328,48 @@ object LegadoEngine {
             recordBridgeError("selfCheck.imageResolve", e)
             "ERROR ${e.legadoBrief()}"
         }
+        // WebView pair probes (G4/G2/G11, P5.2): the backstage probe
+        // runs a REAL headless WebView round-trip — load a synthetic
+        // page, evaluate the default outerHTML script, and require
+        // the marker back — which is the exact machinery 得奇's
+        // webJs content depends on; a registration line alone would
+        // also pass on a build whose WebView creation is broken. The
+        // verification probe can only check registration (popping a
+        // real captcha from a self-check would be a UI ambush; the
+        // dialog/browser paths are proven by the acceptance sources).
+        out["backstageWebView"] = runCatching {
+            val response = io.legado.app.help.http.BackstageWebViewProviders.get()
+                .create(
+                    html = "<html><head><title>p52</title></head>" +
+                        "<body>P52_PROBE</body></html>",
+                    javaScript = "document.documentElement.outerHTML",
+                    delayTime = 200L
+                )
+                .getStrResponse()
+            val body = response.body ?: ""
+            if (body.contains("P52_PROBE")) {
+                "ok: headless WebView round-trip returned the probe page"
+            } else {
+                "ERROR unexpected body: ${body.take(120)}"
+            }
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.backstageWebView", e)
+            "ERROR ${e.legadoBrief()}"
+        }
+        out["verificationUi"] = runCatching {
+            val provider = io.legado.app.help.source.VerificationUiProviders.get()
+            "ok: registered (${provider.javaClass.name})"
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.verificationUi", e)
+            "ERROR ${e.legadoBrief()}"
+        }
+        out["webViewUa"] = runCatching {
+            val ua = io.legado.app.help.UserAgentProviders.getWebViewUA()
+            "ok: ${ua.take(110)}"
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.webViewUa", e)
+            "ERROR ${e.legadoBrief()}"
+        }
         out["recentBridgeErrors"] = recentBridgeErrors().take(6)
         out["recentAppLog"] = AppLog.logs.take(5).map { (_, message, throwable) ->
             val head = message.lineSequence().firstOrNull() ?: ""

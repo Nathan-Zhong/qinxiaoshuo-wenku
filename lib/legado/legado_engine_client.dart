@@ -38,6 +38,19 @@ class LegadoEngineClient {
 
   int _taskIdCounter = 0;
 
+  /// Registers the handler for platform-initiated calls on the bridge
+  /// channel (P5.2: the engine's verification UI asks Dart to show the
+  /// image-captcha sheet and awaits the entered code as the call
+  /// result). One handler per client; passing null detaches. Ordinary
+  /// Dart -> native calls are unaffected.
+  void setPlatformCallHandler(
+    Future<Object?> Function(MethodCall call)? handler,
+  ) {
+    _methodChannel.setMethodCallHandler(
+      handler == null ? null : (call) => handler(call),
+    );
+  }
+
   /// Allocates the next task id. Ids are monotonic per client instance;
   /// pass one explicitly to task-starting methods when the caller needs
   /// to know it before the native side answers.

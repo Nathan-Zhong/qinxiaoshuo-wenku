@@ -127,16 +127,13 @@ import kotlinx.coroutines.runBlocking
  * / JsEnginesAndroid / App.kt) without modifying fork code.
  *
  * Deliberately not registered (audited 2026-11-03, see
- * FIX2-imageops-report.md for reachability evidence): VerificationUi
- * (login/captcha UI; only fires when a source actually demands a
- * captcha), BackstageWebView (only fires for rules requesting WebView
- * rendering), Cronet (OkHttp fallback is the fork's own default
- * behaviour), plugin-source delegates (Manga/Video virtual sources
- * stay inactive), BookStorage (only the cache-download / bookshelf
- * TOC-updater paths call it, not the bridge's book chain),
- * ThemeConfig, ImageController/ReadBookState (web API / reader UI),
- * Bitmap/Zip/Pdf/FileBook factories (local file books, excluded by
- * product decision).
+ * FIX2-imageops-report.md for reachability evidence): Cronet (OkHttp
+ * fallback is the fork's own default behaviour), plugin-source
+ * delegates (Manga/Video virtual sources stay inactive), BookStorage
+ * (only the cache-download / bookshelf TOC-updater paths call it, not
+ * the bridge's book chain), ThemeConfig, ImageController/ReadBookState
+ * (web API / reader UI), Bitmap/Zip/Pdf/FileBook factories (local
+ * file books, excluded by product decision).
  *
  * Registered since the 2026-11-03 ImageOps fix: JsBindingInjector
  * image ops — JsBindings reads `JsBindingInjector.image`
@@ -151,6 +148,15 @@ import kotlinx.coroutines.runBlocking
  * loginUrl), so an unregistered Toaster threw IllegalStateException
  * out of the eval; AppLog without a host kept its memory ring but
  * stamped entries with time 0 and never persisted anything.
+ *
+ * Registered since P5.2 (2026-11-03): the WebView pair (G4/G2/G1) —
+ * BackstageWebViewProviders (headless WebView for webView/webJs
+ * rules; an unregistered factory made every such request fail) and
+ * VerificationUiProviders (image captcha -> Dart sheet, visible
+ * browser -> LegadoBrowserActivity; unregistered it threw out of
+ * SourceVerificationHelpShared the same way), plus the WebView UA
+ * (G11: [LegadoWebViewUa] serves the real
+ * WebSettings default UA instead of the desktop HTTP UA).
  */
 
 /** Builds the engine Room database under the host's private storage. */
@@ -924,7 +930,27 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     }
     JsCryptoProviders.register(JsCryptoProviderJvm)
     ExploreKindsCacheProviders.impl = LegadoExploreKindsCache(File(dataDir, "explore"))
-    UserAgentProviders.impl = UserAgentProvider { LegadoEngineDefaults.userAgent }
+    // UA pair: the HTTP UA stays the pinned desktop string; the
+    // WebView UA (G11, P5.2) is the platform WebView's real default,
+    // fetched lazily on the main thread — the fork's
+    // AndroidUserAgentProvider splits the two the same way, and sites
+    // that serve different pages per UA family otherwise hand the
+    // WebView flows a desktop page their rules do not match.
+    val legadoUserAgentProvider = object : UserAgentProvider {
+        override fun get(): String = LegadoEngineDefaults.userAgent
+        override fun getWebViewUA(): String = LegadoWebViewUa.get(appContext)
+    }
+    UserAgentProviders.impl = legadoUserAgentProvider
+    UserAgentProviders.register(legadoUserAgentProvider)
+    // WebView pair (G4/G2/G1, P5.2): headless WebView factory for
+    // webView/webJs rules, and the verification UI (captcha -> Dart
+    // sheet, visible browser -> LegadoBrowserActivity). Registered
+    // here, inside engine init, before any engine call can reach
+    // them — the registries' own contract.
+    registerHostBackstageWebView(appContext)
+    io.legado.app.help.source.VerificationUiProviders.register(
+        LegadoVerificationUiProvider(appContext)
+    )
     OkHttpProxyClientProviders.impl = object : OkHttpProxyClientProvider {
         // MUST stay fully qualified (mirrors the fork's JsEnginesAndroid
         // verbatim): inside this object the unqualified name resolves to
@@ -934,6 +960,47 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
         // (device-verified 2026-11-03, see FIX3-stack-report.md).
         override fun getProxyClient(proxy: String?): KmpHttpClient =
             io.legado.app.help.http.getProxyClient(proxy)
+    }
+}
+
+/**
+ * The platform WebView's default UA (G11), mirroring the fork's
+ * AndroidUserAgentProvider.getWebViewUA. [android.webkit.WebSettings]
+ * requires the main thread, so off-main callers hop through a Handler
+ * with a bounded wait; any failure (or timeout) falls back to the
+ * pinned HTTP UA rather than blocking an engine call. The value is
+ * cached after the first successful read — it cannot change within a
+ * process.
+ */
+object LegadoWebViewUa {
+    @Volatile
+    private var cached: String? = null
+
+    fun get(context: Context): String {
+        cached?.let { return it }
+        val computed = runCatching {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                android.webkit.WebSettings.getDefaultUserAgent(context)
+            } else {
+                val latch = java.util.concurrent.CountDownLatch(1)
+                val holder = arrayOfNulls<String>(1)
+                Handler(Looper.getMainLooper()).post {
+                    holder[0] = runCatching {
+                        android.webkit.WebSettings.getDefaultUserAgent(context)
+                    }.getOrNull()
+                    latch.countDown()
+                }
+                if (latch.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                    holder[0]
+                } else {
+                    null
+                }
+            }
+        }.getOrNull()
+        val ua = computed?.takeIf { it.isNotBlank() }
+            ?: LegadoEngineDefaults.userAgent
+        cached = ua
+        return ua
     }
 }
 

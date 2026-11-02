@@ -11,6 +11,7 @@ import 'app_licenses.dart';
 import 'catalog.dart';
 import 'legacy_wenku_repository.dart';
 import 'legado/legado_books.dart';
+import 'legado/legado_verification_ui.dart';
 import 'library_state.dart';
 import 'local_books.dart';
 import 'local_series_actions.dart';
@@ -82,6 +83,16 @@ Future<void> main() async {
       : const DemoNovelRepository();
   if (repository is OfflineNovelRepository && repository.local != null) {
     await reconcileLocalSeries(repository.local!, state);
+  }
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    // Engine verification UI (P5.2): the native side calls into Dart
+    // when a source's JS asks the user for an image captcha. The
+    // client already exists (created by LegadoBooks.dispatch above);
+    // the sheet is presented over the root navigator.
+    LegadoVerificationUi.install(
+      client: LegadoBooks.client,
+      contextProvider: () => LegadoUiHost.navigatorKey.currentContext,
+    );
   }
   final features = account != null
       ? WenkuFeatures(
@@ -209,6 +220,7 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
         final typefaceChanged = _lastTypeface != state.appFontId;
         _lastTypeface = state.appFontId;
         return MaterialApp(
+          navigatorKey: LegadoUiHost.navigatorKey,
           title: '小说文库',
           locale: state.language.locale ?? _systemLocale,
           supportedLocales: const [
