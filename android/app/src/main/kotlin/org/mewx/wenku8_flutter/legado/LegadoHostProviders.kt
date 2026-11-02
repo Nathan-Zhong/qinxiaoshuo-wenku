@@ -2,11 +2,18 @@ package org.mewx.wenku8_flutter.legado
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
+import android.util.Log
+import android.widget.Toast
 import androidx.room3.Room
 import androidx.sqlite.driver.AndroidSQLiteDriver
 import io.legado.app.constant.AndroidIdHolder
+import io.legado.app.constant.AppLog
+import io.legado.app.constant.AppLogHost
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.AppDatabaseProvider
 import io.legado.app.data.AppDatabaseProviders
@@ -62,6 +69,9 @@ import io.legado.app.help.book.ContentProcessorProviders
 import io.legado.app.help.config.AppConfigAccessor
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProvider
+import io.legado.app.help.config.SourceConfig
+import io.legado.app.help.toast.Toaster
+import io.legado.app.help.toast.Toasters
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.file.registerAndroidAppFilesDir
 import io.legado.app.help.http.CookieStoreBase
@@ -134,6 +144,13 @@ import kotlinx.coroutines.runBlocking
  * all search/explore traffic while looking like "no results" — plus
  * the FileCache / Archive / OpenUrl providers reachable through
  * CacheManager and the JS extension surface (LegadoAuxProviders.kt).
+ *
+ * Registered since P5.1 (2026-11-03): the Toaster + AppLog host pair
+ * (G6) — JsExtensions calls `Toasters.get()` UNCONDITIONALLY for every
+ * `java.toast(...)` in source JS (e.g. the first line of 西瓜书屋's
+ * loginUrl), so an unregistered Toaster threw IllegalStateException
+ * out of the eval; AppLog without a host kept its memory ring but
+ * stamped entries with time 0 and never persisted anything.
  */
 
 /** Builds the engine Room database under the host's private storage. */
@@ -580,16 +597,20 @@ object LegadoIntentDataAccessor : IntentDataAccessor {
 /**
  * SourceHelpAccessor: the fork bridges "currently reading/audio book source"
  * lookups and SourceConfig cleanup. The host keeps its bookshelf on the Dart
- * side, so there is no reading book to look up; deletion cleanup reduces to
- * clearing cached source variables (AppCacheManager lives in :data).
+ * side, so there is no reading book to look up; deletion cleanup mirrors the
+ * fork's WebBookProvidersImpl verbatim: drop the source's score row
+ * (SourceConfig lives in :data, caches-table backed) and clear cached
+ * source variables (AppCacheManager lives in :data).
  */
 object LegadoSourceHelpAccessor : SourceHelpAccessor {
     override fun getCachedReadingBookSource(key: String?): BookSource? = null
     override fun getCachedAudioBookSource(key: String?): BookSource? = null
     override fun onBookSourceDeleted(key: String) {
+        SourceConfig.removeSource(key)
         AppCacheManager.clearSourceVariables()
     }
     override fun onBookSourcesDeleted(keys: List<String>) {
+        SourceConfig.removeSources(keys)
         AppCacheManager.clearSourceVariables()
     }
 }
@@ -640,6 +661,146 @@ class LegadoExploreKindsCache(private val cacheDir: File) : ExploreKindsCachePro
 }
 
 /**
+ * [Toaster] with the fork's AndroidToaster semantics (core
+ * Toaster.android.kt): a real system Toast shown on the main thread,
+ * the previous one cancelled first so toasts never queue up. On top of
+ * the fork behaviour the host also mirrors every message into the
+ * AppLog memory ring (tag "Toaster") and Logcat, so a `java.toast()`
+ * fired deep inside source JS leaves device-side evidence the
+ * self-check can read back — the ring/Logcat floor the P5.1 spec asks
+ * for, with the visible Toast being the fork's own behaviour, not a
+ * new channel.
+ */
+class LegadoToaster(context: Context) : Toaster {
+    private val appContext: Context = context.applicationContext
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    @Volatile
+    private var current: Toast? = null
+
+    override fun toast(message: String) {
+        record(message)
+        showOnUiThread(message, Toast.LENGTH_SHORT)
+    }
+
+    override fun toastLong(message: String) {
+        record(message)
+        showOnUiThread(message, Toast.LENGTH_LONG)
+    }
+
+    private fun record(message: String) {
+        Log.i(TAG_TOAST, message)
+        // putNotSave: memory ring + DEBUG logcat only. AppLog.put with
+        // toast=true would call back into this toaster via the host —
+        // putNotSave(toast=false) cannot loop.
+        runCatching { AppLog.putNotSave(message, null, false, TAG_TOAST) }
+    }
+
+    private fun showOnUiThread(message: String, duration: Int) {
+        mainHandler.post {
+            runCatching {
+                current?.cancel()
+                val toast = Toast.makeText(appContext, message, duration)
+                current = toast
+                toast.show()
+            }
+        }
+    }
+
+    private companion object {
+        const val TAG_TOAST = "LegadoToast"
+    }
+}
+
+/**
+ * [AppLogHost] mirroring the fork's registerAndroidAppLogHost
+ * (app AppLogAndroid.kt): wall clock + default timezone from the
+ * platform, `write` persists (the fork's LogUtils.d writes a rolling
+ * log file; the host appends to `logs/applog.log` under the engine
+ * data dir, capped by delete-and-restart rotation, and mirrors to
+ * Logcat), `toast` delegates to the shared [LegadoToaster] (the fork
+ * shows it via App.toastOnUi), `debugPrint` goes to Logcat on
+ * debuggable builds (the fork gates on BuildConfig.DEBUG; the host
+ * reads FLAG_DEBUGGABLE, the runtime equivalent).
+ *
+ * `recordLog`: the fork reads its AppConfig pref (a user-facing
+ * settings switch the host does not surface). The host returns true so
+ * putDebug diagnostics stay available on this single-user build; the
+ * memory ring the self-check reads is fed by put() either way.
+ */
+class LegadoAppLogHost(
+    private val logFile: File,
+    private val toaster: LegadoToaster,
+    private val debuggable: Boolean
+) : AppLogHost {
+
+    private val writeLock = Any()
+
+    override fun currentTimeMillis(): Long = System.currentTimeMillis()
+
+    override fun timeZoneOffsetMillis(): Long =
+        java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()).toLong()
+
+    override val recordLog: Boolean get() = true
+
+    override fun write(tag: String, message: String) {
+        Log.d(tag, message)
+        runCatching {
+            synchronized(writeLock) {
+                logFile.parentFile?.mkdirs()
+                if (logFile.isFile && logFile.length() > MAX_LOG_BYTES) {
+                    logFile.delete()
+                }
+                logFile.appendText(
+                    "${System.currentTimeMillis()} $tag: $message\n",
+                    Charsets.UTF_8
+                )
+            }
+        }
+    }
+
+    override fun toast(message: String) {
+        toaster.toast(message)
+    }
+
+    override fun debugPrint(tag: String, message: String, throwable: Throwable?) {
+        if (debuggable) {
+            Log.e(tag, message, throwable)
+        }
+    }
+
+    private companion object {
+        const val MAX_LOG_BYTES = 1_000_000L
+    }
+}
+
+/**
+ * Value for [AndroidIdHolder] (G20②): the system ANDROID_ID when it
+ * can be read, otherwise a random UUID persisted in the engine data
+ * dir so it stays stable across restarts. The fork falls back to the
+ * literal string "null" (JsEnginesAndroid), which makes every
+ * ANDROID_ID-less device share one id; the persisted UUID keeps the
+ * fallback per-install unique instead. A system value that is blank
+ * or the literal "null" (some ROMs return it as a string) counts as
+ * unreadable.
+ */
+fun resolveHostAndroidId(context: Context, dataDir: File): String {
+    val systemId = runCatching {
+        Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+    }.getOrNull()
+    if (!systemId.isNullOrBlank() && systemId != "null") return systemId
+    val file = File(dataDir, "android_id_fallback")
+    val persisted = runCatching { file.readText(Charsets.UTF_8).trim() }.getOrNull()
+    if (!persisted.isNullOrBlank()) return persisted
+    val generated = java.util.UUID.randomUUID().toString()
+    runCatching {
+        dataDir.mkdirs()
+        file.writeText(generated, Charsets.UTF_8)
+    }
+    return generated
+}
+
+/**
  * Registers every provider the minimal loop needs, in the same relative
  * order the fork uses (JsEngines registration before WebBook providers,
  * cookie store before the shared cookie-jar bridge). Idempotent: engine
@@ -651,6 +812,24 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     registerAndroidAppFilesDir(appContext)
     PreferenceProviders.register(LegadoPreferenceProvider(appContext))
     DataStorageProviders.register(LegadoDataStorage(dataDir))
+
+    // Toast/AppLog hooks (G6, P5.1): registered FIRST among the
+    // behaviour providers, like the fork's App.onCreate — engine
+    // internals may AppLog.put from any later registration step on,
+    // and any JS eval (search/explore/login scripts) may call
+    // java.toast() through Toasters.get(). One shared toaster instance
+    // backs both registries so AppLog.put(toast=true) and
+    // java.toast() show through the same single-Toast slot.
+    val legadoToaster = LegadoToaster(appContext)
+    Toasters.register(legadoToaster)
+    AppLog.registerHost(
+        LegadoAppLogHost(
+            logFile = File(dataDir, "logs/applog.log"),
+            toaster = legadoToaster,
+            debuggable = appContext.applicationInfo.flags and
+                ApplicationInfo.FLAG_DEBUGGABLE != 0
+        )
+    )
 
     val accessor = LegadoDbAccessor(db)
     AppDbProviders.register(accessor)
@@ -702,9 +881,9 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     RuleBigDataProviders.impl = RuleBigDataShared(
         File(dataDir, "ruleData/book").apply { mkdirs() }.absolutePath
     )
-    AndroidIdHolder.value = runCatching {
-        Settings.Secure.getString(appContext.contentResolver, Settings.Secure.ANDROID_ID)
-    }.getOrNull() ?: "null"
+    // G20②: persisted-UUID fallback instead of the fork's literal
+    // "null" when ANDROID_ID cannot be read (see resolveHostAndroidId).
+    AndroidIdHolder.value = resolveHostAndroidId(appContext, dataDir)
     SourceCacheProviders.impl = object : SourceCacheProvider {
         override fun get(key: String) = CacheManager.get(key)
         override fun put(key: String, value: String) = CacheManager.put(key, value)

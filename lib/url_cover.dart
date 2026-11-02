@@ -11,43 +11,81 @@ import 'package:flutter/foundation.dart';
 /// function is injected so tests never touch the network.
 ///
 /// Wenku books never come here — they keep the native LegacyCover
-/// channel. Sources that need special headers / anti-hotlink handling
-/// may still fail; callers fall back to the generated text cover then.
+/// channel. Callers whose fetch fails fall back to the generated text
+/// cover.
+///
+/// Since P5.1 (G7) a load may carry headers and a resolved fetch URL
+/// produced by the engine's AnalyzeUrl resolution (the source's
+/// Referer / User-Agent / per-image `,{...}` suffix rules applied
+/// natively). Bytes are always cached under the cover's own URL —
+/// the identity every caller peeks by — while a headered load uses a
+/// separate internal failure/pending key, so a failed resolved
+/// attempt never poisons the bare-URL retry window the caller falls
+/// back to.
 abstract final class UrlCover {
   static final _cache = UrlCoverCache(
-    request: (url) => (debugRequestOverride ?? _fetchCoverBytes)(url),
+    request: (url, headers) =>
+        (debugRequestOverride ?? _fetchCoverBytes)(url, headers),
   );
 
   /// Tests replace the real HTTP fetch through here so no test ever
   /// touches the network; production code never sets this.
   @visibleForTesting
-  static Future<Uint8List?> Function(String url)? debugRequestOverride;
+  static Future<Uint8List?> Function(String url, Map<String, String> headers)?
+  debugRequestOverride;
 
   static Uint8List? peek(String url) => _cache.peek(url);
-  static Future<Uint8List> load(String url) => _cache.load(url);
+
+  /// Loads the cover at [url]; [fetchUrl] (defaults to [url]) is the
+  /// URL actually requested and [headers] are sent with it.
+  static Future<Uint8List> load(
+    String url, {
+    Map<String, String> headers = const {},
+    String? fetchUrl,
+  }) => _cache.load(url, headers: headers, fetchUrl: fetchUrl);
 
   /// Test/seeding hook, mirroring LegacyCover.seedLocalBytes: an explicit
   /// seed wins over any in-flight request for the same URL.
   static void seed(String url, Uint8List bytes) => _cache.seed(url, bytes);
 }
 
-/// Plain browser-style GET for a cover image: no cookies, no Referer —
-/// just a browser UA, tight timeouts and a hard size cap, so a hostile
-/// or dead image host can never hang or bloat cover loading.
-Future<Uint8List?> _fetchCoverBytes(String url) async {
+/// Browser-style GET for a cover image with tight timeouts and a
+/// hard size cap, so a hostile or dead image host can never hang or
+/// bloat cover loading. [headers] are the G7-resolved source headers
+/// (Referer is the anti-hotlink key); a User-Agent among them wins
+/// over the built-in default.
+Future<Uint8List?> _fetchCoverBytes(
+  String url,
+  Map<String, String> headers,
+) async {
   final uri = Uri.tryParse(url);
   if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
     throw const FormatException('封面地址无效');
   }
+  var userAgent =
+      'Mozilla/5.0 (Linux; Android 14; Xiaomi 14) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36';
+  for (final entry in headers.entries) {
+    if (entry.key.toLowerCase() == 'user-agent' && entry.value.isNotEmpty) {
+      userAgent = entry.value;
+    }
+  }
   final client = HttpClient()
     ..connectionTimeout = const Duration(seconds: 5)
-    ..userAgent =
-        'Mozilla/5.0 (Linux; Android 14; Xiaomi 14) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36';
+    ..userAgent = userAgent;
   try {
     final request = await client.getUrl(uri).timeout(
       const Duration(seconds: 10),
     );
+    headers.forEach((name, value) {
+      if (value.isEmpty || name.toLowerCase() == 'user-agent') return;
+      try {
+        request.headers.set(name, value);
+      } catch (_) {
+        // A header name the platform stack refuses must not fail the
+        // whole fetch.
+      }
+    });
     final response = await request.close().timeout(
       const Duration(seconds: 10),
     );
@@ -78,7 +116,8 @@ class UrlCoverCache {
     DateTime Function()? now,
   }) : now = now ?? DateTime.now,
        assert(maxBytes > 0 && maxEntries > 0);
-  final Future<Uint8List?> Function(String) request;
+  final Future<Uint8List?> Function(String url, Map<String, String> headers)
+  request;
   final int maxBytes, maxEntries;
   final Duration retryDelay;
   final DateTime Function() now;
@@ -122,30 +161,40 @@ class UrlCoverCache {
     }
   }
 
-  Future<Uint8List> load(String url) {
+  /// Loads the cover bytes for [url]. [fetchUrl] (defaults to [url])
+  /// is what the request function actually fetches and [headers] go
+  /// out with it; bytes are stored under [url] either way. A headered
+  /// load's failure window and in-flight slot live under a header-
+  /// signature key, separate from the bare load of the same URL.
+  Future<Uint8List> load(
+    String url, {
+    Map<String, String> headers = const {},
+    String? fetchUrl,
+  }) {
     if (url.isEmpty) return Future.error(ArgumentError('Invalid cover URL'));
     final entry = _touch(url);
     if (entry != null) return entry.future;
-    final failure = _failures[url];
+    final key = _cacheKey(url, headers);
+    final failure = _failures[key];
     if (failure != null && now().isBefore(failure.$1)) return failure.$2;
-    _failures.remove(url);
-    final pending = _pending[url];
+    _failures.remove(key);
+    final pending = _pending[key];
     if (pending != null) return pending;
     final completer = Completer<Uint8List>();
     final future = completer.future;
-    _pending[url] = future;
+    _pending[key] = future;
     unawaited(() async {
       try {
-        final image = await request(url);
+        final image = await request(fetchUrl ?? url, headers);
         if (image == null || image.isEmpty) throw const FormatException('封面为空');
         final bytes = image.asUnmodifiableView();
-        if (identical(_pending[url], future)) {
+        if (identical(_pending[key], future)) {
           _store(url, _UrlCoverEntry(bytes, future));
         }
         completer.complete(bytes);
       } catch (error, stack) {
-        if (identical(_pending[url], future)) {
-          _failures[url] = (now().add(retryDelay), future);
+        if (identical(_pending[key], future)) {
+          _failures[key] = (now().add(retryDelay), future);
           // Failed URLs must not grow forever while browsing offline either.
           while (_failures.length > maxEntries) {
             _failures.remove(_failures.keys.first);
@@ -153,10 +202,21 @@ class UrlCoverCache {
         }
         completer.completeError(error, stack);
       } finally {
-        if (identical(_pending[url], future)) _pending.remove(url);
+        if (identical(_pending[key], future)) _pending.remove(key);
       }
     }());
     return future;
+  }
+
+  /// Bare loads key by the URL alone (the pre-G7 behaviour, bit for
+  /// bit); a headered load keys by URL + sorted header signature.
+  String _cacheKey(String url, Map<String, String> headers) {
+    if (headers.isEmpty) return url;
+    final names = headers.keys.toList()..sort();
+    final signature = names
+        .map((name) => '$name\x00${headers[name]}')
+        .join('\x00');
+    return '$url\x00$signature';
   }
 }
 

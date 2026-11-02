@@ -31,8 +31,10 @@ import org.mewx.wenku8_flutter.legado.legadoErrorCode
  * provider registration), source management (list/get/upsert/import/
  * delete/enable/meta/groups), explore (getExploreKinds /
  * getExploreBooks), streaming multi-source search over the search
- * EventChannel, and the book chain getBookInfo / getChapterList /
- * getChapterContent. All other contract methods return notImplemented.
+ * EventChannel, the book chain getBookInfo / getChapterList /
+ * getChapterContent, and resolveImageRequest (G7: real URL + headers
+ * for source images via the engine's AnalyzeUrl). All other contract
+ * methods return notImplemented.
  *
  * Threading: engine work runs on [LegadoEngine.scope] (IO); channel
  * results and event sinks are always delivered on the main thread.
@@ -301,6 +303,13 @@ class LegadoEnginePlugin : FlutterPlugin {
                     chapterVariable = call.argument<String>("chapterVariable"),
                     nextChapterUrl = call.argument<String>("nextChapterUrl"),
                     applyReplace = call.argument<Boolean>("applyReplace") ?: false
+                )
+            }
+
+            "resolveImageRequest" -> launchEngine(result) {
+                LegadoEngine.resolveImageRequest(
+                    origin = reqString(call, "origin"),
+                    url = reqString(call, "url")
                 )
             }
 

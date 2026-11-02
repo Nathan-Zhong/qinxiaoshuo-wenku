@@ -301,6 +301,33 @@ object LegadoEngine {
             recordBridgeError("selfCheck.perSourceSearch", e)
             listOf("ERROR ${e.legadoBrief()}")
         }
+        // Image-request resolution probe (G7, P5.1): proves the two
+        // mechanisms anti-hotlink sources rely on, with no network —
+        // (1) a plain URL against the first enabled source picks up
+        // the source-level header stack (159txt's Referer/User-Agent
+        // live there); (2) a URL carrying the per-image
+        // `,{headers:{...}}` option suffix 漫蛙's content rule appends
+        // to every chapter image comes back with the suffix consumed
+        // and the header applied. Header VALUES are never printed
+        // (login headers can carry cookies) — keys only; the probe
+        // URLs are synthetic constants, safe to print in full.
+        out["imageResolve"] = runCatching {
+            if (first == null) {
+                "skip: no enabled source"
+            } else {
+                val probeUrl = "https://example.com/p51-probe.jpg"
+                val probeSuffixed = probeUrl +
+                    ",{\"headers\":{\"Referer\":\"https://probe.example/\"}}"
+                val plain = resolveImageRequest(first.bookSourceUrl, probeUrl)
+                val suffixed = resolveImageRequest(first.bookSourceUrl, probeSuffixed)
+                "source=${first.bookSourceName} | " +
+                    "plain: ${describeImageProbe(plain)} | " +
+                    "suffixed: ${describeImageProbe(suffixed)}"
+            }
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.imageResolve", e)
+            "ERROR ${e.legadoBrief()}"
+        }
         out["recentBridgeErrors"] = recentBridgeErrors().take(6)
         out["recentAppLog"] = AppLog.logs.take(5).map { (_, message, throwable) ->
             val head = message.lineSequence().firstOrNull() ?: ""
@@ -611,6 +638,63 @@ object LegadoEngine {
             "images" to images,
             "isImageChapter" to isImageChapter
         )
+    }
+
+    // ------------------------------------------------------------------
+    // Image requests (G7): the fork's SourceImageHeaders path
+    // ------------------------------------------------------------------
+
+    /**
+     * Resolves the real fetch target for a source image (cover today,
+     * manga pages when the image reader lands), mirroring the fork's
+     * SourceImageHeaders.resolveSourceRequest (its :ui module is not
+     * vendored): the source is looked up through [SourceHelp.getSource]
+     * — the cache-first lookup the fork itself uses for cover/image
+     * loads, null when the origin is unknown — an AnalyzeUrl is built
+     * through the registered factory, and the engine's own
+     * AnalyzeUrlCore.resolveImageRequest() applies the URL option
+     * suffix (`,{headers:{...}}` / proxy / webView flags), the source
+     * header, the login header and the domain cookie stack, exactly
+     * like Legado itself. The synthetic "proxy" pseudo-header is
+     * stripped afterwards, as the fork does.
+     *
+     * Never throws: an unknown origin — or a resolution failure inside
+     * a broken source — returns the original URL with no headers, so
+     * the Dart side falls back to the bare fetch that was the pre-G7
+     * behaviour instead of losing the image outright.
+     */
+    suspend fun resolveImageRequest(origin: String, url: String): Map<String, Any?> {
+        requireInit()
+        val fallback = mapOf<String, Any?>(
+            "url" to url,
+            "headers" to emptyMap<String, String>()
+        )
+        val source = runCatching { SourceHelp.getSource(origin) }.getOrNull()
+            ?: return fallback
+        return runCatching {
+            val analyzeUrl = AnalyzeUrlFactories.create(
+                rawUrl = url,
+                source = source,
+                coroutineContext = currentCoroutineContext()
+            )
+            val (resolvedUrl, headers) = analyzeUrl.resolveImageRequest()
+            val cleaned = LinkedHashMap(headers)
+            cleaned.remove("proxy")
+            mapOf<String, Any?>("url" to resolvedUrl, "headers" to cleaned)
+        }.getOrElse { e ->
+            recordBridgeError("resolveImageRequest:$origin", e)
+            fallback
+        }
+    }
+
+    /** One-line image-probe summary: full URL + header KEYS (never values). */
+    private fun describeImageProbe(result: Map<String, Any?>): String {
+        val url = result["url"] as? String ?: ""
+        val host = runCatching { java.net.URI(url).host }.getOrNull() ?: "?"
+        @Suppress("UNCHECKED_CAST")
+        val keys = (result["headers"] as? Map<String, String>)?.keys
+            ?.sorted() ?: emptyList()
+        return "url=$url host=$host headers=[${keys.joinToString()}]"
     }
 
     /**

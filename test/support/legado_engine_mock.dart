@@ -50,6 +50,17 @@ class LegadoEngineMock {
     'jsEval': 'ok: 1+1=2',
   };
 
+  /// Calls recorded for resolveImageRequest (G7), in order.
+  final resolveImageCalls = <({String origin, String url})>[];
+
+  /// Result served by resolveImageRequest; defaults to the identity
+  /// resolution (same URL, no headers).
+  Map<String, Object?> Function(String origin, String url)?
+  resolveImageHandler;
+
+  /// When set, resolveImageRequest throws this instead of answering.
+  Object? resolveImageError;
+
   final exploreCalls = <int>[];
   final searchTaskIds = <int>[];
   final searchKeywords = <String>[];
@@ -125,6 +136,16 @@ class LegadoEngineMock {
           return null;
         case 'engineSelfCheck':
           return selfCheckResult;
+        case 'resolveImageRequest':
+          final args = (call.arguments as Map).cast<String, Object?>();
+          final origin = args['origin'] as String;
+          final url = args['url'] as String;
+          resolveImageCalls.add((origin: origin, url: url));
+          final error = resolveImageError;
+          if (error != null) throw error;
+          final handler = resolveImageHandler;
+          if (handler != null) return handler(origin, url);
+          return {'url': url, 'headers': <String, String>{}};
       }
       return null;
     });
