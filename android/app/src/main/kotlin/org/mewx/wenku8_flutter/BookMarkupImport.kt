@@ -34,7 +34,7 @@ internal class BookMarkupImport(private val root: File,
                             require(tags <= 200000) { "HTML 结构过于复杂，请转换为 EPUB 后导入" }
                         }
                     }
-                    html(Jsoup.parse(source, null), writer, resource)
+                    html(Jsoup.parse(source), writer, resource)
                 }
                 "md", "markdown" -> {
                     val normalized = File(work, "decoded.txt")
@@ -91,7 +91,7 @@ internal class BookMarkupImport(private val root: File,
         fun visit(node: org.jsoup.nodes.Node, depth: Int = 0) {
             require(depth <= 256) { "HTML 嵌套层级过深" }
             if (node is TextNode) {
-                val value = node.wholeText; var at = 0
+                val value = node.getWholeText(); var at = 0
                 while (at < value.length) {
                     var end = minOf(value.length, at + 4000)
                     if (end < value.length && value[end - 1].isHighSurrogate()) end--
@@ -119,7 +119,7 @@ internal class BookMarkupImport(private val root: File,
                 }
                 return
             }
-            val block = node.isBlock || node.tagName() == "br"
+            val block = node.isBlock() || node.tagName() == "br"
             if (block) flush()
             node.childNodes().forEach { visit(it, depth + 1) }
             if (block) flush()

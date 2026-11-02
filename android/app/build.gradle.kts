@@ -144,7 +144,11 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.4.0")
     implementation("com.github.null2264.injekt:injekt-core:4135455a2a")
     implementation("com.github.liuyueyi.quick-chinese-transfer:quick-transfer-core:0.2.16")
-    implementation("org.jsoup:jsoup:1.23.2")
+    // NOTE: no org.jsoup:jsoup Maven dependency on purpose. The engine's
+    // data.aar carries its own vendored org.jsoup.* classes (Kotlin port);
+    // a second copy would collide in dexing (ENGINE-spike2 §3.5-3). The
+    // host's single jsoup consumer (BookMarkupImport.kt) compiles against
+    // the vendored copy instead.
     implementation("org.commonmark:commonmark:0.30.1")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // Keep the media host classes available to the app's shared-engine wiring.
