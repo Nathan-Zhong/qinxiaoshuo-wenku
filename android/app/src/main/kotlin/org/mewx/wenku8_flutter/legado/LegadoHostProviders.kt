@@ -747,7 +747,14 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     ExploreKindsCacheProviders.impl = LegadoExploreKindsCache(File(dataDir, "explore"))
     UserAgentProviders.impl = UserAgentProvider { LegadoEngineDefaults.userAgent }
     OkHttpProxyClientProviders.impl = object : OkHttpProxyClientProvider {
-        override fun getProxyClient(proxy: String?): KmpHttpClient = getProxyClient(proxy)
+        // MUST stay fully qualified (mirrors the fork's JsEnginesAndroid
+        // verbatim): inside this object the unqualified name resolves to
+        // this very member, not the imported top-level function, so
+        // `= getProxyClient(proxy)` compiles into infinite self-recursion
+        // and every real HTTP request dies with StackOverflowError
+        // (device-verified 2026-11-03, see FIX3-stack-report.md).
+        override fun getProxyClient(proxy: String?): KmpHttpClient =
+            io.legado.app.help.http.getProxyClient(proxy)
     }
 }
 

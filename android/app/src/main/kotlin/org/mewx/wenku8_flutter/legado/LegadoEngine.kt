@@ -30,6 +30,20 @@ internal fun Throwable.legadoBrief(max: Int = 400): String =
     "${javaClass.name}: ${message ?: ""}".take(max)
 
 /**
+ * Exception summary plus the first [frames] stack frames, one per line.
+ * Used by the self-check's real-request stages (webBookSearch /
+ * exploreBooks): a StackOverflowError's brief alone ("stack size
+ * 1037KB") cannot name the looping method, but its first frames can —
+ * a recursion shows up as the same frame repeated (device lesson of
+ * 2026-11-03, see FIX3-stack-report.md).
+ */
+internal fun Throwable.legadoStack(frames: Int = 30): String {
+    val head = legadoBrief(300)
+    val trace = stackTrace.take(frames).joinToString("\n") { "  at $it" }
+    return if (trace.isEmpty()) head else "$head\n$trace"
+}
+
+/**
  * Engine state + the bridge's business operations (sources and the
  * search-facing book chain live here and in the plugin's search sessions).
  * All state is process-wide: providers are registered once, the Room
@@ -132,6 +146,15 @@ object LegadoEngine {
      * the ImageOps registry for every eval; with BitmapImageOps
      * registered they must read ok, imageOps must report a successful
      * 1x1 decode, and exploreBooks must return the first kind's books.
+     *
+     * Post-stack-fix expectations (2026-11-03, FIX3): the ImageOps-fixed
+     * build advanced to the real request and died there —
+     * webBookSearch / exploreBooks both threw StackOverflowError from
+     * the host's OkHttpProxyClientProvider delegating to itself
+     * (unqualified name shadowed the imported top-level function).
+     * With the delegation fully qualified, both stages must read ok;
+     * their ERROR text carries the top 30 stack frames so any future
+     * loop names its method in one screenshot.
      */
     suspend fun selfCheck(): Map<String, Any?> {
         requireInit()
@@ -207,7 +230,7 @@ object LegadoEngine {
                 "ok: ${page.books.size} books, hasNext=${page.hasNextPage}"
             }.getOrElse { e ->
                 recordBridgeError("selfCheck.webBookSearch", e)
-                "ERROR ${e.legadoBrief()}"
+                "ERROR ${e.legadoStack()}"
             }
             out["exploreBooks"] = runCatching {
                 val kinds = first.exploreKinds()
@@ -225,7 +248,7 @@ object LegadoEngine {
                 }
             }.getOrElse { e ->
                 recordBridgeError("selfCheck.exploreBooks", e)
-                "ERROR ${e.legadoBrief()}"
+                "ERROR ${e.legadoStack()}"
             }
         }
         out["recentBridgeErrors"] = recentBridgeErrors().take(6)
