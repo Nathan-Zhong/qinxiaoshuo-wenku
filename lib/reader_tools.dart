@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import 'app_ui.dart';
 import 'app_interactions.dart';
+import 'bookmark_note_sheet.dart';
 import 'catalog.dart';
 import 'library_state.dart';
 import 'local_platform.dart';
@@ -251,8 +252,9 @@ class _ReaderToolsState extends State<ReaderTools> {
       _adding = true;
       _storageError = null;
     });
+    ReaderBookmark? mark;
     try {
-      final mark = await widget.onAddBookmark();
+      mark = await widget.onAddBookmark();
       if (mounted) {
         setState(() {
           _added = mark != null;
@@ -264,6 +266,20 @@ class _ReaderToolsState extends State<ReaderTools> {
       if (mounted) setState(() => _storageError = '书签保存失败，请重试');
     } finally {
       if (mounted) setState(() => _adding = false);
+    }
+    if (!mounted || mark == null) return;
+    // 定版 A: a fresh bookmark may carry a 感想 right away; dismissing
+    // the sheet (or tapping 跳过） skips it, and it can be written or
+    // changed later on the bookmarks page.
+    final note = await showBookmarkNoteSheet(
+      context,
+      reduceMotion: widget.state.reduceMotion,
+    );
+    if (!mounted || note == null || note.trim().isEmpty) return;
+    try {
+      await widget.state.updateBookmarkNote(widget.novel.id, mark.id, note);
+    } catch (_) {
+      if (mounted) setState(() => _storageError = '感想保存失败，请重试');
     }
   }
 
@@ -718,6 +734,21 @@ class _ReaderToolsState extends State<ReaderTools> {
                                       ).colorScheme.onSurfaceVariant,
                                     ),
                                   ),
+                                  if (mark.note.isNotEmpty) ...[
+                                    const SizedBox(height: 5),
+                                    AppText(
+                                      mark.note,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        height: 1.6,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),

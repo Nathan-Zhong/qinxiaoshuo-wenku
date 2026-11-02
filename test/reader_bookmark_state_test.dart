@@ -64,6 +64,74 @@ void main() {
   );
 
   test(
+    'bookmark notes are written at creation, edited in place and cleared',
+    () async {
+      final library = await state();
+      final noted = await library.addBookmark(
+        novel: novel,
+        position: position(),
+        note: '  写下当时的想法  ',
+      );
+      expect(noted!.note, '写下当时的想法');
+      // Notes ride the same JSON record as quotes: a reload keeps them,
+      // and a note-less bookmark still omits the key entirely.
+      final reloaded = await LibraryState.load();
+      addTearDown(reloaded.dispose);
+      expect(reloaded.bookmarksFor(71).single.note, '写下当时的想法');
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('reader_bookmarks_71')!;
+      expect(raw, contains('"note":"写下当时的想法"'));
+
+      await library.updateBookmarkNote(71, noted.id, '改过之后的感想');
+      expect(library.bookmarksFor(71).single.note, '改过之后的感想');
+      expect(library.bookmarksFor(71).single.id, noted.id);
+      expect(
+        library.bookmarksFor(71).single.position.offset,
+        noted.position.offset,
+      );
+      // Editing notifies the bookmarks channel exactly once per change.
+      var notifications = 0;
+      library.bookmarkChanges.addListener(() => notifications++);
+      await library.updateBookmarkNote(71, noted.id, '改过之后的感想');
+      expect(notifications, 0);
+      await library.updateBookmarkNote(71, noted.id, '');
+      expect(notifications, 1);
+      expect(library.bookmarksFor(71).single.note, '');
+      expect(
+        (await LibraryState.load()).bookmarksFor(71).single.note,
+        '',
+      );
+      await expectLater(
+        Future<void>(() => library.updateBookmarkNote(71, noted.id, 'x' * 12001)),
+        throwsFormatException,
+      );
+      await expectLater(
+        library.addBookmark(
+          novel: novel,
+          position: position(offset: 2000),
+          note: 'x' * 12001,
+        ),
+        throwsFormatException,
+      );
+      // A duplicate add keeps the existing bookmark (and its note) as-is.
+      final plain = await library.addBookmark(
+        novel: novel,
+        position: position(offset: 1500),
+      );
+      final duplicate = await library.addBookmark(
+        novel: novel,
+        position: position(offset: 1503),
+        note: '不应覆盖',
+      );
+      expect(duplicate!.id, plain!.id);
+      expect(
+        library.bookmarksFor(71).firstWhere((m) => m.id == plain.id).note,
+        '',
+      );
+    },
+  );
+
+  test(
     'concurrent duplicate additions and deletion preserve invocation order',
     () async {
       final library = await state();

@@ -115,10 +115,10 @@ class ReaderBookmark {
   final ReadingPosition position;
   final String quote;
 
-  /// The reader's personal note （感想） on this bookmark. Reserved in
-  /// B2 for the B3 bookmarks page (write-at-creation + later editing);
-  /// stored exactly like [quote] — omitted from JSON while empty, so
-  /// existing bookmark data needs no migration.
+  /// The reader's personal note （感想） on this bookmark: written when
+  /// the bookmark is created in the reader (skippable) or added/edited
+  /// later on the bookmarks page. Stored exactly like [quote] — omitted
+  /// from JSON while empty, so existing bookmark data needs no migration.
   final String note;
 
   Map<String, Object> toJson() => {
@@ -956,16 +956,26 @@ class LibraryState extends ChangeNotifier {
     required Novel novel,
     required ReadingPosition position,
     String quote = '',
+    String note = '',
   }) async {
     if (_restoreBarrier case final barrier?) {
       return barrier.future.then(
-        (_) => addBookmark(novel: novel, position: position, quote: quote),
+        (_) => addBookmark(
+          novel: novel,
+          position: position,
+          quote: quote,
+          note: note,
+        ),
       );
     }
     final index = chapterForPosition(novel, position);
     final excerpt = quote.trim();
     if (excerpt.length > 12000) {
       throw const FormatException('摘录过长，请选择不超过 12000 字的内容');
+    }
+    final noteText = note.trim();
+    if (noteText.length > 12000) {
+      throw const FormatException('感想过长，请控制在 12000 字以内');
     }
     if (novel.id <= 0 ||
         index == null ||
@@ -1004,6 +1014,7 @@ class LibraryState extends ChangeNotifier {
         chapterTitle: novel.chapters[index].title,
         position: position,
         quote: excerpt,
+        note: noteText,
       );
       final next = [mark, ...marks];
       final snapshot = _novelSnapshot(novel);
@@ -1015,6 +1026,37 @@ class LibraryState extends ChangeNotifier {
       result = mark;
     });
     return result;
+  }
+
+  /// Replace the 感想 (note) of one bookmark in place; every other field
+  /// and the bookmark's position in the list are preserved. An empty note
+  /// clears it (the JSON key is then omitted, exactly like an empty quote).
+  Future<void> updateBookmarkNote(int novelId, String id, String note) {
+    if (_restoreBarrier case final barrier?) {
+      return barrier.future.then((_) => updateBookmarkNote(novelId, id, note));
+    }
+    final noteText = note.trim();
+    if (noteText.length > 12000) {
+      throw const FormatException('感想过长，请控制在 12000 字以内');
+    }
+    return _queuePositionWrite(() async {
+      final marks = _bookmarks[novelId];
+      if (marks == null) return;
+      final index = marks.indexWhere((mark) => mark.id == id);
+      if (index < 0 || marks[index].note == noteText) return;
+      final mark = marks[index];
+      final next = [...marks];
+      next[index] = ReaderBookmark(
+        id: mark.id,
+        chapterTitle: mark.chapterTitle,
+        position: mark.position,
+        quote: mark.quote,
+        note: noteText,
+      );
+      await _writeBookmarks(novelId, next);
+      _bookmarks[novelId] = next;
+      if (!_disposed) _bookmarkChanges.notifyListeners();
+    });
   }
 
   Future<void> removeBookmark(int novelId, String id) {

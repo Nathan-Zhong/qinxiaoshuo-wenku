@@ -28,6 +28,7 @@ import 'book_categories.dart';
 import 'bookshelf_scope.dart';
 import 'book_source_badge.dart';
 import 'bookmark_library_page.dart';
+import 'bookmark_note_sheet.dart';
 import 'book_search.dart';
 import 'catalog.dart';
 import 'glass_dock.dart';
@@ -5834,8 +5835,9 @@ class _ReaderPageState extends State<ReaderPage>
       return;
     }
     _selection.clear();
+    ReaderBookmark? mark;
     try {
-      final mark = await widget.state.addBookmark(
+      mark = await widget.state.addBookmark(
         novel: widget.novel,
         position: position,
         quote: selected.text,
@@ -5850,6 +5852,18 @@ class _ReaderPageState extends State<ReaderPage>
           error is FormatException ? error.message : '书签保存失败，请重试',
         );
       }
+    }
+    if (!mounted || mark == null) return;
+    // 定版 A: same optional 感想 step as the tools-panel bookmark flow.
+    final note = await showBookmarkNoteSheet(
+      context,
+      reduceMotion: widget.state.reduceMotion,
+    );
+    if (!mounted || note == null || note.trim().isEmpty) return;
+    try {
+      await widget.state.updateBookmarkNote(widget.novel.id, mark.id, note);
+    } catch (_) {
+      if (mounted) showNovelFeedback(context, '感想保存失败，请重试');
     }
   }
 

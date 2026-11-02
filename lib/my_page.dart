@@ -2,13 +2,10 @@ import 'package:flutter/cupertino.dart';
 
 import 'app_interactions.dart';
 import 'app_ui.dart';
-import 'bookmark_library_page.dart';
 import 'catalog.dart';
 import 'feature_pages.dart';
 import 'library_state.dart';
-import 'offline_repository.dart';
 import 'pages.dart' show SettingsPage;
-import 'ui_notifiers.dart';
 import 'updates/app_updates.dart';
 import 'updates/update_page.dart';
 import 'book_source_manager_page.dart';
@@ -45,29 +42,6 @@ class MyPage extends StatelessWidget {
               context,
             ).copyWith(bottom: MediaQuery.paddingOf(context).bottom + 120),
             children: [
-              ActiveListenableBuilder(
-                listenable: state.bookmarkChanges,
-                builder: (context) {
-                  final count = libraryBookmarks(
-                    state,
-                    books: repository is OfflineNovelRepository
-                        ? (repository as OfflineNovelRepository).local
-                        : null,
-                  ).length;
-                  return FeatureEntry(
-                    key: const ValueKey('my-bookmarks'),
-                    title: '书签',
-                    subtitle: count == 0 ? '收藏喜欢的句子与阅读位置' : '$count 条书签与摘录',
-                    icon: CupertinoIcons.bookmark,
-                    onTap: () => pushNovelPage<void>(
-                      context,
-                      BookmarkLibraryPage(state: state, repository: repository),
-                      reduceMotion: state.reduceMotion,
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 14),
               FeatureEntry(
                 key: const ValueKey('my-book-sources'),
                 title: '书源管理',

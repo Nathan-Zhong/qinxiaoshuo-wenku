@@ -61,6 +61,14 @@ Future<void> _io(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+/// B3 定版 A: adding a bookmark in the reader is followed by the optional
+/// 感想 sheet. Tests that exercise the pre-B3 flow skip it, exactly like a
+/// reader who does not want to write a note.
+Future<void> _skipBookmarkNote(WidgetTester tester) async {
+  await tester.tap(find.byKey(const ValueKey('bookmark-note-skip')));
+  await _io(tester);
+}
+
 void main({
   Future<void> Function(WidgetTester tester, GlobalKey key, String name)?
   capture,
@@ -347,6 +355,7 @@ void main({
       await settings(tester, bookmarks: true);
       await tester.tap(find.text('添加当前位置书签'));
       await _io(tester);
+      await _skipBookmarkNote(tester);
       expect(find.text('已添加书签'), findsOneWidget);
       final mark = state.bookmarksFor(71).single;
       expect(mark.position.offset, closeTo(position, 1));
@@ -396,6 +405,7 @@ void main({
       await settings(tester, bookmarks: true);
       await tester.tap(find.text('添加当前位置书签'));
       await _io(tester);
+      await _skipBookmarkNote(tester);
       final mark = state.bookmarksFor(71).single;
       await tester.tap(_control('关闭阅读设置'));
       await tester.pumpAndSettle();
@@ -450,6 +460,7 @@ void main({
       await settings(tester, bookmarks: true);
       await tester.tap(find.text('添加当前位置书签'));
       await _io(tester);
+      await _skipBookmarkNote(tester);
       final mark = state.bookmarksFor(71).single;
       await tester.tap(_control('关闭阅读设置'));
       await tester.pumpAndSettle();

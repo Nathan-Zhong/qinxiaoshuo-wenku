@@ -62,7 +62,7 @@ Tomorrow we will meet again.''', id: 7123401),
   tearDown(() => state.dispose());
 
   testWidgets(
-    'My separates excerpts, book sources, settings and about; no account login entry',
+    'My keeps book sources, settings and about; no account login or bookmarks entry',
     (tester) async {
       tester.view.physicalSize = const Size(390, 900);
       tester.view.devicePixelRatio = 1;
@@ -88,15 +88,12 @@ Tomorrow we will meet again.''', id: 7123401),
       await tester.pumpAndSettle();
       await captureReview(tester, boundary, 'my-page');
       // 定版 7B + 2026-11-02 晚间修订：「我的」页去掉登录文库账号入口，
-      // 书签与设置之间新增「书源管理」入口。
+      // 新增「书源管理」入口；B3 修订：书签已有独立导航栏位，「我的」
+      // 里的书签入口一并删除。
       expect(find.byKey(const ValueKey('my-account')), findsNothing);
       expect(find.text('登录文库账号'), findsNothing);
-      for (final key in [
-        'my-bookmarks',
-        'my-book-sources',
-        'my-settings',
-        'my-about',
-      ]) {
+      expect(find.byKey(const ValueKey('my-bookmarks')), findsNothing);
+      for (final key in ['my-book-sources', 'my-settings', 'my-about']) {
         expect(find.byKey(ValueKey(key)), findsOneWidget);
       }
       await tester.tap(find.byKey(const ValueKey('my-settings')));
@@ -107,7 +104,8 @@ Tomorrow we will meet again.''', id: 7123401),
       expect(find.byKey(const ValueKey('settings-data-entry')), findsOneWidget);
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('my-bookmarks')));
+      // 书签从导航栏位进入（B3 后按书分组，空状态仍给出收藏指引）。
+      await tester.tap(find.byKey(const ValueKey('dock-tab-2')));
       await tester.pumpAndSettle();
       expect(find.byType(BookmarkLibraryPage), findsOneWidget);
       expect(find.textContaining('长按正文'), findsOneWidget);
@@ -115,7 +113,7 @@ Tomorrow we will meet again.''', id: 7123401),
   );
 
   testWidgets(
-    'saved quote is searchable, shareable and opens its original source anchor',
+    'saved quote is grouped by book, shareable and opens its original source anchor',
     (tester) async {
       final mark = (await tester.runAsync(
         () => state.addBookmark(
@@ -149,12 +147,14 @@ Tomorrow we will meet again.''', id: 7123401),
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text(quote), findsOneWidget);
-      await tester.enterText(
-        find.byKey(const ValueKey('bookmark-search')),
-        '作者',
-      );
+      // B3 定版：书签页按书分组，书目行与书架页同款，先看到书与条数。
+      expect(find.byKey(const ValueKey('bookmark-book-71234')), findsOneWidget);
+      expect(find.text('共 1 条书签'), findsOneWidget);
+      await captureReview(tester, boundary, 'bookmark-books');
+      await tester.tap(find.byKey(const ValueKey('bookmark-book-71234')));
       await tester.pumpAndSettle();
+      expect(find.byType(BookBookmarksPage), findsOneWidget);
+      expect(find.text(quote), findsOneWidget);
       expect(find.byKey(ValueKey('my-bookmark-${mark.id}')), findsOneWidget);
       await captureReview(tester, boundary, 'my-bookmarks');
       await tester.tap(find.byKey(ValueKey('bookmark-share-${mark.id}')));
