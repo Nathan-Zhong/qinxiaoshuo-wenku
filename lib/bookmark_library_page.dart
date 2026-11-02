@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import 'app_interactions.dart';
 import 'app_ui.dart';
+import 'archive_carousel.dart';
 import 'book_collection_layout.dart';
 import 'bookmark_note_sheet.dart';
 import 'catalog.dart';
@@ -57,11 +58,16 @@ Novel? _knownNovel(LibraryState state, NovelRepository repository, int id) =>
 LocalBookStore? _localStore(NovelRepository repository) =>
     repository is OfflineNovelRepository ? repository.local : null;
 
-/// The 书签 dock tab (B3 定版）: books grouped exactly like the bookshelf
-/// page — same [BookCollectionView] scroll/reflow, same [NovelRow] cover /
-/// title / author rows, same trailing text slot, except the rows list only
-/// books that carry bookmarks and the slot shows the bookmark count.
-/// Tapping a book opens [BookBookmarksPage] with that book's bookmarks.
+/// The 书签 dock tab (B3 定版 + 2026-11-03 立体书架补齐）: books grouped
+/// exactly like the bookshelf page — same structure as [ShelfPage]: count /
+/// toolbar row, then (in `shelf` layout) the same [ArchiveFileCarousel]
+/// 立体书架 preview of the first ten books and the same
+/// `全部书籍 / PERSONAL / INDEX` [ArchiveSection], then the same
+/// [BookCollectionView] scroll/reflow and [NovelRow] cover / title / author
+/// rows with the same trailing text slot, except the rows list only books
+/// that carry bookmarks and the slot shows the bookmark count.
+/// Tapping a book — in the preview or in a row — opens [BookBookmarksPage]
+/// with that book's bookmarks.
 class BookmarkLibraryPage extends StatefulWidget {
   const BookmarkLibraryPage({
     super.key,
@@ -87,6 +93,15 @@ class BookmarkLibraryPage extends StatefulWidget {
 
 class _BookmarkLibraryPageState extends State<BookmarkLibraryPage> {
   final Map<int, Future<Novel?>> _requests = {};
+  String? _previewKey;
+  Future<List<Novel>>? _previewRequest;
+
+  /// Bookmarks drive the groups; the shelf layout drives the preview —
+  /// merge both, exactly like ShelfPage merges its change sources.
+  late final _changes = Listenable.merge([
+    widget.state.bookmarkChanges,
+    widget.state.shelfViewChanges,
+  ]);
 
   Novel? _known(int id) => _knownNovel(widget.state, widget.repository, id);
 
@@ -94,6 +109,96 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage> {
     final book = await widget.repository.find(id);
     if (book != null) await widget.state.rememberNovel(book);
     return book;
+  }
+
+  // ShelfPage._resolvePreview, verbatim in shape: up to four concurrent
+  // resolutions, known books short-circuit, failures are skipped (the row
+  // below keeps its own retry/placeholder handling).
+  Future<List<Novel>> _resolvePreview(List<int> ids) async {
+    final resolved = <int, Novel>{};
+    var cursor = 0;
+    Future<void> next() async {
+      while (cursor < ids.length) {
+        final id = ids[cursor++];
+        try {
+          final book =
+              _known(id) ?? await _requests.putIfAbsent(id, () => _resolve(id));
+          if (book != null) resolved[id] = book;
+        } catch (_) {
+          // Failed books keep the existing handling in the list below.
+        }
+      }
+    }
+
+    await Future.wait(List.generate(ids.length.clamp(0, 4), (_) => next()));
+    return [
+      for (final id in ids)
+        if (resolved[id] != null) resolved[id]!,
+    ];
+  }
+
+  // ShelfPage._preview, mirrored: same carousel, same skeleton, same
+  // fallback composition. The one deliberate difference is onOpen — this
+  // is the bookmarks page, so opening a preview book goes to that book's
+  // bookmarks (BookBookmarksPage), exactly like tapping its row below.
+  // The hero tag the carousel hands out is not forwarded: the destination
+  // page has no cover hero, and the rows on this page pass no coverHeroTag
+  // either, so no duplicate Hero tag can collide on this page.
+  Widget _preview(List<int> ids) {
+    Widget carousel(List<Novel> books) => ArchiveFileCarousel(
+      key: const ValueKey('bookmark-preview'),
+      books: books,
+      reduceMotion: widget.state.reduceMotion,
+      animateEntrance: true,
+      onOpen: (book, tag) => pushNovelPage<void>(
+        context,
+        BookBookmarksPage(
+          novelId: book.id,
+          state: widget.state,
+          repository: widget.repository,
+        ),
+        reduceMotion: widget.state.reduceMotion,
+      ),
+    );
+    final known = [for (final id in ids) ?_known(id)];
+    final ready = known.length == ids.length;
+    final key = ids.join(',');
+    if (!ready && _previewKey != key) {
+      _previewKey = key;
+      _previewRequest = _resolvePreview(ids);
+    }
+    return FutureBuilder<List<Novel>>(
+      // Keep the same parent for resolved and asynchronously resolved books.
+      // Reparenting the carousel on a later rebuild loses its Hero identity.
+      key: const ValueKey('bookmark-preview-state'),
+      future: ready ? null : _previewRequest,
+      initialData: ready ? known : null,
+      builder: (context, snapshot) {
+        if (!ready && snapshot.connectionState != ConnectionState.done) {
+          return const ArchiveShelfSkeleton();
+        }
+        final books = ready ? known : snapshot.data ?? const <Novel>[];
+        if (books.isNotEmpty) return carousel(books);
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 28),
+          child: Column(
+            children: [
+              const AppText('立体书架暂未载入，下方列表仍可查看书签。'),
+              const SizedBox(height: 12),
+              GlassTextButton(
+                onPressed: () => setState(() {
+                  for (final id in ids) {
+                    if (_known(id) == null) _requests.remove(id);
+                  }
+                  _previewKey = null;
+                }),
+                child: const AppText('重新载入'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -107,7 +212,7 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage> {
 
   Widget _collection(BuildContext context, {required bool dock}) =>
       AnimatedBuilder(
-        animation: widget.state.bookmarkChanges,
+        animation: _changes,
         builder: (context, _) {
           final entries = libraryBookmarks(
             widget.state,
@@ -130,9 +235,15 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage> {
               );
               return latest(b.value).compareTo(latest(a.value));
             });
+          // Same slot arithmetic as ShelfPage: item 0 is the count row,
+          // the preview and the section header take the next two leading
+          // slots in shelf layout, and the rows follow.
+          final showPreview =
+              widget.state.shelfLayout == 'shelf' && groups.isNotEmpty;
+          final previewRows = showPreview ? 2 : 0;
           return BookCollectionView.builder(
             key: const PageStorageKey('bookmarks'),
-            leadingCount: groups.isEmpty ? 2 : 1,
+            leadingCount: groups.isEmpty ? 2 : 1 + previewRows,
             padding: dock
                 ? EdgeInsets.fromLTRB(
                     24,
@@ -143,7 +254,7 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage> {
                     MediaQuery.paddingOf(context).bottom + 120,
                   )
                 : featurePadding(context),
-            itemCount: groups.isEmpty ? 2 : groups.length + 1,
+            itemCount: groups.isEmpty ? 2 : groups.length + 1 + previewRows,
             itemBuilder: (context, index) {
               if (index == 0) {
                 return Padding(
@@ -197,7 +308,25 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage> {
                   ),
                 );
               }
-              return _row(context, groups[index - 1], index - 1);
+              if (showPreview && index == 1) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 24),
+                  child: _preview(
+                    groups.take(10).map((group) => group.key).toList(),
+                  ),
+                );
+              }
+              if (showPreview && index == 2) {
+                return const Padding(
+                  padding: EdgeInsets.only(bottom: 16),
+                  child: ArchiveSection(
+                    title: '全部书籍',
+                    code: 'PERSONAL / INDEX',
+                  ),
+                );
+              }
+              final rowIndex = index - 1 - previewRows;
+              return _row(context, groups[rowIndex], rowIndex);
             },
           );
         },

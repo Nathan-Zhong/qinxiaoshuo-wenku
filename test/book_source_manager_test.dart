@@ -49,6 +49,21 @@ void main() {
           return [for (final source in store) Map<String, Object?>.of(source)];
         case 'listSourceGroups':
           return <String>['分组甲'];
+        case 'engineSelfCheck':
+          return <String, Object?>{
+            'sourceTotal': 2,
+            'enabledCount': 1,
+            'allSources': <String>[
+              'A源 | enabled=true | enabledExplore=false | type=0 | '
+                  'hasExplore=false | hasSearch=true',
+              '漫画源 | enabled=false | enabledExplore=false | type=2 | '
+                  'hasExplore=true | hasSearch=true',
+            ],
+            'perSourceSearch': <String>[
+              '笔趣阁 | searchUrlResolved: https://byqg.example/search/'
+                  '%E6%96%97%E7%A0%B4.html | webBookSearch: ok: 0 books',
+            ],
+          };
         case 'setSourceEnabled':
           for (final source in store) {
             if (source['sourceUrl'] == args['sourceUrl']) {
@@ -196,6 +211,91 @@ void main() {
     expect(find.text('3 个书源'), findsOneWidget);
     expect(find.textContaining('导入完成'), findsOneWidget);
   });
+
+  testWidgets('self check sheet lists every source from allSources', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await tester.tap(find.text('引擎自检'));
+    await tester.pumpAndSettle();
+    expect(callFor('engineSelfCheck').method, 'engineSelfCheck');
+    expect(find.text('allSources'), findsOneWidget);
+    // The generic sheet rendering joins the list with newlines; both
+    // sources — including the disabled one no staged probe samples —
+    // are visible with their switches and capabilities.
+    expect(
+      find.textContaining('A源 | enabled=true | enabledExplore=false'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('漫画源 | enabled=false | enabledExplore=false'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('type=2'), findsOneWidget);
+    // The per-source deep probe renders through the same generic path.
+    expect(find.text('perSourceSearch'), findsOneWidget);
+    expect(
+      find.textContaining('笔趣阁 | searchUrlResolved:'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('webBookSearch: ok: 0 books'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'import sheet URL field uses a plain text keyboard with URL autofill hint',
+    (tester) async {
+      await pumpPage(tester);
+      await tester.tap(find.byKey(const ValueKey('book-source-import')));
+      await tester.pumpAndSettle();
+      final field = tester.widget<TextField>(
+        find.byKey(const ValueKey('book-source-import-url')),
+      );
+      // Not TextInputType.url (seen to raise Xiaomi's secure keyboard on
+      // HyperOS); the URL classification travels via autofillHints.
+      expect(field.keyboardType, TextInputType.text);
+      expect(field.autofillHints, const [AutofillHints.url]);
+      expect(field.autocorrect, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'import sheet scrolls instead of overflowing with keyboard and error',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 460);
+      tester.view.devicePixelRatio = 1;
+      tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: novelTheme(Brightness.light),
+          home: const BookSourceManagerPage(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('book-source-import')));
+      await tester.pumpAndSettle();
+      // Focus the URL field (keyboard is up, per the viewInsets above),
+      // then produce the error line that used to push the fixed Column
+      // past the shrunken sheet height.
+      await tester.tap(
+        find.byKey(const ValueKey('book-source-import-url')),
+        warnIfMissed: false,
+      );
+      await tester.pumpAndSettle();
+      // Submit the empty field via its own keyboard action (the submit
+      // button sits below the scroll fold at this height): the sheet's
+      // onSubmitted sets the same error line.
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(find.text('请先填写书源网络地址'), findsOneWidget);
+      expect(find.byType(SingleChildScrollView), findsWidgets);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('empty state invites an import when there are no sources', (
     tester,

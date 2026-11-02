@@ -11,14 +11,13 @@ import 'package:liquid_glass_easy/liquid_glass_easy.dart' as easy;
 
 import 'archive_design.dart';
 import 'catalog.dart';
-import 'local_book_media.dart';
 import 'cover_arrival.dart';
 import 'glass_optics.dart';
 import 'glass_palette.dart';
 import 'glass_controls.dart';
 import 'app_language.dart';
 export 'app_language.dart';
-import 'legacy_cover.dart';
+import 'cover_images.dart';
 import 'loading_ui.dart';
 import 'motion_ui.dart';
 import 'native_effects.dart';
@@ -1128,8 +1127,7 @@ class NovelCover extends StatelessWidget {
                 direction == HeroFlightDirection.push ? to : from,
               )?.animation ??
               animation,
-          imageProvider: switch (LocalBookMedia.peek(novel.coverUrl) ??
-              LegacyCover.peek(novel.id)) {
+          imageProvider: switch (coverPeekFor(novel)) {
             final bytes? => MemoryImage(bytes),
             null => null,
           },
@@ -1201,12 +1199,8 @@ class NovelCover extends StatelessWidget {
               );
               return FutureBuilder<Uint8List>(
                 key: ValueKey('cover-bytes-${novel.id}'),
-                future: novel.coverUrl?.startsWith('wenku-local:') == true
-                    ? LocalBookMedia.loadCover(novel.coverUrl!)
-                    : LegacyCover.bytes(novel.id),
-                initialData:
-                    LocalBookMedia.peek(novel.coverUrl) ??
-                    LegacyCover.peek(novel.id),
+                future: coverBytesFor(novel),
+                initialData: coverPeekFor(novel),
                 builder: (context, snapshot) {
                   final bytes = snapshot.data;
                   if (bytes == null) {
@@ -1273,7 +1267,7 @@ class CoverGlow extends StatelessWidget {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final background = dark ? ArchiveDesign.darkBackground : Colors.white;
     return FutureBuilder(
-      future: LegacyCover.bytes(novel.id),
+      future: coverBytesFor(novel),
       builder: (context, snapshot) {
         if (!snapshot.hasData) return const SizedBox.shrink();
         return ShaderMask(

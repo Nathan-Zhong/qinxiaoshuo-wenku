@@ -6,6 +6,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.BookSource
 import io.legado.app.help.book.ContentProcessorProviders
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.exploreKinds
@@ -131,7 +132,10 @@ object LegadoEngine {
      * Staged probe of the exact shared path search/explore depend on,
      * one link at a time, so a device run can say WHERE the chain
      * breaks instead of just "empty": DB counts -> SearchScope source
-     * resolution (via AppDbProviders, exactly like SearchModel) -> JS
+     * resolution (via AppDbProviders, exactly like SearchModel) -> the
+     * allSources listing (every source in the DB with its switches and
+     * explore/search capability — the probes below only sample the
+     * first enabled source) -> JS
      * eval smoke -> ImageOps registration + decode smoke -> explore
      * kinds of the first enabled source -> AnalyzeUrl template
      * resolution ({{key}}/{{page}} JS evaluation) -> a real WebBook
@@ -171,6 +175,25 @@ object LegadoEngine {
         }.getOrElse { e ->
             recordBridgeError("selfCheck.scopeAll", e)
             "ERROR ${e.legadoBrief()}"
+        }
+        // Every source in the DB, one line each — the staged probes below
+        // only ever look at the FIRST enabled source, so a newly imported
+        // source sitting further down the list used to be invisible in
+        // this report and looked "not recognised" even when it imported
+        // fine. This list is the ground truth for import/switch/explore
+        // and search capability per source; it changes no eligibility
+        // logic anywhere.
+        out["allSources"] = runCatching {
+            dao.all().map { source ->
+                "${source.bookSourceName} | enabled=${source.enabled} | " +
+                    "enabledExplore=${source.enabledExplore} | " +
+                    "type=${source.bookSourceType} | " +
+                    "hasExplore=${!source.exploreUrl.isNullOrBlank()} | " +
+                    "hasSearch=${!source.searchUrl.isNullOrBlank()}"
+            }
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.allSources", e)
+            listOf("ERROR ${e.legadoBrief()}")
         }
         out["jsEval"] = runCatching {
             "ok: 1+1=${JsEngines.get().eval("1+1", JsBindings())}"
@@ -251,6 +274,33 @@ object LegadoEngine {
                 "ERROR ${e.legadoStack()}"
             }
         }
+        // Per-source deep probe (2026-11-03, for the 笔趣阁 zero-result
+        // case): the staged probes above only sample the FIRST enabled
+        // source, so a source that returns "no results" further down the
+        // list leaves no device-side evidence at all. For each enabled
+        // source (first 10, truncation noted) this reports the resolved
+        // search URL — whose {{key}} encoding form (single-encoded
+        // %E6%96%97…, double-encoded %25…, or raw) is decisive for
+        // sources that carry the keyword in the URL path — plus one real
+        // WebBook search, ok/error in the same format as above. Each
+        // source is isolated: one failing source cannot mask the rest.
+        // Sequential on purpose — this is a diagnostic, not a search.
+        out["perSourceSearch"] = runCatching {
+            val lines = enabledList.take(10).map { source ->
+                "${source.bookSourceName} | searchUrlResolved: " +
+                    "${probeResolvedSearchUrl(source)} | " +
+                    "webBookSearch: ${probeWebBookSearch(source)}"
+            }
+            when {
+                enabledList.isEmpty() -> listOf("(no enabled sources)")
+                enabledList.size > 10 ->
+                    lines + "(截断：共 ${enabledList.size} 个启用源，仅探前 10 个)"
+                else -> lines
+            }
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.perSourceSearch", e)
+            listOf("ERROR ${e.legadoBrief()}")
+        }
         out["recentBridgeErrors"] = recentBridgeErrors().take(6)
         out["recentAppLog"] = AppLog.logs.take(5).map { (_, message, throwable) ->
             val head = message.lineSequence().firstOrNull() ?: ""
@@ -258,6 +308,36 @@ object LegadoEngine {
         }
         return out
     }
+
+    /** AnalyzeUrl template resolution for one source's search URL. */
+    private suspend fun probeResolvedSearchUrl(source: BookSource): String =
+        runCatching {
+            val analyzeUrl = AnalyzeUrlFactories.create(
+                rawUrl = source.searchUrl ?: "",
+                baseUrl = source.bookSourceUrl,
+                source = source,
+                ruleData = RuleData(),
+                coroutineContext = currentCoroutineContext(),
+                variables = mapOf(
+                    AppConst.JsVarName.KEY to "斗破",
+                    AppConst.JsVarName.PAGE to 1
+                )
+            )
+            analyzeUrl.url
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.analyzeUrl.perSource", e)
+            "ERROR ${e.legadoBrief()}"
+        }
+
+    /** One real WebBook search for one source, self-check format. */
+    private suspend fun probeWebBookSearch(source: BookSource): String =
+        runCatching {
+            val page = WebBook.getBookListAwait(source, "斗破", 1)
+            "ok: ${page.books.size} books, hasNext=${page.hasNextPage}"
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.webBookSearch.perSource", e)
+            "ERROR ${e.legadoStack()}"
+        }
 
     // ------------------------------------------------------------------
     // Sources

@@ -323,7 +323,13 @@ class ArchiveShelfSkeleton extends StatelessWidget {
                     ),
                   ),
                   SizedBox(
-                    height: 16 + 17 * 1.35 * 2 * scale + 12 * 1.4 * scale,
+                    // Same formula as the loaded carousel's label area in
+                    // archive_wave.dart, including its +3 rounded slack —
+                    // the two must stay identical so the LoadingHandoff
+                    // swap does not jump.
+                    height:
+                        (16 + 17 * 1.35 * 2 * scale + 12 * 1.4 * scale + 3)
+                            .ceilToDouble(),
                     child: const LoadingSkeleton(
                       layout: SkeletonLayout.actions,
                     ),

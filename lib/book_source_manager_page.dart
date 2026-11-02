@@ -539,100 +539,116 @@ class _ImportSourceSheetState extends State<_ImportSourceSheet> {
   }
 
   @override
+  // Scrollable, mirroring _SelfCheckSheet: this sheet is tall (two
+  // fields, three import buttons, an optional error line) and the glass
+  // overlay already shrinks the sheet's max height by the keyboard's
+  // viewInsets (_popupSafeRect), so a fixed Column overflowed and
+  // painted the debug overflow stripe as soon as the keyboard opened.
+  // Inside a SingleChildScrollView the same content scrolls instead,
+  // and the focused field is revealed by the scrollable as usual.
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.all(24),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const AppText(
-          '导入书源',
-          style: TextStyle(fontSize: 21, fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 14),
-        TextField(
-          key: const ValueKey('book-source-import-url'),
-          controller: _url,
-          enabled: !_busy,
-          autocorrect: false,
-          enableSuggestions: false,
-          keyboardType: TextInputType.url,
-          textInputAction: TextInputAction.done,
-          onSubmitted: (_) {
-            if (_url.text.trim().isEmpty) {
-              setState(() => _error = '请先填写书源网络地址');
-            } else {
-              unawaited(
-                _run(() => widget.client.importFromUrl(_url.text.trim())),
-              );
-            }
-          },
-          decoration: const InputDecoration(
-            labelText: '书源网络地址',
-            hintText: 'https://…',
-            counterText: '',
+    child: SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const AppText(
+            '导入书源',
+            style: TextStyle(fontSize: 21, fontWeight: FontWeight.w600),
           ),
-        ),
-        const SizedBox(height: 12),
-        GlassTextButton(
-          key: const ValueKey('book-source-import-url-submit'),
-          onPressed: _busy
-              ? null
-              : () {
-                  if (_url.text.trim().isEmpty) {
-                    setState(() => _error = '请先填写书源网络地址');
-                    return;
-                  }
-                  unawaited(
-                    _run(() => widget.client.importFromUrl(_url.text.trim())),
-                  );
-                },
-          child: AppText(_busy ? '正在导入…' : '从网络导入'),
-        ),
-        const SizedBox(height: 20),
-        TextField(
-          key: const ValueKey('book-source-import-json'),
-          controller: _json,
-          enabled: !_busy,
-          autocorrect: false,
-          enableSuggestions: false,
-          minLines: 3,
-          maxLines: 6,
-          decoration: const InputDecoration(
-            labelText: '书源 JSON',
-            hintText: '粘贴一个或多个书源的 JSON 文本',
-            counterText: '',
+          const SizedBox(height: 14),
+          TextField(
+            key: const ValueKey('book-source-import-url'),
+            controller: _url,
+            enabled: !_busy,
+            autocorrect: false,
+            enableSuggestions: false,
+            // Plain text, NOT TextInputType.url: on HyperOS the url
+            // keyboard type was seen to raise Xiaomi's secure keyboard
+            // for this field, as if it were a sensitive input. The URL
+            // classification is kept for the system via autofillHints
+            // instead. (Which keyboard ultimately opens is the system's
+            // call; this is the app-side best effort.)
+            keyboardType: TextInputType.text,
+            autofillHints: const [AutofillHints.url],
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) {
+              if (_url.text.trim().isEmpty) {
+                setState(() => _error = '请先填写书源网络地址');
+              } else {
+                unawaited(
+                  _run(() => widget.client.importFromUrl(_url.text.trim())),
+                );
+              }
+            },
+            decoration: const InputDecoration(
+              labelText: '书源网络地址',
+              hintText: 'https://…',
+              counterText: '',
+            ),
           ),
-        ),
-        const SizedBox(height: 12),
-        GlassTextButton(
-          key: const ValueKey('book-source-import-json-submit'),
-          onPressed: _busy
-              ? null
-              : () {
-                  if (_json.text.trim().isEmpty) {
-                    setState(() => _error = '请先粘贴书源 JSON');
-                    return;
-                  }
-                  unawaited(
-                    _run(() => widget.client.importFromJsonText(_json.text)),
-                  );
-                },
-          child: AppText(_busy ? '正在导入…' : '从文本导入'),
-        ),
-        const SizedBox(height: 12),
-        GlassTextButton(
-          key: const ValueKey('book-source-import-file'),
-          onPressed: _busy ? null : () => unawaited(_importFromFile()),
-          child: const AppText('从文件导入'),
-        ),
-        FeatureError(_error),
-        const SizedBox(height: 8),
-        GlassTextButton(
-          onPressed: _busy ? null : () => Navigator.pop(context),
-          child: const AppText('取消'),
-        ),
-      ],
+          const SizedBox(height: 12),
+          GlassTextButton(
+            key: const ValueKey('book-source-import-url-submit'),
+            onPressed: _busy
+                ? null
+                : () {
+                    if (_url.text.trim().isEmpty) {
+                      setState(() => _error = '请先填写书源网络地址');
+                      return;
+                    }
+                    unawaited(
+                      _run(() => widget.client.importFromUrl(_url.text.trim())),
+                    );
+                  },
+            child: AppText(_busy ? '正在导入…' : '从网络导入'),
+          ),
+          const SizedBox(height: 20),
+          TextField(
+            key: const ValueKey('book-source-import-json'),
+            controller: _json,
+            enabled: !_busy,
+            autocorrect: false,
+            enableSuggestions: false,
+            minLines: 3,
+            maxLines: 6,
+            decoration: const InputDecoration(
+              labelText: '书源 JSON',
+              hintText: '粘贴一个或多个书源的 JSON 文本',
+              counterText: '',
+            ),
+          ),
+          const SizedBox(height: 12),
+          GlassTextButton(
+            key: const ValueKey('book-source-import-json-submit'),
+            onPressed: _busy
+                ? null
+                : () {
+                    if (_json.text.trim().isEmpty) {
+                      setState(() => _error = '请先粘贴书源 JSON');
+                      return;
+                    }
+                    unawaited(
+                      _run(() => widget.client.importFromJsonText(_json.text)),
+                    );
+                  },
+            child: AppText(_busy ? '正在导入…' : '从文本导入'),
+          ),
+          const SizedBox(height: 12),
+          GlassTextButton(
+            key: const ValueKey('book-source-import-file'),
+            onPressed: _busy ? null : () => unawaited(_importFromFile()),
+            child: const AppText('从文件导入'),
+          ),
+          FeatureError(_error),
+          const SizedBox(height: 8),
+          GlassTextButton(
+            onPressed: _busy ? null : () => Navigator.pop(context),
+            child: const AppText('取消'),
+          ),
+        ],
+      ),
     ),
   );
 }

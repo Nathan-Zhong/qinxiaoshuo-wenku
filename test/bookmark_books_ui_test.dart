@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wenku8_flutter/app_ui.dart';
+import 'package:wenku8_flutter/archive_carousel.dart';
 import 'package:wenku8_flutter/bookmark_library_page.dart';
 import 'package:wenku8_flutter/catalog.dart';
 import 'package:wenku8_flutter/library_state.dart';
@@ -91,6 +92,14 @@ Tomorrow we will meet again.''';
   testWidgets('bookmarks tab groups by book with shelf-style rows and counts', (
     tester,
   ) async {
+    // The page now opens with the bookshelf's 立体书架 preview above the
+    // rows (shelf layout is the default); give the test a tall enough
+    // viewport for the preview, the section header and the lazy rows to
+    // all be built at once. Assertions below are unchanged.
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     await tester.runAsync(() async {
       await state.addBookmark(
         novel: bookA,
@@ -243,4 +252,85 @@ Tomorrow we will meet again.''';
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  testWidgets(
+    'shelf layout shows the 3D preview and section like the bookshelf, '
+    'carousel opens that book\'s bookmarks, list layout hides the preview',
+    (tester) async {
+      tester.view.physicalSize = const Size(800, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.runAsync(() async {
+        await state.addBookmark(
+          novel: bookA,
+          position: at(1, 7123402, updatedAt: 300),
+          quote: '第二章的句子',
+        );
+        await state.addBookmark(
+          novel: bookA,
+          position: at(0, 7123401, updatedAt: 200),
+          quote: '第一章的句子',
+        );
+        await state.addBookmark(
+          novel: bookB,
+          position: at(0, 7123501, updatedAt: 100),
+          quote: '另一本书的句子',
+        );
+      });
+      expect(state.shelfLayout, 'shelf');
+      await tester.pumpWidget(
+        MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: novelTheme(Brightness.light),
+          home: BookmarkLibraryPage(
+            state: state,
+            repository: const DemoNovelRepository(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      // Same structure as ShelfPage: carousel preview, then the
+      // 全部书籍 / PERSONAL / INDEX section, then the rows.
+      expect(find.byType(ArchiveFileCarousel), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('archive-file-carousel')),
+        findsOneWidget,
+      );
+      expect(find.text('全部书籍'), findsOneWidget);
+      expect(find.byKey(const ValueKey('bookmark-book-71234')), findsOneWidget);
+      expect(find.text('共 2 条书签'), findsOneWidget);
+
+      // The focused preview book is the most recently bookmarked one
+      // (bookA); its open affordance goes to that book's bookmarks page,
+      // not to a book detail page.
+      // The label row sits under the 3D bank's hit area at its centre;
+      // the tap still lands on the JellyTapSurface (navigation below
+      // proves it), so the missed-hit warning is expected noise here.
+      await tester.tap(
+        find.byKey(const ValueKey('archive-shelf-open')),
+        warnIfMissed: false,
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(BookBookmarksPage), findsOneWidget);
+      expect(find.text('2 条书签'), findsOneWidget);
+      expect(find.text('第一章的句子'), findsOneWidget);
+      expect(find.text('第二章的句子'), findsOneWidget);
+      await tester.tap(glassButton('返回'));
+      await tester.pumpAndSettle();
+      expect(find.byType(BookmarkLibraryPage), findsOneWidget);
+      expect(find.byType(ArchiveFileCarousel), findsOneWidget);
+
+      // Switching the shelf to list-only layout (the bookshelf page's
+      // own setting) hides the preview here too, via shelfViewChanges.
+      await tester.runAsync(() => state.setShelfView(layout: 'list'));
+      await tester.pumpAndSettle();
+      expect(state.shelfLayout, 'list');
+      expect(find.byType(ArchiveFileCarousel), findsNothing);
+      expect(find.text('全部书籍'), findsNothing);
+      expect(find.byKey(const ValueKey('bookmark-book-71234')), findsOneWidget);
+      expect(find.text('共 2 条书签'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

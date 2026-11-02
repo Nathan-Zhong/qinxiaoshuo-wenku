@@ -115,6 +115,14 @@ Tomorrow we will meet again.''', id: 7123401),
   testWidgets(
     'saved quote is grouped by book, shareable and opens its original source anchor',
     (tester) async {
+      // The bookmarks tab now opens with the bookshelf's 立体书架 preview
+      // above the rows (shelf layout default); use a tall viewport so the
+      // preview and the lazy group row are both built. Assertions below
+      // are unchanged.
+      tester.view.physicalSize = const Size(800, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final mark = (await tester.runAsync(
         () => state.addBookmark(
           novel: book,

@@ -284,8 +284,17 @@ class _ArchiveFileCarouselState extends State<ArchiveFileCarousel>
                           final scale =
                               MediaQuery.textScalerOf(context).scale(17) / 17;
                           return SizedBox(
+                            // +3 slack, rounded up: the exact-fit formula
+                            // overflowed by ~0.5px when a title wrapped to
+                            // two lines (font metrics exceed the nominal
+                            // line heights). Keep in sync with the same
+                            // formula in ArchiveShelfSkeleton (loading_ui).
                             height:
-                                16 + 17 * 1.35 * 2 * scale + 12 * 1.4 * scale,
+                                (16 +
+                                        17 * 1.35 * 2 * scale +
+                                        12 * 1.4 * scale +
+                                        3)
+                                    .ceilToDouble(),
                             child: JellyTapSurface(
                               key: const ValueKey('archive-shelf-open'),
                               onTap: () => _open(_pose.focus.round()),
