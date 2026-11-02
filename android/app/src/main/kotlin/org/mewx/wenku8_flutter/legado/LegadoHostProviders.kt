@@ -665,7 +665,7 @@ class LegadoExploreKindsCache(private val cacheDir: File) : ExploreKindsCachePro
  * Toaster.android.kt): a real system Toast shown on the main thread,
  * the previous one cancelled first so toasts never queue up. On top of
  * the fork behaviour the host also mirrors every message into the
- * AppLog memory ring (tag "Toaster") and Logcat, so a `java.toast()`
+ * AppLog memory ring (tag "LegadoToast") and Logcat, so a `java.toast()`
  * fired deep inside source JS leaves device-side evidence the
  * self-check can read back — the ring/Logcat floor the P5.1 spec asks
  * for, with the visible Toast being the fork's own behaviour, not a
