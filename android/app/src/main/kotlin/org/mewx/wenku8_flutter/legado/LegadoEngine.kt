@@ -218,10 +218,13 @@ object LegadoEngine {
             isSearch = false,
             nextPageUrl = nextPageUrl
         )
-        if (result.nextPageUrl.isNullOrBlank()) {
+        // Local capture: nextPageUrl is a cross-module property, so
+        // the compiler cannot smart-cast it after the null check.
+        val resultNextPageUrl = result.nextPageUrl
+        if (resultNextPageUrl.isNullOrBlank()) {
             exploreNextPageUrls.remove(chainKey)
         } else {
-            exploreNextPageUrls[chainKey] = result.nextPageUrl
+            exploreNextPageUrls[chainKey] = resultNextPageUrl
         }
         return mapOf(
             "books" to result.books.map { LegadoDto.searchBook(it) },
