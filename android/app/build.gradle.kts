@@ -26,6 +26,10 @@ android {
     // The separately authorized API runtime must remain byte-for-byte intact.
     // AGP otherwise strips its symbols even when jniLibs contains original files.
     packaging.jniLibs.keepDebugSymbols.add("**/libcpp.so")
+    // hutool-crypto and its transitive hutool-core both ship
+    // META-INF/INDEX.LIST; the file is a desktop JarJar index, unused on
+    // Android. Exclude it so mergeDebugJavaResource can proceed.
+    packaging.resources.excludes.add("META-INF/INDEX.LIST")
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
