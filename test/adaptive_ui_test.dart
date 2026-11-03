@@ -426,13 +426,16 @@ void main({AdaptiveCapture? capture, bool native = false}) {
       await tester.ensureVisible(voices);
       await tester.pumpAndSettle();
       onScreen(voices);
-      final checking = updates.check();
-      await tester.pump();
-      await checking;
       await page(AppUpdatePage(updates: updates));
       await snapshot('updates');
+      // fix2 (2026-11-03): the About page no longer offers update
+      // checking or downloads — the original checker pointed at the
+      // original Wenku8 repository, and this self-use build's
+      // versions arrive as direct APK links. The page shows the
+      // installed version and our own 本版更新 card instead.
+      onScreen(find.byKey(const ValueKey('installed-app-version')));
       await tester.scrollUntilVisible(
-        find.byKey(const ValueKey('download-app-update')),
+        find.byKey(const ValueKey('current-release-card')),
         180,
         scrollable: find
             .descendant(
@@ -442,13 +445,23 @@ void main({AdaptiveCapture? capture, bool native = false}) {
             .first,
       );
       await tester.pumpAndSettle();
+      // The card itself can exceed the viewport under large-text
+      // profiles; assert on its details button, as this test used to
+      // assert on the (now removed) download button.
       await Scrollable.ensureVisible(
-        tester.element(find.byKey(const ValueKey('download-app-update'))),
+        tester.element(
+          find.byKey(const ValueKey('view-current-release-details')),
+        ),
         alignment: .5,
       );
       await tester.pumpAndSettle();
-      onScreen(find.byKey(const ValueKey('download-app-update')));
-      await snapshot('update-download');
+      onScreen(find.byKey(const ValueKey('view-current-release-details')));
+      expect(find.byKey(const ValueKey('check-app-update')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('automatic-update-check')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey('download-app-update')), findsNothing);
       await tester.pumpWidget(const SizedBox.shrink());
     });
   }

@@ -869,21 +869,11 @@ class DiscoverPage extends StatelessWidget {
           brand: true,
         ),
       ),
-      if (WenkuFeaturesScope.maybeOf(context) case final features?)
-        GlassIconButton(
-          icon: CupertinoIcons.square_grid_2x2,
-          label: '出版文库',
-          onPressed: () => pushNovelPage<void>(
-            context,
-            PublicationLibraryPage(
-              catalog: features.publications,
-              account: features.account,
-              repository: repository,
-              state: state,
-            ),
-            reduceMotion: state.reduceMotion,
-          ),
-        ),
+      // The 出版文库 (publication library) button was removed on
+      // Cassidy's order (fix2, 2026-11-03): it browsed the original
+      // Wenku8 service's publication catalogue, which this self-use
+      // build cannot reach (no Wenku8 account/API — the Q7=B
+      // decision), so its page could only ever show a load failure.
       GlassIconButton(
         icon: CupertinoIcons.search,
         label: '搜索',
@@ -912,11 +902,35 @@ class DiscoverPage extends StatelessWidget {
     if (books.isEmpty && feed?.loading == true) {
       body = LibrarySkeleton(header: _categoryHeader(context));
     } else if (books.isEmpty && feed?.error != null) {
-      body = ContentNotice(
-        icon: CupertinoIcons.wifi_exclamationmark,
-        title: '书籍加载失败',
-        message: '检查网络后再试，已保存的书架与阅读记录仍保留。',
-        onRetry: feed!.retry,
+      // Keep the category/source header above the error notice (fix2,
+      // 2026-11-03): this header carries the discovery source picker,
+      // and without it a source that fails to load (bad network, dead
+      // site) trapped the reader on this page — retry only ever
+      // retried the same broken source, with no way to switch to
+      // another one. The notice itself is unchanged; the header row is
+      // the same one the loading and loaded states already show, in
+      // the same position the skeleton gives it.
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: EdgeInsets.fromLTRB(
+              24,
+              MediaQuery.paddingOf(context).top + 76,
+              24,
+              0,
+            ),
+            child: _categoryHeader(context),
+          ),
+          Expanded(
+            child: ContentNotice(
+              icon: CupertinoIcons.wifi_exclamationmark,
+              title: '书籍加载失败',
+              message: '检查网络后再试，已保存的书架与阅读记录仍保留。',
+              onRetry: feed!.retry,
+            ),
+          ),
+        ],
       );
     } else {
       body = NotificationListener<ScrollNotification>(

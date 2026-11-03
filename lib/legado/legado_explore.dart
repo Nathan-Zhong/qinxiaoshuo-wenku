@@ -11,6 +11,7 @@ import '../novel_feed_controller.dart';
 import '../pages.dart' show DiscoverPage;
 import 'legado_book_registry.dart';
 import 'legado_dto.dart';
+import 'search_merge.dart';
 import 'legado_novel_repository.dart';
 
 /// Discovery selection state (PLAN item 10): one chosen source, one
@@ -213,12 +214,20 @@ class LegadoExploreRepository extends NovelRepository {
     );
     final novels = <Novel>[];
     final records = <LegadoBookRecord>[];
+    final damagedNameKeys = <String>{};
     for (final book in result.books) {
+      // fix2: remember which hits arrived with font-obfuscated titles
+      // (invisible codepoints) so the background prefetch below can
+      // repair them from the detail page, like it already does for
+      // missing covers.
+      if (legadoHasInvisibleChars(book.name)) {
+        damagedNameKeys.add('${book.origin}\n${book.bookUrl}');
+      }
       final record = await engine.registry.registerSearchBook(book);
       records.add(record);
       novels.add(record.toNovel());
     }
-    _scheduleCoverPrefetch(records);
+    _scheduleCoverPrefetch(records, damagedNameKeys: damagedNameKeys);
     return NovelPage(
       items: novels,
       page: page,
@@ -227,10 +236,21 @@ class LegadoExploreRepository extends NovelRepository {
     );
   }
 
-  void _scheduleCoverPrefetch(List<LegadoBookRecord> records) {
+  /// Book keys queued for a title repair (fix2): their list hits
+  /// carried invisible codepoints, so a detail fetch should replace
+  /// the stripped title with the real one even when the book already
+  /// has a cover.
+  final Set<String> _nameRepairKeys = <String>{};
+
+  void _scheduleCoverPrefetch(
+    List<LegadoBookRecord> records, {
+    Set<String> damagedNameKeys = const <String>{},
+  }) {
     for (final record in records) {
+      final needsNameRepair = damagedNameKeys.contains(record.bookKey);
+      if (needsNameRepair) _nameRepairKeys.add(record.bookKey);
       final cover = record.coverUrl;
-      if (cover != null && cover.isNotEmpty) continue;
+      if (!needsNameRepair && cover != null && cover.isNotEmpty) continue;
       if (!_coverPrefetchAttempted.add(record.bookKey)) continue;
       _coverPrefetchQueue.add(record);
     }
@@ -255,7 +275,11 @@ class LegadoExploreRepository extends NovelRepository {
     try {
       // The record may have gained its cover through another path
       // (detail page, shelf) while it waited in the queue.
-      if (record.coverUrl == null || record.coverUrl!.isEmpty) {
+      final nameBefore = record.name;
+      final needsFetch =
+          (record.coverUrl == null || record.coverUrl!.isEmpty) ||
+          _nameRepairKeys.contains(record.bookKey);
+      if (needsFetch) {
         await engine.ensureEngineReady();
         final info = await engine.client.getBookInfo(
           origin: record.origin,
@@ -267,8 +291,10 @@ class LegadoExploreRepository extends NovelRepository {
         );
         engine.registry.absorbBookInfo(info);
       }
+      _nameRepairKeys.remove(record.bookKey);
       final cover = record.coverUrl;
-      if (cover != null && cover.isNotEmpty) {
+      if ((cover != null && cover.isNotEmpty) ||
+          record.name != nameBefore) {
         onCoverFilled?.call(record.toNovel());
       }
     } catch (_) {

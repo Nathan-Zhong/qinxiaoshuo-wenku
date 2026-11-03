@@ -9,6 +9,7 @@ SearchBook hit(
   String author = '某作者',
   String? coverUrl,
   String? variable,
+  int type = 8,
 }) {
   return SearchBook(
     name: name,
@@ -19,6 +20,7 @@ SearchBook hit(
     originName: origin,
     variable: variable,
     coverUrl: coverUrl,
+    type: type,
   );
 }
 
@@ -34,9 +36,57 @@ void main() {
     test('different authors do not share a key', () {
       expect(legadoMergeKey('同名书', '甲'), isNot(legadoMergeKey('同名书', '乙')));
     });
+
+    test('text and image editions of the same book do not share a key', () {
+      // fix2: the manga edition (engine BookType image bit 1 shl 6)
+      // must not merge into the text edition's entry.
+      expect(
+        legadoMergeKey('同名书', '甲', type: 8),
+        isNot(legadoMergeKey('同名书', '甲', type: 64)),
+      );
+      expect(
+        legadoMergeKey('同名书', '甲', type: 64),
+        legadoMergeKey('同名书', '甲', type: 64 | 8),
+      );
+    });
+  });
+
+  group('legadoSanitizeBookText', () {
+    test('strips private-use and other invisible codepoints', () {
+      expect(legadoHasInvisibleChars('斗\uE000破苍穹'), isTrue);
+      expect(legadoSanitizeBookText('斗\uE000破苍穹'), '斗破苍穹');
+      expect(legadoSanitizeBookText('甲\u200B乙\uFE0F丙'), '甲乙丙');
+    });
+
+    test('clean text passes through untouched', () {
+      expect(legadoHasInvisibleChars('系统想要害我，我选择上交国家'), isFalse);
+      expect(
+        legadoSanitizeBookText('系统想要害我，我选择上交国家'),
+        '系统想要害我，我选择上交国家',
+      );
+    });
   });
 
   group('mergeSearchBooks', () {
+    test('manga edition stays a separate entry from the text edition', () {
+      // fix2 regression: on the real device the manga edition of a
+      // book was swallowed by the text edition's merged entry and
+      // never appeared in search results at all.
+      final merged = mergeSearchBooks(<SearchBook>[
+        hit('https://a.example', 'https://a.example/1'),
+        hit('https://manga.example', 'https://manga.example/1', type: 64),
+        hit('https://manga2.example', 'https://manga2.example/7', type: 64),
+      ]);
+      expect(merged, hasLength(2));
+      final text = merged.firstWhere((b) => b.type == 8);
+      expect(text.origins, <String>['https://a.example']);
+      final manga = merged.firstWhere((b) => b.type == 64);
+      expect(manga.origins, <String>[
+        'https://manga.example',
+        'https://manga2.example',
+      ]);
+    });
+
     test('merges the same book across sources into one entry', () {
       final merged = mergeSearchBooks(<SearchBook>[
         hit('https://a.example', 'https://a.example/1'),

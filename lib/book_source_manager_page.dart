@@ -902,19 +902,24 @@ class _ImportSourceSheetState extends State<_ImportSourceSheet> {
             controller: _url,
             enabled: !_busy,
             autocorrect: false,
-            enableSuggestions: false,
-            // Plain text, NOT TextInputType.url: on HyperOS the url
-            // keyboard type was seen to raise Xiaomi's secure keyboard
-            // for this field, as if it were a sensitive input.
-            // (Which keyboard ultimately opens is the system's call;
-            // this is the app-side best effort.)
-            // EXPERIMENT (fix1, 2026-11-03): AutofillHints.url removed
-            // here and from the other URL fields in this file — MIUI's
-            // classifier may treat autofill-hinted fields as sensitive
-            // and hand them to the secure keyboard. Pending Cassidy's
-            // on-device verdict on whether the secure keyboard stops
-            // appearing for this field; restore the hints if it does
-            // not help.
+            enableSuggestions: true,
+            // Keyboard behaviour (fix2, 2026-11-03): this field must
+            // report the plainest possible text input type to the
+            // system, exactly like Legado's own import dialog (bare
+            // KeyboardOptions.Default -> EditorInfo.inputType 0x1).
+            // Two traps were found the hard way:
+            //  - TextInputType.url / AutofillHints.url (removed earlier)
+            //    can make HyperOS treat the field as sensitive.
+            //  - enableSuggestions MUST stay true here: with it false,
+            //    Flutter's TextInputPlugin hard-codes
+            //    TYPE_TEXT_VARIATION_VISIBLE_PASSWORD into the
+            //    EditorInfo.inputType, and HyperOS hands any
+            //    password-family variation to Xiaomi's secure
+            //    keyboard — even though this is not a password field.
+            //    (fix1 removed the autofill hint only; the secure
+            //    keyboard kept appearing because of this flag.)
+            // autocorrect stays false; suggestions being enabled only
+            // restores the normal system keyboard, like Legado.
             keyboardType: TextInputType.text,
             textInputAction: TextInputAction.done,
             onSubmitted: (_) {
@@ -954,7 +959,7 @@ class _ImportSourceSheetState extends State<_ImportSourceSheet> {
             controller: _json,
             enabled: !_busy,
             autocorrect: false,
-            enableSuggestions: false,
+            enableSuggestions: true,
             minLines: 3,
             maxLines: 6,
             decoration: const InputDecoration(
@@ -991,10 +996,11 @@ class _ImportSourceSheetState extends State<_ImportSourceSheet> {
             controller: _bookUrl,
             enabled: !_busy,
             autocorrect: false,
-            enableSuggestions: false,
+            enableSuggestions: true,
             keyboardType: TextInputType.text,
-            // No AutofillHints.url — see the fix1 experiment note on
-            // the import URL field above.
+            // Keyboard: plain text type, no autofill hint, and
+            // enableSuggestions stays true — see the fix2 note on the
+            // import URL field above.
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => unawaited(_findBook()),
             decoration: const InputDecoration(
@@ -1483,10 +1489,11 @@ class _SubscriptionsSheetState extends State<_SubscriptionsSheet> {
             controller: _url,
             enabled: !_busy,
             autocorrect: false,
-            enableSuggestions: false,
+            enableSuggestions: true,
             keyboardType: TextInputType.text,
-            // No AutofillHints.url — see the fix1 experiment note on
-            // the import URL field above.
+            // Keyboard: plain text type, no autofill hint, and
+            // enableSuggestions stays true — see the fix2 note on the
+            // import URL field above.
             decoration: const InputDecoration(
               labelText: '订阅地址',
               hintText: 'https://…',
@@ -1815,7 +1822,7 @@ class _ReplaceRulesSheetState extends State<_ReplaceRulesSheet> {
             controller: _json,
             enabled: !_busy,
             autocorrect: false,
-            enableSuggestions: false,
+            enableSuggestions: true,
             minLines: 3,
             maxLines: 6,
             decoration: const InputDecoration(

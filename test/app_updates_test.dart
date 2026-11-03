@@ -4,11 +4,9 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wenku8_flutter/updates/app_updates.dart';
-import 'package:wenku8_flutter/updates/update_page.dart';
 
 const _repo = 'example/reader';
 Map<String, dynamic> _json({
@@ -192,6 +190,30 @@ class _Client extends Fake implements HttpClient {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  // fix2 (2026-11-03): update checking is disabled in this self-use
+  // build — it pointed at the original Wenku8 repository. The
+  // service-flow tests that exercised check/download/install against
+  // a live (fake) source, and the whole prompt-flow test file, were
+  // removed with the behaviour they pinned; what remains below is
+  // the still-live pure logic (version comparison, release/asset
+  // parsing, transport) plus this pin of the disabled contract.
+  test('update checking is permanently off in the self-use build', () async {
+    SharedPreferences.setMockInitialValues({});
+    final updates = AppUpdates(
+      preferences: await SharedPreferences.getInstance(),
+      source: _Source(),
+      platform: _Platform(),
+    );
+    addTearDown(updates.dispose);
+    expect(updates.autoCheck, isFalse);
+    await updates.check();
+    await updates.check(automatic: true);
+    expect(updates.checked, isFalse);
+    expect(updates.available, isFalse);
+    expect(updates.release, isNull);
+  });
+
   test(
     'semantic versions compare numerically and build-only releases are newer',
     () {
@@ -336,223 +358,6 @@ void main() {
     await temp.delete(recursive: true);
   });
   test(
-    'each foreground check ignores the old six-hour timestamp and respects opt-out',
-    () async {
-      await updates.preferences.setInt(
-        'lastAppUpdateCheck',
-        now.millisecondsSinceEpoch,
-      );
-      await updates.check(automatic: true);
-      await updates.check(automatic: true);
-      expect(source.checks, 2);
-      expect(updates.available, true);
-      await updates.setAutoCheck(false);
-      await updates.check(automatic: true);
-      expect(source.checks, 2);
-      await updates.check();
-      expect(source.checks, 3);
-    },
-  );
-  test(
-    'update reminders persist for 24 hours without suppressing a newer release',
-    () async {
-      await updates.check();
-      expect(updates.shouldPrompt, isTrue);
-      await updates.rememberPrompt(updates.release!);
-      expect(updates.shouldPrompt, isFalse);
-      final restarted = AppUpdates(
-        preferences: updates.preferences,
-        source: source,
-        platform: platform,
-        clock: () => now,
-      );
-      addTearDown(restarted.dispose);
-      await restarted.check();
-      expect(restarted.shouldPrompt, isFalse);
-      now = now.add(const Duration(hours: 23, minutes: 59));
-      expect(restarted.shouldPrompt, isFalse);
-      now = now.add(const Duration(minutes: 1));
-      expect(restarted.shouldPrompt, isTrue);
-      await restarted.rememberPrompt(restarted.release!);
-      source.release = AppRelease.fromGithub(_json(tag: 'v0.4.0'), _repo);
-      await restarted.check();
-      expect(restarted.shouldPrompt, isTrue);
-      // The reminder does not block an explicit check/download of the same tag.
-      await updates.check();
-      await updates.download();
-      expect(updates.downloaded, isNotNull);
-    },
-  );
-  testWidgets(
-    'launch and real background returns check once, transient inactive does not',
-    (tester) async {
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      Widget monitor() =>
-          AppUpdateMonitor(updates: updates, child: const SizedBox());
-      await tester.pumpWidget(monitor());
-      await tester.pump(const Duration(seconds: 2));
-      await tester.pump();
-      expect(source.checks, 1);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await tester.pump(const Duration(seconds: 2));
-      expect(source.checks, 1);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await tester.pump(const Duration(seconds: 2));
-      await tester.pump();
-      expect(source.checks, 2);
-      await tester.pumpWidget(const SizedBox());
-      await tester.pumpWidget(monitor());
-      await tester.pump(const Duration(seconds: 2));
-      await tester.pump();
-      expect(
-        source.checks,
-        3,
-      ); // A new launch inside the former six-hour window.
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-  test(
-    'manual check refreshes an installed version cached before an APK update',
-    () async {
-      await updates.check();
-      expect(updates.available, isTrue);
-      platform.current = const InstalledApp(
-        version: '0.3.0',
-        build: 7,
-        abis: ['arm64-v8a'],
-      );
-      await updates.check();
-      expect(updates.installed!.build, 7);
-      expect(updates.available, isFalse);
-      expect(platform.reads, 2);
-    },
-  );
-  test(
-    'installation re-reads package metadata and rejects a stale downloaded APK',
-    () async {
-      await updates.check();
-      await updates.download();
-      platform.current = const InstalledApp(
-        version: '0.3.0',
-        build: 7,
-        abis: ['arm64-v8a'],
-      );
-      await updates.install();
-      expect(platform.installs, 0);
-      expect(updates.downloaded, isNull);
-      expect(updates.error, contains('已安装 0.3.0（7）'));
-    },
-  );
-  test('no release and network failure remain recoverable', () async {
-    source.release = null;
-    await updates.check();
-    expect(updates.checked, true);
-    expect(updates.available, false);
-    expect(updates.error, null);
-    source.fail = true;
-    await updates.check();
-    expect(updates.error, isNotNull);
-    source.fail = false;
-    source.release = AppRelease.fromGithub(_json(), _repo);
-    await updates.check();
-    expect(updates.available, true);
-    expect(updates.error, null);
-  });
-  test(
-    'download, explicit permission and installation are separate actions',
-    () async {
-      await updates.check();
-      await updates.download();
-      expect(await updates.downloaded!.readAsBytes(), [1, 2, 3]);
-      expect(platform.installs, 0);
-      platform.result = 'permission';
-      await updates.install();
-      expect(updates.needsPermission, true);
-      platform.result = 'opened';
-      await updates.install();
-      expect(updates.needsPermission, false);
-      platform.failure = '安装包签名与当前版本不一致，无法覆盖升级';
-      await updates.install();
-      expect(updates.error, contains('签名'));
-    },
-  );
-  test(
-    'cancel and interrupted downloads remove partial files and can be retried',
-    () async {
-      await updates.check();
-      source.gate = Completer<void>();
-      final downloading = updates.download();
-      for (var i = 0; i < 20 && updates.bytes == 0; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 5));
-      }
-      updates.cancelDownload();
-      source.gate!.complete();
-      await downloading;
-      expect(updates.downloaded, isNull);
-      expect(updates.error, null);
-      expect(await Directory('${temp.path}/updates').list().toList(), isEmpty);
-      source.gate = null;
-      source.fail = true;
-      await updates.download();
-      expect(updates.error, isNotNull);
-      source.fail = false;
-      await updates.download();
-      expect(updates.downloaded, isNotNull);
-    },
-  );
-  test(
-    'a new download cannot replace an APK already handed to Android',
-    () async {
-      await updates.check();
-      await updates.download();
-      await updates.install();
-      final first = platform.handedOff.single;
-      source.release = AppRelease.fromGithub(_json(tag: 'v0.4.0'), _repo);
-      source.data = [4, 5, 6];
-      await updates.check();
-      await updates.download();
-      expect(updates.downloaded!.path, isNot(first.path));
-      expect(await first.readAsBytes(), [1, 2, 3]);
-      expect(await updates.downloaded!.readAsBytes(), [4, 5, 6]);
-    },
-  );
-  test(
-    'checking excludes download and install until metadata is settled',
-    () async {
-      await updates.check();
-      await updates.download();
-      source.checkGate = Completer<void>();
-      final checking = updates.check();
-      await Future<void>.delayed(Duration.zero);
-      expect(updates.checking, isTrue);
-      await updates.install();
-      await updates.download();
-      expect(platform.installs, 0);
-      expect(source.downloads, 1);
-      source.checkGate!.complete();
-      await checking;
-    },
-  );
-  test(
-    'installer handoff excludes metadata changes and another download',
-    () async {
-      await updates.check();
-      await updates.download();
-      platform.installGate = Completer<void>();
-      final installing = updates.install();
-      await Future<void>.delayed(Duration.zero);
-      expect(updates.installing, isTrue);
-      await updates.check();
-      await updates.download();
-      expect(source.checks, 1);
-      expect(source.downloads, 1);
-      platform.installGate!.complete();
-      await installing;
-    },
-  );
-  test(
     'replacing an asset under the same tag invalidates the ready APK',
     () async {
       await updates.check();
@@ -565,88 +370,6 @@ void main() {
       await updates.check();
       expect(updates.downloaded, isNull);
       await updates.install();
-      expect(platform.installs, 0);
-    },
-  );
-  test(
-    'a rejected APK returns to download instead of repeating a bad install',
-    () async {
-      await updates.check();
-      await updates.download();
-      platform.failure = '安装包版本不匹配，请重新下载';
-      await updates.install();
-      expect(updates.downloaded, isNull);
-      expect(updates.error, contains('重新下载'));
-      platform.failure = null;
-      await updates.download();
-      await updates.install();
-      expect(source.downloads, 2);
-      expect(platform.installs, 2);
-    },
-  );
-  test(
-    'unchanged metadata preserves a verified APK across permission returns',
-    () async {
-      await updates.check();
-      await updates.download();
-      final ready = updates.downloaded;
-      platform.result = 'permission';
-      await updates.install();
-      await updates.check();
-      expect(updates.downloaded!.path, ready!.path);
-      expect(updates.needsPermission, isTrue);
-      platform.failureCode = 'OPEN';
-      platform.failure = '系统页面无法打开，请重试';
-      await updates.install();
-      expect(updates.downloaded!.path, ready.path);
-      platform.failure = null;
-      platform.result = 'opened';
-      await updates.install();
-      expect(updates.needsPermission, isFalse);
-    },
-  );
-  test(
-    'same-tag asset IDs invalidate an equal-sized APK, retries have unique paths',
-    () async {
-      await updates.check();
-      await updates.download();
-      final first = updates.downloaded!;
-      await updates.download();
-      expect(updates.downloaded!.path, isNot(first.path));
-      final replaced = _json();
-      for (final raw in replaced['assets'] as List) {
-        (raw as Map<String, dynamic>)['id'] = 42;
-      }
-      source.release = AppRelease.fromGithub(replaced, _repo);
-      await updates.check();
-      expect(updates.downloaded, isNull);
-    },
-  );
-  test(
-    'download validates the actual APK before offering installation',
-    () async {
-      await updates.check();
-      platform.inspectFailure = '安装包是 0.2.0（2），不是较新版本，请重新下载';
-      await updates.download();
-      expect(updates.downloaded, isNull);
-      expect(updates.error, contains('0.2.0（2）'));
-      expect(await Directory('${temp.path}/updates').list().toList(), isEmpty);
-      platform.inspectFailure = null;
-      await updates.download();
-      expect(updates.downloadedInfo!.version, '0.3.0');
-      expect(updates.downloadedInfo!.build, 7);
-      await updates.install();
-      expect(platform.installBuild, 7);
-    },
-  );
-  test(
-    'an APK must have a newer native build even with a newer release name',
-    () async {
-      await updates.check();
-      platform.verifiedBuild = 2;
-      await updates.download();
-      expect(updates.downloaded, isNull);
-      expect(updates.error, contains('版本不符'));
       expect(platform.installs, 0);
     },
   );
@@ -958,28 +681,6 @@ void main() {
         throwsFormatException,
       );
       expect(bad.urls, hasLength(1));
-    },
-  );
-  test(
-    'update requests release public-content priority after success and failure',
-    () async {
-      final calls = <bool>[];
-      final service = AppUpdates(
-        preferences: updates.preferences,
-        source: source,
-        platform: platform,
-        directory: () async => temp,
-        networkPriority: (enabled) async {
-          calls.add(enabled);
-        },
-      );
-      addTearDown(service.dispose);
-      await service.check();
-      expect(calls, [true, false]);
-      source.fail = true;
-      await service.download();
-      expect(calls, [true, false, true, false]);
-      expect(service.downloading, false);
     },
   );
   testWidgets(

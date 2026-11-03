@@ -265,8 +265,13 @@ void main() {
   );
 
   testWidgets(
-    'installed notes take priority over a newer-release prompt, and completion survives foreground changes',
+    'installed notes present on a new build, update checking stays '
+    'disabled, and completion survives foreground changes',
     (tester) async {
+      // fix2 (2026-11-03): this scenario used to end with a
+      // newer-release prompt after the notes. Update checking is now
+      // disabled outright (it pointed at the original repository), so
+      // the notes are the only automatic presentation, ever.
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpWidget(host(monitor: true));
       await tester.pumpAndSettle();
@@ -276,7 +281,8 @@ void main() {
       );
       await updates.check();
       await tester.pumpAndSettle();
-      expect(updates.available, true);
+      expect(updates.available, false);
+      expect(updates.checked, false);
       expect(find.byKey(const ValueKey('app-update-prompt')), findsNothing);
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
@@ -286,9 +292,7 @@ void main() {
       );
       expect(updates.preferences.getString('completedReleaseNotes'), isNull);
       await complete(tester);
-      expect(find.byKey(const ValueKey('app-update-prompt')), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('postpone-app-update')));
-      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('app-update-prompt')), findsNothing);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pump(const Duration(seconds: 2));
@@ -297,6 +301,7 @@ void main() {
         find.byKey(const ValueKey('installed-release-details')),
         findsNothing,
       );
+      expect(find.byKey(const ValueKey('app-update-prompt')), findsNothing);
       expect(source.downloads, 0);
       await tester.pumpWidget(const SizedBox.shrink());
     },

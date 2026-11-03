@@ -512,6 +512,50 @@ void main() {
       expect(maxActive, greaterThan(1));
     });
 
+    test(
+      'a font-obfuscated explore title is repaired from detail info',
+      () async {
+        // fix2 regression (real device): a source whose list pages use
+        // font anti-scraping served the title with a private-use-area
+        // char in it ('斗\uE000破苍穹'); the discovery shelf rendered
+        // phantom gaps. The detail page serves the real title.
+        var infoCalls = 0;
+        responder = exploreResponder(
+          books: [
+            {..._bookMap(), 'name': '斗\uE000破苍穹'},
+          ],
+          onInfo: (call) {
+            infoCalls++;
+            return _bookMap();
+          },
+        );
+        final explore = await coverExplore();
+        final filled = <Novel>[];
+        explore.onCoverFilled = filled.add;
+        final page = await explore.browse(page: 1);
+        // The stored title is already stripped of the invisible char.
+        expect(page.items.single.title, '斗破苍穹');
+        // Even though the book already has a cover, the damaged title
+        // queues exactly one background detail fetch to repair it.
+        await drainUntil(() => filled.isNotEmpty);
+        expect(infoCalls, 1);
+        expect(filled.single.title, '斗破苍穹');
+        expect(
+          registry.recordById(page.items.single.id)?.name,
+          '斗破苍穹',
+        );
+        // Browsing again (the source still serves the obfuscated
+        // title) must neither clobber the repaired title nor refetch.
+        await explore.browse(page: 1);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(infoCalls, 1);
+        expect(
+          registry.recordById(page.items.single.id)?.name,
+          '斗破苍穹',
+        );
+      },
+    );
+
     test('feed replaceItems swaps in a filled cover only', () async {
       responder = exploreResponder(
         books: [

@@ -54,11 +54,13 @@ class NovelFeedController extends ChangeNotifier {
 
   /// Swaps already-loaded items for fresher snapshots of the same
   /// books (matched by id) when the replacement brings a cover the
-  /// loaded item lacks. Pagination, the result revision and the
-  /// entrance sequence are deliberately untouched: the discovery
+  /// loaded item lacks, or a repaired title (fix2: the discovery
+  /// prefetch also replaces font-obfuscated list titles with the
+  /// detail page's real title). Pagination, the result revision and
+  /// the entrance sequence are deliberately untouched: the discovery
   /// cover prefetch (fix1) uses this to trade a text cover for the
   /// real one a background detail fetch brought back, in place.
-  /// Unknown ids and coverless replacements are ignored.
+  /// Unknown ids and unchanged snapshots are ignored.
   void replaceItems(Iterable<Novel> replacements) {
     if (_disposed) return;
     final byId = <int, Novel>{
@@ -70,8 +72,8 @@ class NovelFeedController extends ChangeNotifier {
     for (var i = 0; i < next.length; i++) {
       final fresh = byId[next[i].id];
       if (fresh != null &&
-          fresh.coverUrl != null &&
-          fresh.coverUrl != next[i].coverUrl) {
+          ((fresh.coverUrl != null && fresh.coverUrl != next[i].coverUrl) ||
+              fresh.title != next[i].title)) {
         next[i] = fresh;
         changed = true;
       }

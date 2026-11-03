@@ -364,7 +364,8 @@ void main() {
   });
 
   testWidgets(
-    'import sheet URL field uses a plain text keyboard, no autofill hint',
+    'import sheet URL field uses a plain text keyboard, no autofill hint, '
+    'suggestions enabled',
     (tester) async {
       await pumpPage(tester);
       await tester.tap(find.byKey(const ValueKey('book-source-import')));
@@ -373,14 +374,18 @@ void main() {
         find.byKey(const ValueKey('book-source-import-url')),
       );
       // Not TextInputType.url (seen to raise Xiaomi's secure keyboard on
-      // HyperOS). The AutofillHints.url that used to ride along was
-      // removed in fix1 (2026-11-03): MIUI's classifier may treat
-      // autofill-hinted fields as sensitive and hand them to the
-      // secure keyboard too — on-device experiment, see the note in
-      // book_source_manager_page.dart.
+      // HyperOS), and no AutofillHints.url (removed in fix1).
       expect(field.keyboardType, TextInputType.text);
       expect(field.autofillHints ?? const <String>[], isEmpty);
       expect(field.autocorrect, isFalse);
+      // fix2 (2026-11-03): enableSuggestions must stay TRUE. With it
+      // false, Flutter's TextInputPlugin adds
+      // TYPE_TEXT_VARIATION_VISIBLE_PASSWORD to the EditorInfo.inputType
+      // and HyperOS hands the field to Xiaomi's secure keyboard — that,
+      // not the keyboard type or autofill hint, was the root cause of
+      // the secure keyboard on every import field. Legado's import
+      // dialog reports a bare text input type; this keeps ours equal.
+      expect(field.enableSuggestions, isTrue);
       expect(tester.takeException(), isNull);
     },
   );

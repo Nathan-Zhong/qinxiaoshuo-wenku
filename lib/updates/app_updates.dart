@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../legacy_transport.dart';
+import 'app_changelog.dart';
 
 const officialUpdateRepository = 'mikufoxxx/Wenku8_Flutter';
 const updateMirrorOrigin = 'https://git.3952039.xyz';
@@ -15,14 +16,18 @@ const updateRepository = String.fromEnvironment(
   'UPDATE_REPOSITORY',
   defaultValue: officialUpdateRepository,
 );
-const currentAppVersion = '0.4.1';
-const currentAppBuild = 88;
-const currentReleaseNotes = '''
-【重要说明】本 APP 以后只保留轻小说文库源和本地导入功能，不再支持任何其他源以及自定义书源。
-应用名称为「轻小说文库」。本版功能与 0.3.7 一致，未加入其他功能调整或问题修复。
-0.4.0 用户可直接覆盖升级到本版，无需卸载。建议升级前备份阅读记录。
-完整说明见「我的 → 关于 → 本版更新」。
-''';
+// 小说文库's own versioning (fix2, 2026-11-03): kept in step with
+// pubspec.yaml and app_changelog.dart. The original build's 0.4.1/88
+// fallback values were retired together with its release notes.
+const currentAppVersion = '1.0.2';
+const currentAppBuild = 10002;
+
+/// Plain-text form of the current version's changelog entry
+/// (derived from app_changelog.dart, our own update log).
+final currentReleaseNotes =
+    '${appChangelog.first.version} 更新\n'
+    '${appChangelog.first.items.join('\n')}\n'
+    '完整说明见「我的 → 关于 → 本版更新」。';
 
 class ReleaseVersion implements Comparable<ReleaseVersion> {
   const ReleaseVersion(this.major, this.minor, this.patch, [this.build = 0]);
@@ -647,7 +652,12 @@ class AppUpdates extends ChangeNotifier {
   UpdateDownload? _download;
   Future<InstalledApp>? _loadingInfo;
   bool get busy => checking || downloading || installing;
-  bool get autoCheck => preferences.getBool('checkAppUpdates') ?? true;
+  // Update checking is permanently off in this self-use build
+  // (fix2, 2026-11-03, on Cassidy's order): the checker pointed at
+  // the original Wenku8 repository and could prompt an "update" to
+  // the original app. Hard-false rather than preference-driven so a
+  // restored backup carrying the old default cannot revive it.
+  bool get autoCheck => false;
   String? get installedReleaseKey =>
       installed == null ? null : '${installed!.version}+${installed!.build}';
   bool get shouldShowReleaseNotes =>
@@ -723,7 +733,15 @@ class AppUpdates extends ChangeNotifier {
   }
 
   Future<void> check({bool automatic = false}) async {
-    if (_disposed || busy) return;
+    // Disabled in this self-use build (fix2, 2026-11-03): no network
+    // update check ever runs — new versions are delivered as direct
+    // APK links instead. autoCheck is hard-false (see its getter), so
+    // every check, automatic or manual, returns at this guard. The
+    // service still loads the installed version and tracks
+    // release-notes state for the About page; the original
+    // source/download/install machinery below is inert and kept only
+    // to bound this change's regression surface.
+    if (_disposed || busy || !autoCheck) return;
     final now = _clock();
     if (automatic && !autoCheck) return;
     checking = true;

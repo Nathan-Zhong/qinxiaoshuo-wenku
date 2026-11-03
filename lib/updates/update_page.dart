@@ -205,19 +205,14 @@ class _AppUpdateMonitorState extends State<AppUpdateMonitor>
 
   void _schedule() {
     _timer?.cancel();
-    // Check once for each foreground session, after the first screen settles.
-    // Transient inactive states (notification shade, system dialogs) are not a
-    // new launch. A background return is, regardless of the last check's age.
-    _timer = Timer(const Duration(seconds: 2), () {
-      _timer = null;
-      final lifecycle = WidgetsBinding.instance.lifecycleState;
-      if (!mounted ||
-          lifecycle != null && lifecycle != AppLifecycleState.resumed) {
-        return;
-      }
-      _pendingForegroundCheck = false;
-      unawaited(widget.updates.check(automatic: true));
-    });
+    // No automatic update check is scheduled in this self-use build
+    // (fix2, 2026-11-03): the original checker pointed at the
+    // original Wenku8 repository. AppUpdates.check() itself is also
+    // disabled at the service level; this keeps the monitor from
+    // even arming the timer. The release-notes auto-presentation in
+    // _showPromptIfReady is separate and stays — it shows our own
+    // changelog after an upgrade.
+    _pendingForegroundCheck = false;
   }
 
   @override
@@ -429,7 +424,6 @@ class AppUpdatePage extends StatelessWidget {
     final padding = MediaQuery.paddingOf(context);
     final version = service?.installed?.version ?? currentAppVersion;
     final build = service?.installed?.build ?? currentAppBuild;
-    final available = service?.available ?? false;
     return Scaffold(
       body: Atmosphere(
         child: GlassHeaderLayout(
@@ -463,183 +457,13 @@ class AppUpdatePage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-              if (service != null) ...[
-                ContentPanel(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          const Expanded(
-                            child: AppText(
-                              '自动检查更新',
-                              style: TextStyle(fontWeight: FontWeight.w600),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          AppControls.toggle(
-                            context,
-                            key: const ValueKey('automatic-update-check'),
-                            value: service.autoCheck,
-                            onChanged: (value) async {
-                              try {
-                                await service.setAutoCheck(value);
-                              } catch (_) {
-                                if (context.mounted) {
-                                  showNovelFeedback(context, '设置保存失败，请重试');
-                                }
-                              }
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      AppText(
-                        '每次打开应用时检查新版本，下载与安装由你确认。',
-                        style: TextStyle(
-                          fontSize: 13,
-                          height: 1.5,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      GlassTextButton(
-                        key: const ValueKey('check-app-update'),
-                        onPressed: service.busy ? null : () => service.check(),
-                        child: AppText(service.checking ? '正在检查版本' : '检查更新'),
-                      ),
-                      if (service.checking) ...[
-                        const SizedBox(height: 12),
-                        const SizedBox(
-                          height: 16,
-                          child: LoadingSkeleton(layout: SkeletonLayout.inline),
-                        ),
-                      ] else if (service.checked && !available) ...[
-                        const SizedBox(height: 12),
-                        AppText(
-                          service.release == null ? '暂未发布可用的正式版本' : '已是最新版本',
-                        ),
-                      ],
-                      if (service.checked && service.release != null) ...[
-                        const SizedBox(height: 8),
-                        AppText(
-                          '最新正式版 ${service.release!.version.name}',
-                          key: const ValueKey('latest-app-version'),
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                      if (service.error != null) ...[
-                        const SizedBox(height: 12),
-                        AppText(
-                          service.error!,
-                          key: const ValueKey('update-error'),
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                if (available) ...[
-                  const SizedBox(height: 24),
-                  ArchiveSection(
-                    title: '发现新版本 ${service.release!.version.name}',
-                    code: 'GITHUB / RELEASE',
-                  ),
-                  const SizedBox(height: 14),
-                  ContentPanel(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        ReleaseNotes(
-                          service.release!.notes.isEmpty
-                              ? '此版本未提供更新说明。'
-                              : service.release!.notes,
-                        ),
-                        const SizedBox(height: 16),
-                        if (service.downloading) ...[
-                          AppText(
-                            '已下载 ${(service.bytes / 1024 / 1024).toStringAsFixed(1)} / ${(service.asset!.size / 1024 / 1024).toStringAsFixed(1)} MB',
-                          ),
-                          const SizedBox(height: 8),
-                          LinearProgressIndicator(
-                            value: (service.bytes / service.asset!.size).clamp(
-                              0.0,
-                              1.0,
-                            ),
-                            color: Theme.of(context).colorScheme.primary,
-                            minHeight: 2,
-                          ),
-                          GlassTextButton(
-                            onPressed: service.cancelDownload,
-                            child: const AppText('取消下载'),
-                          ),
-                        ] else if (service.downloaded != null) ...[
-                          AppText(
-                            '安装包 ${service.downloadedInfo!.version} · 构建 ${service.downloadedInfo!.build}',
-                            key: const ValueKey('downloaded-app-version'),
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          if (service.needsPermission)
-                            AppText(
-                              '请允许本应用安装更新，返回后再次点击「安装更新」。',
-                              style: TextStyle(
-                                height: 1.5,
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                          if (service.needsPermission)
-                            GlassTextButton(
-                              onPressed: () => _open(
-                                context,
-                                service.platform.allowInstalls,
-                              ),
-                              child: const AppText('允许安装更新'),
-                            ),
-                          GlassTextButton(
-                            key: const ValueKey('install-app-update'),
-                            onPressed: service.busy ? null : service.install,
-                            child: AppText(
-                              service.installing ? '正在打开安装程序' : '安装更新',
-                            ),
-                          ),
-                        ] else if (service.asset != null)
-                          GlassTextButton(
-                            key: const ValueKey('download-app-update'),
-                            onPressed: service.busy ? null : service.download,
-                            child: AppText(
-                              '下载更新 · ${(service.asset!.size / 1024 / 1024).toStringAsFixed(1)} MB',
-                            ),
-                          )
-                        else
-                          const AppText('此版本暂无适合本机的 APK。'),
-                        GlassTextButton(
-                          onPressed: () => _open(
-                            context,
-                            () => service.openProjectPage(showRelease: true),
-                          ),
-                          child: const AppText('查看版本与下载入口'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 28),
-              ],
+              // The update-check panel and the new-version
+              // download/install panel were removed on Cassidy's
+              // order (fix2, 2026-11-03): update checking pointed at
+              // the original Wenku8 repository, and this self-use
+              // build's versions are delivered as direct APK links.
+              // What remains on this page: the installed version, our
+              // own 本版更新 card, and the project/licenses panel.
               CurrentReleaseCard(updates: service),
               const SizedBox(height: 28),
               const ArchiveSection(title: '项目与许可', code: 'SOURCE / LICENSES'),
@@ -673,14 +497,6 @@ class AppUpdatePage extends StatelessWidget {
                       ),
                       child: const AppText('开源许可与字体授权'),
                     ),
-                    if (service != null) ...[
-                      const SizedBox(height: 12),
-                      GlassTextButton(
-                        onPressed: () =>
-                            _open(context, () => service.openProjectPage()),
-                        child: const AppText('项目介绍与下载'),
-                      ),
-                    ],
                   ],
                 ),
               ),
@@ -691,16 +507,6 @@ class AppUpdatePage extends StatelessWidget {
     );
   }
 
-  Future<void> _open(
-    BuildContext context,
-    Future<void> Function() action,
-  ) async {
-    try {
-      await action();
-    } catch (_) {
-      if (context.mounted) showNovelFeedback(context, '暂时无法打开，请稍后重试');
-    }
-  }
 }
 
 class ReleaseNotes extends StatelessWidget {

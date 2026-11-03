@@ -33,9 +33,55 @@ final RegExp _spacing = RegExp(r'[\s·・_\-—–，,。.:：()（）\[\]「」
 String _normalize(String value) =>
     _width(value).toLowerCase().replaceAll(_spacing, '');
 
-/// Grouping key for a book: normalized title + normalized author.
-String legadoMergeKey(String name, String author) =>
-    '${_normalize(name)}\u0000${_normalize(author)}';
+/// Whether [value] carries codepoints that cannot render as visible
+/// glyphs in a book title: private-use-area characters (the classic
+/// signature of a site's font-based anti-scraping obfuscation, where
+/// list pages serve glyphs only their custom font can draw),
+/// variation selectors, zero-width and bidi controls, and C0/C1
+/// control codes. Such characters occupy full-width slots in the
+/// discovery shelf while drawing nothing, which reads as dropped
+/// characters and broken spacing.
+bool legadoHasInvisibleChars(String value) => value.runes.any(_isInvisibleRune);
+
+/// [value] with every invisible codepoint (see
+/// [legadoHasInvisibleChars]) removed. Clean text passes through
+/// unchanged.
+String legadoSanitizeBookText(String value) => legadoHasInvisibleChars(value)
+    ? String.fromCharCodes(value.runes.where((r) => !_isInvisibleRune(r)))
+    : value;
+
+bool _isInvisibleRune(int rune) =>
+    (rune >= 0xe000 && rune <= 0xf8ff) || // Private Use Area
+    (rune >= 0xf0000 && rune <= 0xffffd) || // Supplementary PUA-A
+    (rune >= 0x100000 && rune <= 0x10fffd) || // Supplementary PUA-B
+    (rune >= 0xfe00 && rune <= 0xfe0f) || // Variation Selectors
+    (rune >= 0xe0100 && rune <= 0xe01ef) || // Variation Selectors Supplement
+    rune == 0x200b ||
+    rune == 0x200c ||
+    rune == 0x200d ||
+    rune == 0xfeff || // zero-width chars / BOM
+    (rune >= 0x202a && rune <= 0x202e) ||
+    (rune >= 0x2066 && rune <= 0x2069) || // bidi controls
+    (rune < 0x20 && rune != 0x09) ||
+    (rune >= 0x7f && rune <= 0x9f); // C0/C1 controls
+
+/// Grouping key for a book: normalized title + normalized author +
+/// media bucket.
+///
+/// The media bucket was added in fix2 (2026-11-03): without it, the
+/// manga edition of a book (engine BookType image bit, `1 shl 6`) was
+/// merged into the same entry as the text edition of the same
+/// title+author and became invisible in the result list — the entry
+/// renders from its primary (text) record and the host `Novel` model
+/// carries no type marker. Text editions still merge across sources
+/// with each other, and manga editions with each other, which keeps
+/// the Q9 "same book, one entry, switch source inside" behaviour
+/// within each medium. [type] is the engine BookType bitmask of the
+/// book (see `legadoImageBookTypeBit` in legado_novel_repository.dart;
+/// the constant is mirrored here to avoid an import cycle).
+String legadoMergeKey(String name, String author, {int type = 0}) =>
+    '${_normalize(name)}\u0000${_normalize(author)}\u0000'
+    '${type & (1 << 6) != 0 ? 'img' : 'txt'}';
 
 /// One source's locating data for a merged book: everything needed to
 /// open the book on that source (detail / chapters / content) later.
@@ -198,7 +244,10 @@ List<MergedSearchBook> mergeSearchBooks(
   final groups = <String, List<SearchBook>>{};
   for (final book in books) {
     groups
-        .putIfAbsent(legadoMergeKey(book.name, book.author), () => [])
+        .putIfAbsent(
+          legadoMergeKey(book.name, book.author, type: book.type),
+          () => [],
+        )
         .add(book);
   }
   return <MergedSearchBook>[

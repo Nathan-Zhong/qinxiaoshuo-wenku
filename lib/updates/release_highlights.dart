@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../app_ui.dart';
 import '../app_interactions.dart';
+import 'app_changelog.dart';
 import 'app_updates.dart';
 
 class ReleaseSection {
@@ -11,23 +12,18 @@ class ReleaseSection {
   final List<String> items;
 }
 
-const currentReleaseSourcePolicy = '本 APP 以后只保留轻小说文库源和本地导入功能，不再支持任何其他源以及自定义书源。';
+// 小说文库自己的更新日志 (fix2, 2026-11-03, on Cassidy's order):
+// the original Wenku8 release notes — which announced that custom
+// book sources would no longer be supported, the exact opposite of
+// what this build is for — are gone. The card and the paged details
+// sheet keep their original design; only the data changed, and it
+// now comes from app_changelog.dart, one section per version, newest
+// first.
+final currentReleaseSummary = appChangelog.first.summary;
 
-const currentReleaseSummary = [
-  currentReleaseSourcePolicy,
-  '应用名称为「轻小说文库」。本版功能与 0.3.7 一致，0.4.0 用户可直接覆盖升级。',
-];
-
-const currentReleaseSections = [
-  ReleaseSection('重要说明 · 请务必阅读', [
-    currentReleaseSourcePolicy,
-    '应用名称保持「轻小说文库」。不再提供其他来源或自定义书源的导入、管理及在线阅读功能。',
-  ]),
-  ReleaseSection('恢复文库版本', [
-    '本版功能与 0.3.7 一致，保留原有阅读器、书架、UI、动效、听书和本地导入；未加入其他功能调整或问题修复。',
-    '已安装 0.4.0 的用户可直接覆盖升级，无需卸载。建议升级前备份阅读记录，不要先卸载旧版。',
-    '再次强调：本 APP 以后只保留轻小说文库源和本地导入功能，不再支持任何其他源以及自定义书源。',
-  ]),
+final currentReleaseSections = <ReleaseSection>[
+  for (final entry in appChangelog)
+    ReleaseSection('${entry.version} · ${entry.date}', entry.items),
 ];
 
 class CurrentReleaseCard extends StatelessWidget {
@@ -47,16 +43,17 @@ class CurrentReleaseCard extends StatelessWidget {
                 'RELEASE / ${service?.installed?.version ?? currentAppVersion}',
           ),
           const SizedBox(height: 12),
-          for (final item in currentReleaseSummary)
+          for (var i = 0; i < currentReleaseSummary.length; i++)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
               child: AppText(
-                '· $item',
+                '· ${currentReleaseSummary[i]}',
                 style: TextStyle(
-                  fontSize: item == currentReleaseSourcePolicy ? 18 : 13,
-                  fontWeight: item == currentReleaseSourcePolicy
-                      ? FontWeight.w700
-                      : FontWeight.normal,
+                  // The first summary line keeps the card's original
+                  // emphasised style (it used to be the old build's
+                  // policy headline; it is now our own headline).
+                  fontSize: i == 0 ? 18 : 13,
+                  fontWeight: i == 0 ? FontWeight.w700 : FontWeight.normal,
                   height: 1.6,
                 ),
               ),

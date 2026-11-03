@@ -123,8 +123,8 @@ class LegadoBookRecord {
   /// values never erase richer data an earlier hit or `getBookInfo`
   /// already provided.
   void absorbSearchBook(SearchBook book) {
-    if (book.name.isNotEmpty) name = book.name;
-    if (book.author.isNotEmpty) author = book.author;
+    name = _absorbDisplayText(name, book.name);
+    author = _absorbDisplayText(author, book.author);
     if (book.originName.isNotEmpty) originName = book.originName;
     if (book.tocUrl.isNotEmpty) tocUrl = book.tocUrl;
     type = book.type;
@@ -140,6 +140,31 @@ class LegadoBookRecord {
     absorbSearchBook(info.toSearchBookView());
     if (info.tocUrl.isNotEmpty) tocUrl = info.tocUrl;
     if (info.totalChapterNum > 0) totalChapterNum = info.totalChapterNum;
+  }
+
+  /// Display-text absorb rule (fix2, 2026-11-03). Some sites serve
+  /// list/explore pages with font-obfuscated text: characters drawn
+  /// from the private use area that only the site's own webfont can
+  /// render. In the app they draw nothing while still occupying
+  /// full-width slots, so titles looked like characters had been
+  /// dropped at random (the detail page, which serves the real title,
+  /// was unaffected — shelf and bookmark pages, fed by detail data,
+  /// displayed the same book correctly).
+  ///
+  /// Rules: a clean incoming value refreshes as before; a damaged
+  /// incoming value never replaces a clean value already held, and
+  /// when nothing clean is held the invisible codepoints are stripped
+  /// so what remains at least renders without phantom gaps (the
+  /// discovery prefetch then repairs the full text from the detail
+  /// page in the background).
+  static String _absorbDisplayText(String current, String incoming) {
+    if (incoming.isEmpty) return current;
+    if (!legadoHasInvisibleChars(incoming)) return incoming;
+    if (current.isNotEmpty && !legadoHasInvisibleChars(current)) {
+      return current;
+    }
+    final stripped = legadoSanitizeBookText(incoming);
+    return stripped.isNotEmpty ? stripped : current;
   }
 
   Map<String, Object?> toJson() => {
@@ -168,8 +193,10 @@ class LegadoBookRecord {
       originName: json['originName'] as String? ?? '',
       tocUrl: json['tocUrl'] as String? ?? '',
       type: json['type'] as int? ?? 0,
-      name: json['name'] as String? ?? '',
-      author: json['author'] as String? ?? '',
+      // Records persisted before fix2 may hold font-obfuscated titles;
+      // sanitize on load so they self-heal.
+      name: legadoSanitizeBookText(json['name'] as String? ?? ''),
+      author: legadoSanitizeBookText(json['author'] as String? ?? ''),
       kind: json['kind'] as String?,
       coverUrl: json['coverUrl'] as String?,
       intro: json['intro'] as String?,
@@ -349,8 +376,11 @@ class LegadoBookRegistry extends ChangeNotifier {
       originName: book.originName,
       tocUrl: book.tocUrl,
       type: book.type,
-      name: book.name,
-      author: book.author,
+      // Sanitized on the way in (fix2): a font-obfuscated list title
+      // is stored without its invisible codepoints; see
+      // _absorbDisplayText for the full rule.
+      name: legadoSanitizeBookText(book.name),
+      author: legadoSanitizeBookText(book.author),
       kind: book.kind,
       coverUrl: book.coverUrl,
       intro: book.intro,
@@ -360,7 +390,7 @@ class LegadoBookRegistry extends ChangeNotifier {
     );
     _records[record.id] = record;
     _idByBookKey[record.bookKey] = record.id;
-    final key = legadoMergeKey(book.name, book.author);
+    final key = legadoMergeKey(book.name, book.author, type: book.type);
     final group = _groups.putIfAbsent(key, () => <int>[]);
     if (!group.contains(record.id)) group.add(record.id);
     _groupById[record.id] = key;
