@@ -4,7 +4,9 @@
 #   - flutter-ci.yml 是 push/PR 自动检查 + 公开源码预览包（release / readerPreview 变体）；
 #   - android-release.yml 是维护者发布流，强制要求私有 Wenku API 运行库与正式签名 secrets，
 #     本项目（自用、无私有库）用不了，也不该用。
-# 本流不读任何 secrets：debug 构建用 runner 临时生成的调试签名即可。
+# debug job 不读任何 secrets：用 runner 临时生成的调试签名即可。
+# release job（FINAL 正式包）则从仓库 secrets 还原固定发布密钥签名，
+# 使最终包与后续修复包可覆盖安装、不清数据；密钥从不进 git。
 # 注意（已查实 android/app/build.gradle.kts）：本工程的 debug 变体带 applicationIdSuffix
 # ".render_probe"，产物包名为 com.cassidy.xiaoshuowenku.render_probe，与正式包名分开，
 # 装机后与原版轻小说文库、将来的正式包互不覆盖；且每次云构建的调试签名都不同，
@@ -50,3 +52,69 @@ jobs:
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  build-release-apk:
+    # FINAL 正式包：release + R8/资源压缩 + 只打 arm64（小米14），固定密钥签名。
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.5'
+          channel: stable
+          cache: true
+      - name: Check public source hygiene (no private artifacts or credentials)
+        run: python3 tools/check_public_source.py
+      - name: Restore release signing key from secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.XIAOSHUO_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.XIAOSHUO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.XIAOSHUO_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.XIAOSHUO_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for v in KEYSTORE_BASE64 KEY_ALIAS KEY_PASSWORD STORE_PASSWORD; do
+            if [[ -z "${!v}" ]]; then echo "::error::Missing signing secret $v"; exit 1; fi
+          done
+          store="$RUNNER_TEMP/xiaoshuo-release.jks"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$store"
+          chmod 600 "$store"
+          cat > android/key.properties <<EOF
+          storeFile=$store
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - name: Build release APK (arm64 only, minified)
+        run: flutter build apk --release --target-platform android-arm64
+      - name: Verify APK (single ABI, identity, signer)
+        run: |
+          set -euo pipefail
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          ls -l "$apk"
+          echo "--- ABIs in lib/:"
+          unzip -l "$apk" | grep -o 'lib/[^/]*/' | sort -u
+          test "$(unzip -l "$apk" | grep -o 'lib/[^/]*/' | sort -u)" = "lib/arm64-v8a/"
+          bt=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          bt_dir=$(dirname "$bt")
+          "$bt_dir/aapt" dump badging "$apk" | head -3
+          "$bt_dir/apksigner" verify --print-certs "$apk" | grep -i "SHA-256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xiaoshuo-wenku-release-apk
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/mapping/release/mapping.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove runner signing material
+        if: always()
+        run: rm -f android/key.properties "$RUNNER_TEMP/xiaoshuo-release.jks"

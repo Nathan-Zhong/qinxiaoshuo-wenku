@@ -81,7 +81,17 @@ android {
             applicationIdSuffix = ".profile_probe"
         }
         release {
-            proguardFile(file("document-import.pro"))
+            // FINAL package slimming: R8 code shrinking + resource shrinking.
+            // Keep rules live in legado-keep.pro — the Legado engine surface
+            // (Gson models, QuickJS-by-name JS bindings, vendored jsoup) is
+            // kept whole on purpose; see that file's header.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                file("document-import.pro"),
+                file("legado-keep.pro")
+            )
             if (catalogProbe) proguardFile(file("catalog-probe.pro"))
             if (readerPreview) {
                 applicationIdSuffix = ".reader_preview"
