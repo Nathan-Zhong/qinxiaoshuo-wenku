@@ -143,6 +143,10 @@ dependencies {
     implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
     implementation("androidx.collection:collection:1.6.0")
     implementation("androidx.core:core-ktx:1.18.0")
+    // P5.4 (G5): the Cloudflare solver's WebView UA setter syncs the
+    // Sec-CH-UA client hints via WebSettingsCompat — the fork's :app
+    // declares the same artifact (its catalog pins webkit 1.16.0).
+    implementation("androidx.webkit:webkit:1.16.0")
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("com.caverock:androidsvg-aar:1.4")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.4.0")

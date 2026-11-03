@@ -393,6 +393,31 @@ object LegadoEngine {
             recordBridgeError("selfCheck.sourceLogin", e)
             "ERROR ${e.legadoBrief()}"
         }
+        // Cloudflare interceptor (G5, P5.4): the provider's client
+        // must be the fork-style wrapper — the solver present at
+        // application-interceptor index 0 (a solved challenge's
+        // re-proceed must re-run the shared client's cookie bridge
+        // AFTER the solver) and its state machine the vendored
+        // ChallengeInterceptorBase. Registration alone would also
+        // pass if the wrapper silently regressed to the bare shared
+        // client, so the built client is inspected, not the registry.
+        out["cloudflare"] = runCatching {
+            val client = io.legado.app.help.http.OkHttpClientProviders.get().okHttpClient
+            val interceptors = client.interceptors
+            val index = interceptors.indexOfFirst { it is LegadoCloudflareInterceptor }
+            if (index >= 0) {
+                val solver = interceptors[index]
+                "ok: ${solver.javaClass.simpleName} at index $index of " +
+                    "${interceptors.size} app interceptors, base=" +
+                    "${solver.javaClass.superclass?.superclass?.simpleName}"
+            } else {
+                "ERROR solver missing: " +
+                    interceptors.joinToString { it.javaClass.simpleName }
+            }
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.cloudflare", e)
+            "ERROR ${e.legadoBrief()}"
+        }
         out["recentBridgeErrors"] = recentBridgeErrors().take(6)
         out["recentAppLog"] = AppLog.logs.take(5).map { (_, message, throwable) ->
             val head = message.lineSequence().firstOrNull() ?: ""

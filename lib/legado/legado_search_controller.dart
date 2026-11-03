@@ -33,6 +33,28 @@ class _InertRepository extends NovelRepository {
   Future<String> chapterContent(int novelId, NovelChapter chapter) async => '';
 }
 
+/// User-facing text for a search round that failed with no results.
+///
+/// Raw engine messages pass through unchanged, with one translation:
+/// the Cloudflare solver's failure (G5) reaches Dart as the fork's
+/// English IOException text ("Failed to bypass Cloudflare challenge",
+/// possibly wrapped in the exception brief), which says nothing to a
+/// reader — it becomes a plain explanation in the app's own wording.
+/// The automatic solve is silent and self-retrying inside the request
+/// (see LegadoCloudflare.kt), so by the time this text shows, the
+/// shield genuinely needs a human pass (the source's own verification
+/// entry, when it has one) or a later retry.
+String legadoSearchRoundErrorText(SearchErrorEvent error) {
+  final message = error.message;
+  if (message.isEmpty) {
+    return '书源搜索失败（${error.errorCode}）';
+  }
+  if (message.contains('Failed to bypass Cloudflare')) {
+    return '该网站的人机验证（Cloudflare）未能自动通过，请稍后重试';
+  }
+  return message;
+}
+
 /// The home shell's global search feed, backed by the Legado engine's
 /// streaming search instead of a one-shot repository query.
 ///
@@ -397,11 +419,7 @@ class LegadoSearchFeedController extends NovelFeedController {
         if (_pageValue == 0) _pageValue = 1;
         final roundError = _roundError;
         if (_items.isEmpty && roundError != null) {
-          _errorValue = FormatException(
-            roundError.message.isEmpty
-                ? '书源搜索失败（${roundError.errorCode}）'
-                : roundError.message,
-          );
+          _errorValue = FormatException(legadoSearchRoundErrorText(roundError));
         }
         _totalItemsValue = _items.length;
         notifyListeners();

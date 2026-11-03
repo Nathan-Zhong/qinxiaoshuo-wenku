@@ -157,6 +157,12 @@ import kotlinx.coroutines.runBlocking
  * SourceVerificationHelpShared the same way), plus the WebView UA
  * (G11: [LegadoWebViewUa] serves the real
  * WebSettings default UA instead of the desktop HTTP UA).
+ *
+ * Registered since P5.4 (2026-11-03): the Cloudflare interceptor
+ * (G5) — [LegadoOkHttpProvider] no longer returns the bare shared
+ * client but the fork-style wrapper with [LegadoCloudflareInterceptor]
+ * at interceptor index 0 (the challenge state machine itself is the
+ * vendored ChallengeInterceptorBase; see LegadoCloudflare.kt).
  */
 
 /** Builds the engine Room database under the host's private storage. */
@@ -588,9 +594,40 @@ class LegadoPreferenceProvider(context: Context) : PreferenceProvider {
     }
 }
 
-/** OkHttpClientProvider: the engine's shared client (fork adds a Cloudflare interceptor; not in this phase). */
-object LegadoOkHttpProvider : OkHttpClientProvider {
-    override val okHttpClient: KmpHttpClient get() = sharedOkHttpClient
+/**
+ * OkHttpClientProvider: the engine's book-source client — the shared
+ * client (`HttpHelper.okHttpClient`, vendored) wrapped exactly like
+ * the fork's WebBookProvidersImpl: a NEW builder with the Cloudflare
+ * interceptor (G5, P5.4; [LegadoCloudflareInterceptor]) inserted at
+ * application-interceptor index 0, so a solved challenge's re-proceed
+ * re-runs the shared client's own UA/cookie-bridge interceptor and
+ * picks up the freshly solved cf_clearance from the CookieStore.
+ * Both the wrapped client and the interceptor are single lazy
+ * instances (the interceptor's per-host dedup locks must not be
+ * duplicated per call, and the shared client must not be re-wrapped).
+ * The proxy chain (`getProxyClient`) stays unwrapped, as in the fork.
+ * Plain builder composition only — no delegation back into this
+ * provider (the FIX3 self-recursion lesson does not apply, and the
+ * self-check asserts the interceptor's presence and position).
+ */
+class LegadoOkHttpProvider(context: Context) : OkHttpClientProvider {
+
+    private val appContext: Context = context.applicationContext
+
+    private val cloudflareInterceptor: LegadoCloudflareInterceptor by lazy {
+        LegadoCloudflareInterceptor(
+            appContext,
+            LegadoBookSourceChallengeCookieResolver()
+        ) {
+            UserAgentProviders.get()
+        }
+    }
+
+    override val okHttpClient: KmpHttpClient by lazy {
+        sharedOkHttpClient.newBuilder()
+            .apply { interceptors().addAll(0, listOf(cloudflareInterceptor)) }
+            .build()
+    }
 }
 
 /** IntentDataAccessor: single-slot holder, same as the fork's. */
@@ -854,7 +891,7 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     RegexReplacers.register(io.legado.app.utils.AndroidRegexReplacer)
     RuleRegexes.register(null)
     registerRuleRegexForJsonPath()
-    OkHttpClientProviders.register(LegadoOkHttpProvider)
+    OkHttpClientProviders.register(LegadoOkHttpProvider(appContext))
     SourceHelpAccessors.register(LegadoSourceHelpAccessor)
 
     // Cookie stack: store provider first, then the OkHttp cookie-jar bridge.

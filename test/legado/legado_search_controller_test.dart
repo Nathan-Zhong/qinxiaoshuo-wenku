@@ -278,6 +278,56 @@ void main() {
     expect(controller.error, isNotNull);
   });
 
+  test('legadoSearchRoundErrorText maps the Cloudflare failure', () {
+    const cfError = SearchErrorEvent(
+      1,
+      errorCode: 'IOException',
+      message: 'java.io.IOException: Failed to bypass Cloudflare challenge',
+    );
+    expect(
+      legadoSearchRoundErrorText(cfError),
+      '该网站的人机验证（Cloudflare）未能自动通过，请稍后重试',
+    );
+    // Other raw messages pass through; an empty message falls back
+    // to the coded form.
+    const other = SearchErrorEvent(
+      1,
+      errorCode: 'IllegalStateException',
+      message: 'java.lang.IllegalStateException: boom',
+    );
+    expect(legadoSearchRoundErrorText(other), other.message);
+    const empty = SearchErrorEvent(1, errorCode: 'X', message: '');
+    expect(legadoSearchRoundErrorText(empty), '书源搜索失败（X）');
+  });
+
+  test('Cloudflare searchError surfaces as the readable feed error', () async {
+    await controller.searchFor('斗破');
+    await settle();
+    final taskId = taskIdOfSearch();
+    sink!.success({
+      'type': 'searchError',
+      'taskId': taskId,
+      'sourceUrl': 'https://www.xiguashuwu2.com',
+      'errorCode': 'IOException',
+      'message': 'java.io.IOException: Failed to bypass Cloudflare challenge',
+    });
+    await settle();
+    sink!.success({
+      'type': 'searchFinish',
+      'taskId': taskId,
+      'isEmpty': true,
+      'hasMore': false,
+    });
+    await settle();
+    expect(controller.items, isEmpty);
+    final error = controller.error;
+    expect(error, isA<FormatException>());
+    expect(
+      (error! as FormatException).message,
+      '该网站的人机验证（Cloudflare）未能自动通过，请稍后重试',
+    );
+  });
+
   test('searchError with partial results keeps items, no error', () async {
     await controller.searchFor('斗破');
     await settle();
