@@ -23,7 +23,7 @@ import kotlin.math.min
 /**
  * Management-plane bridge operations (P5.6): source checking (G12),
  * rule subscriptions (G13), replace-rule CRUD (G14) and find-book-by-
- * URL (G17), plus the simplified/traditional converter switch the
+ * URL (G16), plus the simplified/traditional converter switch the
  * content pipeline reads (P5.5 follow-up, Cassidy-ordered UI).
  *
  * Everything here is a thin orchestration over the vendored engine:
@@ -364,7 +364,7 @@ object LegadoManage {
     }
 
     // ------------------------------------------------------------------
-    // G17: getBookByUrl
+    // G16: getBookByUrl
     // ------------------------------------------------------------------
 
     /**

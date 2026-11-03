@@ -16,6 +16,7 @@ void main() {
   late List<MethodCall> calls;
   late int converterType;
   MockStreamHandlerEventSink? taskEvents;
+  int? lastCheckTaskId;
 
   Map<String, Object?> sourceA() => <String, Object?>{
     'sourceUrl': 'https://a.example',
@@ -38,6 +39,7 @@ void main() {
     calls = [];
     converterType = 1;
     taskEvents = null;
+    lastCheckTaskId = null;
     messenger.setMockStreamHandler(
       const EventChannel('org.mewx.wenku8/legado_task_events'),
       MockStreamHandler.inline(
@@ -119,37 +121,39 @@ void main() {
           converterType = args['type'] as int;
           return null;
         case 'checkSources':
-          final taskId = args['taskId'] as int;
-          // A breath of delay: the sheet subscribes first, but the
-          // EventChannel listen handshake must land before events are
-          // emitted or they are dropped (on device the check itself
-          // takes seconds of network probing, so this never races).
-          Future<void>.delayed(const Duration(milliseconds: 300), () {
-            taskEvents?.success(<String, Object?>{
+          lastCheckTaskId = args['taskId'] as int;
+          // Emit from a fake-zone timer (platform-message dispatch
+          // from the test body lands in the real queue and only
+          // flushes at teardown). The check test advances fake time
+          // in steps so the sheet is subscribed before this fires.
+          Future<void>.delayed(const Duration(milliseconds: 50), () {
+            final sink = taskEvents;
+            if (sink == null) return;
+            sink.success(<String, Object?>{
               'type': 'checkProgress',
-              'taskId': taskId,
+              'taskId': lastCheckTaskId,
               'sourceUrl': 'https://a.example',
               'state': 'ok',
               'done': 1,
               'total': 2,
             });
-            taskEvents?.success(<String, Object?>{
+            sink.success(<String, Object?>{
               'type': 'checkProgress',
-              'taskId': taskId,
+              'taskId': lastCheckTaskId,
               'sourceUrl': 'https://m.example',
               'state': 'fail',
               'message': '搜索失效',
               'done': 2,
               'total': 2,
             });
-            taskEvents?.success(<String, Object?>{
+            sink.success(<String, Object?>{
               'type': 'checkDone',
-              'taskId': taskId,
+              'taskId': lastCheckTaskId,
               'okCount': 1,
               'failCount': 1,
             });
           });
-          return <String, Object?>{'taskId': taskId};
+          return <String, Object?>{'taskId': args['taskId']};
         case 'listSubscriptions':
           return <Map<String, Object?>>[
             <String, Object?>{
@@ -493,12 +497,15 @@ void main() {
   ) async {
     await pumpPage(tester);
     await tester.tap(find.byKey(const ValueKey('book-source-check')));
-    await tester.pump();
-    // Let the sheet build + subscribe, then let the mock's delayed
-    // progress events land.
-    await tester.pump(const Duration(milliseconds: 400));
     await tester.pumpAndSettle();
     expect(callFor('checkSources').method, 'checkSources');
+    // The mock emits from a timer on the real event loop; give it
+    // real time to fire and deliver, then rebuild.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 300)),
+    );
+    await tester.pumpAndSettle();
+    await tester.pump();
     expect(find.text('校验完成：可用 1 · 失效 1'), findsOneWidget);
     expect(find.text('可用'), findsOneWidget);
     expect(find.text('失效：搜索失效'), findsOneWidget);
