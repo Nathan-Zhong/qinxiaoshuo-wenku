@@ -294,8 +294,23 @@ object LegadoEngine {
                     // the Discovery page makes for the selected kind.
                     val result = getExploreBooks(first.bookSourceUrl, kindUrl, 1)
                     val books = result["books"] as? List<*>
-                    "ok: kind「${kind.title}」-> ${books?.size ?: 0} books, " +
+                    val head = "ok: kind「${kind.title}」-> ${books?.size ?: 0} books, " +
                         "hasMore=${result["hasMore"]}"
+                    // Cover evidence (fix1, 2026-11-03): the Discovery
+                    // page showed text covers even for a source whose
+                    // list rules DO carry a cover （搬山人
+                    // ruleExplore.coverUrl = img@data-src, CDN bytes
+                    // verified fetchable server-side), and the host
+                    // cover path audits clean end to end. The missing
+                    // fact is what the engine hands back on device:
+                    // append the first book's raw coverUrl, its G7
+                    // resolution and one real byte fetch so a single
+                    // screenshot settles "empty/odd coverUrl" vs
+                    // "bytes never came back".
+                    val coverUrl = (books?.firstOrNull() as? Map<*, *>)
+                        ?.get("coverUrl") as? String
+                    head + " | firstCover: " +
+                        probeExploreCover(first.bookSourceUrl, coverUrl)
                 }
             }.getOrElse { e ->
                 recordBridgeError("selfCheck.exploreBooks", e)
@@ -1204,6 +1219,57 @@ object LegadoEngine {
             recordBridgeError("resolveImageRequest:$origin", e)
             fallback
         }
+    }
+
+    /**
+     * One-line cover evidence for the self-check's exploreBooks stage
+     * (fix1, 2026-11-03): the first explore book's raw coverUrl,
+     * verbatim (a source URL, not user data); the G7-resolved target
+     * truncated to scheme + host + the first 40 path characters (the
+     * query string, which can carry tokens, is never printed); and
+     * the outcome of one real fetch with the resolved headers —
+     * HTTP status + byte count, read-capped at 8MB like the Dart
+     * cover loader — or the failure's brief. Resolved header values
+     * are used for the request only, never printed; no image bytes
+     * are reported.
+     */
+    private suspend fun probeExploreCover(origin: String, coverUrl: String?): String {
+        if (coverUrl.isNullOrBlank()) return "coverUrl=(empty)"
+        val resolved = resolveImageRequest(origin, coverUrl)
+        val resolvedUrl = resolved["url"] as? String ?: coverUrl
+        @Suppress("UNCHECKED_CAST")
+        val headers = resolved["headers"] as? Map<String, String> ?: emptyMap()
+        val uri = runCatching { java.net.URI(resolvedUrl) }.getOrNull()
+        val shown = if (uri == null) {
+            "(unparsable resolved url)"
+        } else {
+            "${uri.scheme}://${uri.host ?: "?"}${(uri.path ?: "").take(40)}"
+        }
+        val fetched = withContext(Dispatchers.IO) {
+            runCatching {
+                val client = io.legado.app.help.http.OkHttpClientProviders.get()
+                    .okHttpClient.newBuilder()
+                    .callTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                val request = okhttp3.Request.Builder().url(resolvedUrl)
+                    .apply { headers.forEach { (k, v) -> header(k, v) } }
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    var total = 0L
+                    val stream = response.body?.byteStream()
+                    if (stream != null) {
+                        val buffer = ByteArray(16 * 1024)
+                        while (total <= 8L * 1024 * 1024) {
+                            val read = stream.read(buffer)
+                            if (read < 0) break
+                            total += read
+                        }
+                    }
+                    "HTTP ${response.code}, $total bytes"
+                }
+            }.getOrElse { e -> "fetch failed: ${e.legadoBrief(200)}" }
+        }
+        return "coverUrl=$coverUrl | resolved=$shown | $fetched"
     }
 
     /** One-line image-probe summary: full URL + header KEYS (never values). */

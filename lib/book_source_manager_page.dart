@@ -905,12 +905,17 @@ class _ImportSourceSheetState extends State<_ImportSourceSheet> {
             enableSuggestions: false,
             // Plain text, NOT TextInputType.url: on HyperOS the url
             // keyboard type was seen to raise Xiaomi's secure keyboard
-            // for this field, as if it were a sensitive input. The URL
-            // classification is kept for the system via autofillHints
-            // instead. (Which keyboard ultimately opens is the system's
-            // call; this is the app-side best effort.)
+            // for this field, as if it were a sensitive input.
+            // (Which keyboard ultimately opens is the system's call;
+            // this is the app-side best effort.)
+            // EXPERIMENT (fix1, 2026-11-03): AutofillHints.url removed
+            // here and from the other URL fields in this file — MIUI's
+            // classifier may treat autofill-hinted fields as sensitive
+            // and hand them to the secure keyboard. Pending Cassidy's
+            // on-device verdict on whether the secure keyboard stops
+            // appearing for this field; restore the hints if it does
+            // not help.
             keyboardType: TextInputType.text,
-            autofillHints: const [AutofillHints.url],
             textInputAction: TextInputAction.done,
             onSubmitted: (_) {
               if (_url.text.trim().isEmpty) {
@@ -988,7 +993,8 @@ class _ImportSourceSheetState extends State<_ImportSourceSheet> {
             autocorrect: false,
             enableSuggestions: false,
             keyboardType: TextInputType.text,
-            autofillHints: const [AutofillHints.url],
+            // No AutofillHints.url — see the fix1 experiment note on
+            // the import URL field above.
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => unawaited(_findBook()),
             decoration: const InputDecoration(
@@ -1479,7 +1485,8 @@ class _SubscriptionsSheetState extends State<_SubscriptionsSheet> {
             autocorrect: false,
             enableSuggestions: false,
             keyboardType: TextInputType.text,
-            autofillHints: const [AutofillHints.url],
+            // No AutofillHints.url — see the fix1 experiment note on
+            // the import URL field above.
             decoration: const InputDecoration(
               labelText: '订阅地址',
               hintText: 'https://…',

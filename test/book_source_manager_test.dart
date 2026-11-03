@@ -364,7 +364,7 @@ void main() {
   });
 
   testWidgets(
-    'import sheet URL field uses a plain text keyboard with URL autofill hint',
+    'import sheet URL field uses a plain text keyboard, no autofill hint',
     (tester) async {
       await pumpPage(tester);
       await tester.tap(find.byKey(const ValueKey('book-source-import')));
@@ -373,9 +373,13 @@ void main() {
         find.byKey(const ValueKey('book-source-import-url')),
       );
       // Not TextInputType.url (seen to raise Xiaomi's secure keyboard on
-      // HyperOS); the URL classification travels via autofillHints.
+      // HyperOS). The AutofillHints.url that used to ride along was
+      // removed in fix1 (2026-11-03): MIUI's classifier may treat
+      // autofill-hinted fields as sensitive and hand them to the
+      // secure keyboard too — on-device experiment, see the note in
+      // book_source_manager_page.dart.
       expect(field.keyboardType, TextInputType.text);
-      expect(field.autofillHints, const [AutofillHints.url]);
+      expect(field.autofillHints ?? const <String>[], isEmpty);
       expect(field.autocorrect, isFalse);
       expect(tester.takeException(), isNull);
     },
