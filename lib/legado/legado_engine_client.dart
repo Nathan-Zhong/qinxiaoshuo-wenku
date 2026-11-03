@@ -486,6 +486,7 @@ class LegadoEngineClient {
     final result = await _invokeMap('getChapterContent', <String, Object?>{
       ...book.toEngineBookArgs(),
       'chapterUrl': chapter.url,
+      'chapterTitle': chapter.title,
       'chapterIndex': chapter.index,
       'chapterVariable': ?chapterVariable,
       'nextChapterUrl': ?nextChapterUrl,

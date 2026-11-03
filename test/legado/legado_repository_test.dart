@@ -197,6 +197,29 @@ void main() {
       },
     );
 
+    test(
+      'chapter content asks the engine to run its content pipeline',
+      () async {
+        // P5.5: reading a Legado book must request the full
+        // post-processing (applyReplace: true) with the TOC chapter
+        // title, like the fork's reader always processing content.
+        Map<String, Object?>? contentArgs;
+        final base = responder;
+        responder = (call) {
+          if (call.method == 'getChapterContent') {
+            contentArgs = (call.arguments as Map).cast<String, Object?>();
+          }
+          return base?.call(call);
+        };
+        final record = await seedBook();
+        await repository.chapters(record.id);
+        const chapter = NovelChapter('第一章', '', id: 1);
+        await repository.chapterContent(record.id, chapter);
+        expect(contentArgs?['applyReplace'], isTrue);
+        expect(contentArgs?['chapterTitle'], '第一章');
+      },
+    );
+
     test('find resolves from the registry without the engine', () async {
       final record = await seedBook();
       responder = null;

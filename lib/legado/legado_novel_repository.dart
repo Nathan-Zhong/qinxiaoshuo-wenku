@@ -186,6 +186,14 @@ class LegadoNovelRepository extends NovelRepository {
       book: record.toBookInfo(),
       chapter: dto,
       nextChapterUrl: nextChapterUrl,
+      // Reading a Legado book runs the engine's full content
+      // post-processing (duplicate-title removal, re-segmentation,
+      // simplified/traditional conversion, replace rules — switches
+      // resolved inside the engine exactly as in Legado itself),
+      // mirroring how the fork's reader always processes content.
+      // Wenku books never reach this repository (see the dispatch
+      // below), so their content path is untouched.
+      applyReplace: true,
     );
     if (result.isImageChapter) return legadoImageChapterNotice;
     return result.content;

@@ -8,6 +8,7 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.book.ContentProcessorProviders
+import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.exploreKinds
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
@@ -418,6 +419,21 @@ object LegadoEngine {
             recordBridgeError("selfCheck.cloudflare", e)
             "ERROR ${e.legadoBrief()}"
         }
+        // Content pipeline probe (G9, P5.5): runs the registered
+        // accessor over synthetic samples and reports OBSERVED values
+        // (never hard asserts — this is a diagnostic surface): the
+        // duplicate-title flag + textList shape, the t2s conversion
+        // result while the converter is temporarily switched on (the
+        // user's setting is restored in finally), and whether
+        // re-segmentation merged a hard mid-paragraph break. Before
+        // P5.5 the same probe would read sameTitleRemoved=false,
+        // textList=1 and an unconverted 繁體 sample.
+        out["contentProcessor"] = runCatching {
+            probeContentProcessor()
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.contentProcessor", e)
+            "ERROR ${e.legadoBrief()}"
+        }
         out["recentBridgeErrors"] = recentBridgeErrors().take(6)
         out["recentAppLog"] = AppLog.logs.take(5).map { (_, message, throwable) ->
             val head = message.lineSequence().firstOrNull() ?: ""
@@ -445,6 +461,65 @@ object LegadoEngine {
             recordBridgeError("selfCheck.analyzeUrl.perSource", e)
             "ERROR ${e.legadoBrief()}"
         }
+
+    /**
+     * Synthetic content-pipeline probe for the self-check (P5.5).
+     * Uses a throwaway book that exists only in memory (never written
+     * to the DB); its read config enables the two book-level switches
+     * the pipeline ANDs against, so each stage is exercised in turn by
+     * the call parameters. Observed values only.
+     */
+    private fun probeContentProcessor(): String {
+        val accessor = ContentProcessorProviders.get()
+        val book = Book(
+            bookUrl = "https://probe.invalid/book",
+            origin = "https://probe.invalid",
+            originName = "自检",
+            name = "自检样本书",
+            author = "自检"
+        )
+        book.readConfig = Book.ReadConfig(reSegment = true, useReplaceRule = true)
+        val chapter = BookChapter(
+            url = "https://probe.invalid/ch1",
+            title = "第一章 启程",
+            bookUrl = book.bookUrl,
+            index = 0
+        )
+        // A: the body opens with a duplicate of the chapter title.
+        val a = accessor.getBookContent(
+            book, chapter,
+            "第一章 启程\n他推开门，走了出去。",
+            includeTitle = true, useReplace = true,
+            chineseConvert = true, reSegment = false
+        )
+        // B: traditional -> simplified, converter temporarily on.
+        val config = AppConfigProviders.get()
+        val oldType = config.chineseConverterType
+        val bText = try {
+            config.chineseConverterType = 1
+            accessor.getBookContent(
+                book, chapter,
+                "這是繁體字的測試，學習中文。",
+                includeTitle = false, useReplace = true,
+                chineseConvert = true, reSegment = false
+            ).textList.joinToString("\n")
+        } finally {
+            config.chineseConverterType = oldType
+        }
+        // C: a hard line break mid-paragraph (no sentence end before
+        // it) is merged by re-segmentation.
+        val cText = accessor.getBookContent(
+            book, chapter,
+            "他站在窗前望着远方\n雨还在下，街上没有人。",
+            includeTitle = false, useReplace = true,
+            chineseConvert = false, reSegment = true
+        ).textList.joinToString("\n")
+        return "ok: accessor=${accessor.javaClass.simpleName} | " +
+            "dedup: sameTitleRemoved=${a.sameTitleRemoved}, " +
+            "textList=${a.textList.size} | " +
+            "t2s: ${bText.take(12)} | " +
+            "reSegmentMerged=${!cText.contains("远方\n雨")}"
+    }
 
     /** One real WebBook search for one source, self-check format. */
     private suspend fun probeWebBookSearch(source: BookSource): String =
@@ -752,6 +827,7 @@ object LegadoEngine {
         author: String?,
         variable: String?,
         chapterUrl: String,
+        chapterTitle: String?,
         chapterIndex: Int,
         chapterVariable: String?,
         nextChapterUrl: String?,
@@ -762,6 +838,11 @@ object LegadoEngine {
         val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable)
         val chapter = BookChapter(
             url = chapterUrl,
+            // The TOC title (already title-rule processed by the
+            // engine's chapter-list chain): the content pipeline's
+            // duplicate-title removal and display-title logic key off
+            // it, exactly as the fork's reader passes its TOC chapter.
+            title = chapterTitle ?: "",
             bookUrl = bookUrl,
             index = chapterIndex,
             variable = chapterVariable
@@ -769,12 +850,32 @@ object LegadoEngine {
         var content = WebBook.getContentAwait(
             source, book, chapter, nextChapterUrl, needSave = false
         )
-        if (applyReplace) {
+        val isImageChapter = source.bookSourceType == 2
+        // Image chapters carry an image-URL list, not prose: the fork
+        // never runs the text pipeline over it (an image book's
+        // getUseReplaceRule() is false unless explicitly overridden,
+        // and its reader consumes the list as image refs), so the
+        // pipeline below is text-chapters only.
+        if (applyReplace && !isImageChapter) {
+            // Full post-processing pipeline (P5.5, G9): duplicate-title
+            // removal, re-segmentation, simplified/traditional
+            // conversion and the replace rules, with every switch
+            // resolved inside the processor exactly as the fork does
+            // (chineseConvert by AppConfig.chineseConverterType,
+            // reSegment by the book's own read config, replace rules
+            // ANDed with Book.getUseReplaceRule()). The entry point is
+            // the fork's own body-only variant — BookController's web
+            // API calls getContent(includeTitle = false) for the same
+            // reason: the bridge contract returns the chapter BODY and
+            // the Flutter reader renders the chapter title itself, so
+            // the title element of BookContent must not be prepended.
             content = ContentProcessorProviders.get()
-                .getContent(book, chapter, content, useReplace = true)
+                .getContent(
+                    book, chapter, content,
+                    includeTitle = false, useReplace = true
+                )
                 .toString()
         }
-        val isImageChapter = source.bookSourceType == 2
         val images = if (isImageChapter) {
             extractImages(content, chapter.getAbsoluteURL(book))
         } else {

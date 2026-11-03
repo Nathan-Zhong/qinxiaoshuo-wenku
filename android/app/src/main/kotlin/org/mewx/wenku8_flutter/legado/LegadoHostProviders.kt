@@ -64,8 +64,11 @@ import io.legado.app.help.UserAgentProviders
 import io.legado.app.help.book.BookContent
 import io.legado.app.help.book.BookHelpAccessor
 import io.legado.app.help.book.BookHelpProviders
+import io.legado.app.help.book.BookHelpShared
 import io.legado.app.help.book.ContentProcessorAccessor
+import io.legado.app.help.book.ContentProcessorDeps
 import io.legado.app.help.book.ContentProcessorProviders
+import io.legado.app.help.book.ContentProcessorShared
 import io.legado.app.help.config.AppConfigAccessor
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProvider
@@ -332,51 +335,92 @@ class LegadoConfigAccessor(context: Context) : AppConfigAccessor {
 }
 
 /**
- * ContentProcessorAccessor backed directly by ReplaceRuleDao.
+ * ContentProcessorAccessor backed by the fork's full pipeline (P5.5, G9).
  *
- * The fork's full processor (ContentProcessorShared) lives in `:core`,
- * which is not vendored; this implementation covers the part the minimal
- * loop actually exercises: title rules for the TOC (BookChapterList calls
- * getTitleReplaceRules on every chapter-list fetch) and, when the bridge
- * is asked to apply replace rules, the enabled content-scope rules in
- * order (regex via the registered RegexReplacer, plain rules as literal replace).
- * Simplified-Chinese conversion / re-segmentation / duplicate-title
- * removal from `:core` are not applied in this phase.
+ * Mirrors the fork's Android wiring one-to-one: the fork's
+ * WebBookProvidersImpl accessor delegates every call to a per-book
+ * `ContentProcessor` (WeakReference cache), which in turn delegates to
+ * `ContentProcessorShared` (`:core`, not vendored — replicated verbatim
+ * into the host under the same FQCN, see
+ * io/legado/app/help/book/ContentProcessorShared.kt). This class plays
+ * both host roles: the accessor, and the per-book instance cache with
+ * the fork's construction-time `upReplaceRules` + `upRemoveSameTitle`
+ * (both runBlocking, as in the fork's ContentProcessor init).
+ *
+ * The Android deps are the host equivalents of the fork's
+ * AndroidContentProcessorDeps:
+ * - isAndroid8: Build.VERSION.SDK_INT in 26..27 (same expression);
+ * - toastOnUi: the shared [LegadoToaster] (P5.1) — the fork uses
+ *   appCtx.toastOnUi; both surface a real system Toast;
+ * - getChapterFiles: the fork lists the book's download-cache folder
+ *   (BookHelp.getChapterFiles, with BookHelpShared.shouldSkipChapterFiles
+ *   as the guard); the host lists the same book folder inside
+ *   [LegadoBookHelp]'s cache root (the host's own layout, keyed by
+ *   MD5(bookUrl) — see LegadoBookHelp.chapterFile).
+ *
+ * Deviations from the fork, all mechanical: the instance map is guarded
+ * by a lock (bridge calls arrive on engine coroutine threads; the fork's
+ * plain HashMap serves its own UI-thread-dominated call sites), and the
+ * deps are an instance field instead of a file-private object because
+ * the toaster / cache root are registration-time values here.
  */
-class LegadoContentProcessor(private val db: AppDatabase) : ContentProcessorAccessor {
-    @Volatile
-    private var titleRuleCache = mapOf<String, List<ReplaceRule>>()
+class LegadoContentProcessor(
+    private val toaster: LegadoToaster,
+    private val bookCacheRoot: File
+) : ContentProcessorAccessor {
 
-    override fun getTitleReplaceRules(book: Book): List<ReplaceRule> {
-        val key = "${book.name}|${book.origin}"
-        titleRuleCache[key]?.let { return it }
-        val rules = runBlocking { db.replaceRuleDao.findEnabledByTitleScope(book.name, book.origin) }
-        titleRuleCache = titleRuleCache + (key to rules)
-        return rules
+    private val deps = object : ContentProcessorDeps {
+        override val isAndroid8: Boolean =
+            android.os.Build.VERSION.SDK_INT in 26..27
+
+        override fun toastOnUi(msg: String) = toaster.toast(msg)
+
+        override fun getChapterFiles(book: Book): Set<String> {
+            if (BookHelpShared.shouldSkipChapterFiles(book)) return emptySet()
+            val dir = File(bookCacheRoot, MD5Utils.md5Encode(book.bookUrl))
+            return dir.list()?.toSet() ?: emptySet()
+        }
     }
+
+    private val processors =
+        hashMapOf<String, java.lang.ref.WeakReference<ContentProcessorShared>>()
+
+    private fun processorFor(book: Book): ContentProcessorShared {
+        val key = book.name + book.origin
+        synchronized(processors) {
+            processors[key]?.get()?.let { return it }
+            val shared = ContentProcessorShared(book.name, book.origin, deps)
+            // Fork ContentProcessor init: both refreshes runBlocking
+            // before the instance serves anything.
+            runBlocking { shared.upReplaceRules() }
+            runBlocking { shared.upRemoveSameTitle() }
+            processors[key] = java.lang.ref.WeakReference(shared)
+            return shared
+        }
+    }
+
+    override fun getTitleReplaceRules(book: Book): List<ReplaceRule> =
+        processorFor(book).getTitleReplaceRules()
 
     override fun getContent(
         book: Book,
         chapter: BookChapter,
         content: String,
         useReplace: Boolean
-    ): CharSequence {
-        if (!useReplace) return content
-        val rules = runBlocking {
-            db.replaceRuleDao.findEnabledByContentScope(book.name, book.origin)
-        }
-        var result = content
-        for (rule in rules) {
-            result = if (rule.isRegex) {
-                RegexReplacers.get().replace(
-                    result, rule.pattern, false, rule.replacement, rule.timeoutMillisecond
-                )
-            } else {
-                result.replace(rule.pattern, rule.replacement)
-            }
-        }
-        return result
-    }
+    ): CharSequence = processorFor(book).getContent(
+        book, chapter, content, useReplace = useReplace
+    ).toString()
+
+    override fun getContent(
+        book: Book,
+        chapter: BookChapter,
+        content: String,
+        includeTitle: Boolean,
+        useReplace: Boolean
+    ): CharSequence = processorFor(book).getContent(
+        book, chapter, content,
+        includeTitle = includeTitle, useReplace = useReplace
+    ).toString()
 
     override fun getBookContent(
         book: Book,
@@ -386,24 +430,24 @@ class LegadoContentProcessor(private val db: AppDatabase) : ContentProcessorAcce
         useReplace: Boolean,
         chineseConvert: Boolean,
         reSegment: Boolean
-    ): BookContent {
-        val body = getContent(book, chapter, content, useReplace).toString()
-        val text = if (includeTitle && chapter.title.isNotBlank() &&
-            !body.startsWith(chapter.title)
-        ) {
-            "${chapter.title}\n$body"
-        } else {
-            body
-        }
-        return BookContent(
-            sameTitleRemoved = false,
-            textList = listOf(text),
-            effectiveReplaceRules = null
-        )
-    }
+    ): BookContent = processorFor(book).getContent(
+        book = book,
+        chapter = chapter,
+        content = content,
+        includeTitle = includeTitle,
+        useReplace = useReplace,
+        chineseConvert = chineseConvert,
+        reSegment = reSegment
+    )
 
     override fun upReplaceRules() {
-        titleRuleCache = emptyMap()
+        // Fork ContentProcessor.upReplaceRules(): refresh every live
+        // cached instance; books without an instance yet load fresh
+        // rules at construction.
+        val live = synchronized(processors) {
+            processors.values.mapNotNull { it.get() }
+        }
+        live.forEach { shared -> runBlocking { shared.upReplaceRules() } }
     }
 }
 
@@ -880,9 +924,16 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
         override val appDb: AppDatabase get() = db
     })
     AppConfigProviders.register(LegadoConfigAccessor(appContext))
-    ContentProcessorProviders.register(LegadoContentProcessor(db))
+    // ContentProcessor (P5.5): full fork pipeline via the replicated
+    // ContentProcessorShared; its deps need the shared toaster and the
+    // book-cache root, so the book help is built first and both
+    // registrations share the one instance / folder.
+    val bookCacheRoot = File(dataDir, "book_cache")
     BookHelpProviders.register(
-        LegadoBookHelp(File(dataDir, "book_cache"), File(dataDir, "covers"))
+        LegadoBookHelp(bookCacheRoot, File(dataDir, "covers"))
+    )
+    ContentProcessorProviders.register(
+        LegadoContentProcessor(legadoToaster, bookCacheRoot)
     )
     IntentDataProviders.register(LegadoIntentDataAccessor)
     // The engine's own Android regex replacer (coroutine-watchdog timeout,

@@ -381,6 +381,7 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
                     author = call.argument<String>("author"),
                     variable = call.argument<String>("variable"),
                     chapterUrl = reqString(call, "chapterUrl"),
+                    chapterTitle = call.argument<String>("chapterTitle"),
                     chapterIndex = call.argument<Int>("chapterIndex") ?: 0,
                     chapterVariable = call.argument<String>("chapterVariable"),
                     nextChapterUrl = call.argument<String>("nextChapterUrl"),

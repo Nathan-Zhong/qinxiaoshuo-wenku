@@ -306,10 +306,34 @@ void main() {
       );
       final args = argsOf('getChapterContent');
       expect(args['chapterUrl'], 'https://a.example/1/c1');
+      // The TOC title rides along (P5.5): the native content
+      // pipeline's duplicate-title removal keys off it.
+      expect(args['chapterTitle'], '第一话');
       expect(args['chapterIndex'], 0);
       expect(args['applyReplace'], isFalse);
       expect(content.isImageChapter, isTrue);
       expect(content.images, <String>['https://img.example/1.jpg']);
+    });
+
+    test('getChapterContent forwards applyReplace when requested', () async {
+      responder = (call) => <String, Object?>{
+        'content': '正文',
+        'images': <String>[],
+        'isImageChapter': false,
+      };
+      const chapter = Chapter(
+        url: 'https://a.example/1/c2',
+        title: '第二章',
+        index: 1,
+      );
+      await client.getChapterContent(
+        book: info,
+        chapter: chapter,
+        applyReplace: true,
+      );
+      final args = argsOf('getChapterContent');
+      expect(args['applyReplace'], isTrue);
+      expect(args['chapterTitle'], '第二章');
     });
 
     test('resolveImageRequest returns url and headers', () async {
