@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wenku8_flutter/app_ui.dart';
 import 'package:wenku8_flutter/book_source_manager_page.dart';
 import 'package:wenku8_flutter/legado/legado_engine_client.dart';
@@ -13,6 +14,8 @@ void main() {
 
   late List<Map<String, Object?>> store;
   late List<MethodCall> calls;
+  late int converterType;
+  MockStreamHandlerEventSink? taskEvents;
 
   Map<String, Object?> sourceA() => <String, Object?>{
     'sourceUrl': 'https://a.example',
@@ -33,6 +36,19 @@ void main() {
   setUp(() {
     store = [sourceA(), sourceB()];
     calls = [];
+    converterType = 1;
+    taskEvents = null;
+    messenger.setMockStreamHandler(
+      const EventChannel('org.mewx.wenku8/legado_task_events'),
+      MockStreamHandler.inline(
+        onListen: (arguments, events) {
+          taskEvents = events;
+        },
+        onCancel: (arguments) {
+          taskEvents = null;
+        },
+      ),
+    );
     messenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call);
       final args = call.arguments is Map
@@ -97,12 +113,112 @@ void main() {
             'sources': [added],
             'errors': <String>[],
           };
+        case 'getChineseConverterType':
+          return <String, Object?>{'type': converterType};
+        case 'setChineseConverterType':
+          converterType = args['type'] as int;
+          return null;
+        case 'checkSources':
+          final taskId = args['taskId'] as int;
+          // A breath of delay: the sheet subscribes first, but the
+          // EventChannel listen handshake must land before events are
+          // emitted or they are dropped (on device the check itself
+          // takes seconds of network probing, so this never races).
+          Future<void>.delayed(const Duration(milliseconds: 300), () {
+            taskEvents?.success(<String, Object?>{
+              'type': 'checkProgress',
+              'taskId': taskId,
+              'sourceUrl': 'https://a.example',
+              'state': 'ok',
+              'done': 1,
+              'total': 2,
+            });
+            taskEvents?.success(<String, Object?>{
+              'type': 'checkProgress',
+              'taskId': taskId,
+              'sourceUrl': 'https://m.example',
+              'state': 'fail',
+              'message': '搜索失效',
+              'done': 2,
+              'total': 2,
+            });
+            taskEvents?.success(<String, Object?>{
+              'type': 'checkDone',
+              'taskId': taskId,
+              'okCount': 1,
+              'failCount': 1,
+            });
+          });
+          return <String, Object?>{'taskId': taskId};
+        case 'listSubscriptions':
+          return <Map<String, Object?>>[
+            <String, Object?>{
+              'id': 7,
+              'name': '测试订阅',
+              'url': 'https://sub.example/list.json',
+              'type': 0,
+              'customOrder': 1,
+              'autoUpdate': false,
+              'lastUpdate': 0,
+            },
+          ];
+        case 'upsertSubscription':
+          return Map<String, Object?>.of(args)..['id'] = 8;
+        case 'deleteSubscription':
+          return <String, Object?>{'ok': true};
+        case 'updateSubscription':
+          return <String, Object?>{
+            'added': 3,
+            'updated': 0,
+            'unchanged': 0,
+            'failed': 0,
+            'sources': <Object?>[],
+            'errors': <String>[],
+          };
+        case 'updateAllSubscriptions':
+          return <String, Object?>{'taskId': args['taskId']};
+        case 'listReplaceRules':
+          return <Map<String, Object?>>[
+            <String, Object?>{
+              'id': 3,
+              'name': '去广告',
+              'pattern': '广告',
+              'replacement': '',
+              'scope': '',
+              'isRegex': false,
+              'isEnabled': true,
+              'order': 0,
+            },
+          ];
+        case 'setReplaceRuleEnabled':
+          return null;
+        case 'deleteReplaceRule':
+          return <String, Object?>{'ok': true};
+        case 'getBookByUrl':
+          return <String, Object?>{
+            'origin': 'https://a.example',
+            'book': <String, Object?>{
+              'name': '链接之书',
+              'author': '佚名',
+              'bookUrl': 'https://a.example/book/1',
+              'tocUrl': 'https://a.example/book/1/index',
+              'origin': 'https://a.example',
+              'originName': 'A源',
+              'type': 0,
+            },
+          };
       }
       return null;
     });
   });
 
-  tearDown(() => messenger.setMockMethodCallHandler(channel, null));
+  tearDown(() {
+    messenger.setMockMethodCallHandler(channel, null);
+    messenger.setMockStreamHandler(
+      const EventChannel('org.mewx.wenku8/legado_task_events'),
+      null,
+    );
+  });
 
   Future<void> pumpPage(WidgetTester tester) async {
     tester.view.physicalSize = const Size(390, 900);
@@ -238,10 +354,7 @@ void main() {
     expect(find.textContaining('type=2'), findsOneWidget);
     // The per-source deep probe renders through the same generic path.
     expect(find.text('perSourceSearch'), findsOneWidget);
-    expect(
-      find.textContaining('笔趣阁 | searchUrlResolved:'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('笔趣阁 | searchUrlResolved:'), findsOneWidget);
     expect(find.textContaining('webBookSearch: ok: 0 books'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -353,10 +466,102 @@ void main() {
       find.byKey(const ValueKey('book-source-login-https://a.example')),
       findsNothing,
     );
-    expect(
-      calls.where((call) => call.method == 'getLoginStates'),
-      isEmpty,
+    expect(calls.where((call) => call.method == 'getLoginStates'), isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('converter row shows the current mode and switching '
+      'calls setChineseConverterType', (tester) async {
+    await pumpPage(tester);
+    // Mock engine starts at 1 （繁转简）.
+    expect(find.text('当前：繁转简（仅书源书籍）'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('book-source-converter')));
+    await tester.pumpAndSettle();
+    expect(find.text('不转换'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('book-source-converter-2')));
+    await tester.pumpAndSettle();
+    final args = (callFor('setChineseConverterType').arguments as Map)
+        .cast<String, Object?>();
+    expect(args['type'], 2);
+    expect(converterType, 2);
+    expect(find.text('当前：简转繁（仅书源书籍）'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('check button streams per-source results into the sheet', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await tester.tap(find.byKey(const ValueKey('book-source-check')));
+    await tester.pump();
+    // Let the sheet build + subscribe, then let the mock's delayed
+    // progress events land.
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+    expect(callFor('checkSources').method, 'checkSources');
+    expect(find.text('校验完成：可用 1 · 失效 1'), findsOneWidget);
+    expect(find.text('可用'), findsOneWidget);
+    expect(find.text('失效：搜索失效'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('subscriptions sheet lists subscriptions and updates one', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await tester.tap(find.byKey(const ValueKey('book-source-subscriptions')));
+    await tester.pumpAndSettle();
+    expect(callFor('listSubscriptions').method, 'listSubscriptions');
+    expect(find.text('测试订阅'), findsOneWidget);
+    expect(find.text('https://sub.example/list.json'), findsOneWidget);
+    await tester.tap(find.text('更新'));
+    await tester.pumpAndSettle();
+    final args = (callFor('updateSubscription').arguments as Map)
+        .cast<String, Object?>();
+    expect(args['id'], 7);
+    expect(find.textContaining('更新完成'), findsOneWidget);
+    expect(find.textContaining('新增 3'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('replace rules sheet lists rules; toggle flips enabled', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await tester.tap(find.byKey(const ValueKey('book-source-replace-rules')));
+    await tester.pumpAndSettle();
+    expect(callFor('listReplaceRules').method, 'listReplaceRules');
+    expect(find.text('去广告'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('book-source-replace-enabled-3')),
     );
+    await tester.pumpAndSettle();
+    final args = (callFor('setReplaceRuleEnabled').arguments as Map)
+        .cast<String, Object?>();
+    expect(args['id'], 3);
+    expect(args['enabled'], isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('find book by url registers the book and confirms', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await pumpPage(tester);
+    await tester.tap(find.byKey(const ValueKey('book-source-import')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('book-source-book-url')),
+      'https://a.example/book/1',
+    );
+    await tester.tap(find.byKey(const ValueKey('book-source-book-url-submit')));
+    await tester.pumpAndSettle();
+    final args = (callFor('getBookByUrl').arguments as Map)
+        .cast<String, Object?>();
+    expect(args['url'], 'https://a.example/book/1');
+    // No detail opener is injected in this harness, so the page falls
+    // back to the confirmation message.
+    expect(find.textContaining('已找到《链接之书》'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

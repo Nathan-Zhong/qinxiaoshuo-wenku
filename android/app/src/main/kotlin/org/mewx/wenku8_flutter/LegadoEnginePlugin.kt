@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import org.mewx.wenku8_flutter.legado.LegadoBridgeException
 import org.mewx.wenku8_flutter.legado.LegadoDto
 import org.mewx.wenku8_flutter.legado.LegadoEngine
+import org.mewx.wenku8_flutter.legado.LegadoManage
 import org.mewx.wenku8_flutter.legado.LegadoUiHost
 import org.mewx.wenku8_flutter.legado.legadoBrief
 import org.mewx.wenku8_flutter.legado.legadoErrorCode
@@ -39,8 +40,12 @@ import org.mewx.wenku8_flutter.legado.legadoErrorCode
  * for source images via the engine's AnalyzeUrl), and the source
  * login surface (G3: getLoginData / login / runLoginAction /
  * openSourceLogin / logoutSource / getLoginHeader /
- * removeLoginHeader / getLoginStates — see legado/LegadoLogin.kt).
- * All other contract methods return notImplemented.
+ * removeLoginHeader / getLoginStates — see legado/LegadoLogin.kt),
+ * and the management plane (P5.6: checkSources with progress on the
+ * task EventChannel, subscription CRUD + updates, replace-rule CRUD,
+ * getBookByUrl, and the chinese converter switch — see
+ * legado/LegadoManage.kt). Remaining contract methods (change-source
+ * candidates, cache download) return notImplemented.
  *
  * Threading: engine work runs on [LegadoEngine.scope] (IO); channel
  * results and event sinks are always delivered on the main thread.
@@ -69,6 +74,10 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
     private var taskSink: EventChannel.EventSink? = null
 
     private val searchSessions = ConcurrentHashMap<Int, LegadoSearchSession>()
+
+    /** Long management tasks (source checks, batch subscription
+     *  updates) by taskId, so cancelTask can stop them like searches. */
+    private val taskJobs = ConcurrentHashMap<Int, kotlinx.coroutines.Job>()
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         appContext = binding.applicationContext
@@ -103,6 +112,8 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         searchSessions.values.forEach { it.shutdown() }
         searchSessions.clear()
+        taskJobs.values.forEach { it.cancel() }
+        taskJobs.clear()
         methodChannel?.let { LegadoUiHost.unregisterChannel(it) }
         methodChannel?.setMethodCallHandler(null)
         searchEventChannel?.setStreamHandler(null)
@@ -346,6 +357,7 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
                 val taskId = call.argument<Int>("taskId")
                 if (taskId != null) {
                     cancelSearchTask(taskId)
+                    taskJobs.remove(taskId)?.cancel()
                 }
                 result.success(null)
             }
@@ -396,6 +408,97 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
                 )
             }
 
+            // ---- Management plane (P5.6, legado/LegadoManage.kt) ----
+
+            "checkSources" -> {
+                val taskId = call.argument<Int>("taskId")
+                if (taskId == null) {
+                    result.error("UNKNOWN", "checkSources needs taskId", null)
+                    return
+                }
+                val sourceUrls = call.argument<List<*>>("sourceUrls")
+                    ?.filterIsInstance<String>()
+                runCatching {
+                    taskJobs[taskId] = LegadoManage.checkSources(
+                        taskId, sourceUrls
+                    ) { event -> emitTaskEvent(event) }
+                    result.success(mapOf("taskId" to taskId))
+                }.onFailure { e ->
+                    result.error(legadoErrorCode(e), e.message ?: e.toString(), null)
+                }
+            }
+
+            "listSubscriptions" -> launchEngine(result) {
+                LegadoManage.listSubscriptions()
+            }
+
+            "upsertSubscription" -> launchEngine(result) {
+                LegadoManage.upsertSubscription(argsMap(call))
+            }
+
+            "deleteSubscription" -> launchEngine(result) {
+                val id = (call.argument<Number>("id"))?.toLong() ?: 0L
+                mapOf("ok" to LegadoManage.deleteSubscription(id))
+            }
+
+            "updateSubscription" -> launchEngine(result) {
+                val id = (call.argument<Number>("id"))?.toLong() ?: 0L
+                LegadoManage.updateSubscription(id)
+            }
+
+            "updateAllSubscriptions" -> {
+                val taskId = call.argument<Int>("taskId")
+                if (taskId == null) {
+                    result.error("UNKNOWN", "updateAllSubscriptions needs taskId", null)
+                    return
+                }
+                val onlyDue = call.argument<Boolean>("onlyDue") ?: false
+                runCatching {
+                    taskJobs[taskId] = LegadoManage.updateAllSubscriptions(
+                        taskId, onlyDue
+                    ) { event -> emitTaskEvent(event) }
+                    result.success(mapOf("taskId" to taskId))
+                }.onFailure { e ->
+                    result.error(legadoErrorCode(e), e.message ?: e.toString(), null)
+                }
+            }
+
+            "listReplaceRules" -> launchEngine(result) {
+                LegadoManage.listReplaceRules()
+            }
+
+            "upsertReplaceRule" -> launchEngine(result) {
+                LegadoManage.upsertReplaceRule(argsMap(call))
+            }
+
+            "deleteReplaceRule" -> launchEngine(result) {
+                val id = (call.argument<Number>("id"))?.toLong() ?: 0L
+                mapOf("ok" to LegadoManage.deleteReplaceRule(id))
+            }
+
+            "setReplaceRuleEnabled" -> launchEngine(result) {
+                val id = (call.argument<Number>("id"))?.toLong() ?: 0L
+                LegadoManage.setReplaceRuleEnabled(
+                    id, call.argument<Boolean>("enabled") ?: true
+                )
+                mapOf("ok" to true)
+            }
+
+            "getBookByUrl" -> launchEngine(result) {
+                LegadoManage.getBookByUrl(reqString(call, "url"))
+            }
+
+            "getChineseConverterType" -> launchEngine(result) {
+                mapOf("type" to LegadoManage.getChineseConverterType())
+            }
+
+            "setChineseConverterType" -> launchEngine(result) {
+                LegadoManage.setChineseConverterType(
+                    call.argument<Int>("type") ?: 0
+                )
+                mapOf("ok" to true)
+            }
+
             else -> result.notImplemented()
         }
     }
@@ -428,6 +531,13 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
         return raw.entries.associate { (k, v) ->
             k.toString() to (v?.toString() ?: "")
         }
+    }
+
+    /** The whole arguments object as a string-keyed map (DTO-shaped
+     *  calls like upsertSubscription send their toMap() as arguments). */
+    private fun argsMap(call: MethodCall): Map<String, Any?> {
+        val raw = call.arguments as? Map<*, *> ?: return emptyMap()
+        return raw.entries.associate { (k, v) -> k.toString() to v }
     }
 
     // ------------------------------------------------------------------
@@ -478,6 +588,11 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
 
     private fun emitSearchEvent(event: Map<String, Any?>) {
         mainHandler.post { searchSink?.success(event) }
+    }
+
+    /** Task-channel events (source checks, subscription updates). */
+    private fun emitTaskEvent(event: Map<String, Any?>) {
+        mainHandler.post { taskSink?.success(event) }
     }
 
     private companion object {

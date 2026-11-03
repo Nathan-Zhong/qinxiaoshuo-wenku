@@ -5,7 +5,7 @@ import 'app_ui.dart';
 import 'catalog.dart';
 import 'feature_pages.dart';
 import 'library_state.dart';
-import 'pages.dart' show SettingsPage;
+import 'pages.dart' show SettingsPage, openDetail;
 import 'updates/app_updates.dart';
 import 'updates/update_page.dart';
 import 'book_source_manager_page.dart';
@@ -49,7 +49,15 @@ class MyPage extends StatelessWidget {
                 icon: CupertinoIcons.list_bullet,
                 onTap: () => pushNovelPage<void>(
                   context,
-                  const BookSourceManagerPage(),
+                  BookSourceManagerPage(
+                    onOpenBook: (pageContext, novel) => openDetail(
+                      pageContext,
+                      novel,
+                      state,
+                      repository,
+                      forceDetails: true,
+                    ),
+                  ),
                   reduceMotion: state.reduceMotion,
                 ),
               ),

@@ -92,6 +92,15 @@ object LegadoEngine {
                     // an application context for browser launches.
                     LegadoLoginHost.appContext = appContext
                     LegadoLoginEventBridge.start(scope)
+                    // Rule subscriptions (G13): the engine's daily
+                    // auto-update delegates its import step to the
+                    // registered hook; register the host's before the
+                    // first trigger, then fire one (throttled) round —
+                    // the fork triggers it in the same app-start batch
+                    // as its daily backup.
+                    io.legado.app.help.storage.RuleSubAutoUpdateHooks
+                        .register(LegadoRuleSubHook)
+                    io.legado.app.help.storage.RuleSubAutoUpdate.run()
                     dbRef = database
                     dbFilePath = File(dir, AppDatabase.DATABASE_NAME).absolutePath
                     initialized = true
@@ -432,6 +441,27 @@ object LegadoEngine {
             probeContentProcessor()
         }.getOrElse { e ->
             recordBridgeError("selfCheck.contentProcessor", e)
+            "ERROR ${e.legadoBrief()}"
+        }
+        // Management plane (P5.6): table sizes for the surfaces the
+        // source manager now drives (subscriptions / replace rules),
+        // counts only.
+        out["manageCounts"] = runCatching {
+            "ok: ruleSubs=${db.ruleSubDao.all().size}, " +
+                "replaceRules=${db.replaceRuleDao.all().size}, " +
+                "dictRules=${db.dictRuleDao.all().size}"
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.manageCounts", e)
+            "ERROR ${e.legadoBrief()}"
+        }
+        // Converter switch (P5.5 follow-up): the value the content
+        // pipeline will apply to Legado books (0 none / 1 t2s / 2 s2t).
+        // The probe above temporarily flips it and restores, so this
+        // reads the pipeline probe's restored end state.
+        out["chineseConverterType"] = runCatching {
+            "ok: type=${AppConfigProviders.get().chineseConverterType}"
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.chineseConverterType", e)
             "ERROR ${e.legadoBrief()}"
         }
         out["recentBridgeErrors"] = recentBridgeErrors().take(6)

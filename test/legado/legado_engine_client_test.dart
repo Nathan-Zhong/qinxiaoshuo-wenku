@@ -377,6 +377,24 @@ void main() {
     });
   });
 
+  group('content settings', () {
+    test(
+      'getChineseConverterType maps the type and tolerates absence',
+      () async {
+        responder = (call) => <String, Object?>{'type': 2};
+        expect(await client.getChineseConverterType(), 2);
+        expect(callFor('getChineseConverterType').arguments, isNull);
+        responder = (call) => null;
+        expect(await client.getChineseConverterType(), 0);
+      },
+    );
+
+    test('setChineseConverterType sends the type argument', () async {
+      await client.setChineseConverterType(1);
+      expect(argsOf('setChineseConverterType'), <String, Object?>{'type': 1});
+    });
+  });
+
   group('subscriptions', () {
     test(
       'upsertSubscription round-trips and update maps ImportResult',

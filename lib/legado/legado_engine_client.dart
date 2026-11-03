@@ -251,9 +251,7 @@ class LegadoEngineClient {
 
   /// The saved login header text, or null when none is saved.
   Future<String?> getLoginHeader(String sourceUrl) async {
-    final result = await _invokeMap('getLoginHeader', {
-      'sourceUrl': sourceUrl,
-    });
+    final result = await _invokeMap('getLoginHeader', {'sourceUrl': sourceUrl});
     final header = result?['header'];
     return header is String ? header : null;
   }
@@ -593,6 +591,27 @@ class LegadoEngineClient {
     });
     final nativeId = result?['taskId'];
     return nativeId is num ? nativeId.toInt() : id;
+  }
+
+  // ---------------------------------------------------------------------
+  // Content settings
+  // ---------------------------------------------------------------------
+
+  /// The simplified/traditional conversion mode the engine's content
+  /// pipeline applies to Legado books only: 0 = no conversion,
+  /// 1 = traditional -> simplified, 2 = simplified -> traditional
+  /// (fork AppConfig.chineseConverterType semantics, persisted by the
+  /// engine side). Defaults to 0 when the engine does not answer.
+  Future<int> getChineseConverterType() async {
+    final result = await _invokeMap('getChineseConverterType');
+    final type = result?['type'];
+    return type is num ? type.toInt() : 0;
+  }
+
+  Future<void> setChineseConverterType(int type) {
+    return _methodChannel.invokeMethod<void>('setChineseConverterType', {
+      'type': type,
+    });
   }
 
   // ---------------------------------------------------------------------
