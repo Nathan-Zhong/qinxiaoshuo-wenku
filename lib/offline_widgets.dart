@@ -24,13 +24,20 @@ class OfflineBookStatus extends StatelessWidget {
     builder: (context, _) {
       final job = repository.jobFor(novel.id);
       final saved = repository.cache.book(novel.id);
-      final count = saved == null
-          ? 0
-          : identical(saved.novel.chapters, novel.chapters)
-          ? saved.cachedCount
-          : novel.chapters
-                .where((chapter) => saved.chapterBytes.containsKey(chapter.id))
-                .length;
+      // Legado books cache into the engine's own folder (P5.7), so
+      // their count comes from the engine-side snapshot; every other
+      // book keeps the Flutter chapter-cache count below.
+      final count =
+          repository.legadoCachedCount(novel) ??
+          (saved == null
+              ? 0
+              : identical(saved.novel.chapters, novel.chapters)
+              ? saved.cachedCount
+              : novel.chapters
+                    .where(
+                      (chapter) => saved.chapterBytes.containsKey(chapter.id),
+                    )
+                    .length);
       return AppText(
         job?.active == true ||
                 job?.phase == DownloadPhase.failed ||

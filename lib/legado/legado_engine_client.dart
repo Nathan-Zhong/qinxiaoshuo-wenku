@@ -593,6 +593,26 @@ class LegadoEngineClient {
     return nativeId is num ? nativeId.toInt() : id;
   }
 
+  /// Engine chapter indexes whose text file is present in the book's
+  /// offline cache folder (P5.7) — the "available offline" set.
+  Future<List<int>> getCachedChapterIndexes({required BookInfo book}) async {
+    final result = await _invokeMap(
+      'getCachedChapterIndexes',
+      book.toEngineBookArgs(),
+    );
+    final raw = result?['indexes'];
+    if (raw is! List) return const [];
+    return <int>[
+      for (final value in raw)
+        if (value is num) value.toInt(),
+    ];
+  }
+
+  /// Drops the book's whole offline cache folder (text + images).
+  Future<void> clearBookCache({required BookInfo book}) async {
+    await _invokeMap('clearBookCache', book.toEngineBookArgs());
+  }
+
   // ---------------------------------------------------------------------
   // Content settings
   // ---------------------------------------------------------------------

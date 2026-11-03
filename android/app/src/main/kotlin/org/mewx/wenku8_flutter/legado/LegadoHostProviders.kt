@@ -61,10 +61,23 @@ import io.legado.app.help.RuleBigDataProviders
 import io.legado.app.help.RuleBigDataShared
 import io.legado.app.help.UserAgentProvider
 import io.legado.app.help.UserAgentProviders
+import android.graphics.BitmapFactory
 import io.legado.app.help.book.BookContent
 import io.legado.app.help.book.BookHelpAccessor
 import io.legado.app.help.book.BookHelpProviders
 import io.legado.app.help.book.BookHelpShared
+import io.legado.app.help.book.BookImageDownloadShared
+import io.legado.app.help.book.BookImageStorage
+import io.legado.app.help.book.BookImageStorageProviders
+import io.legado.app.help.book.BookStorage
+import io.legado.app.help.book.BookStorageProviders
+import io.legado.app.help.book.getFolderName
+import io.legado.app.help.book.isCachedImageUsable
+import io.legado.app.model.CacheBookCallback
+import io.legado.app.model.CacheBookCallbacks
+import io.legado.app.ui.book.read.page.provider.ChapterContentParserShared
+import io.legado.app.utils.UrlUtil
+import java.io.IOException
 import io.legado.app.help.book.ContentProcessorAccessor
 import io.legado.app.help.book.ContentProcessorDeps
 import io.legado.app.help.book.ContentProcessorProviders
@@ -223,7 +236,33 @@ class LegadoConfigAccessor(context: Context) : AppConfigAccessor {
     private fun int(key: String, default: Int) = prefs.getInt(key, default)
     private fun str(key: String, default: String) = prefs.getString(key, default) ?: default
 
-    override val threadCount: Int = 16
+    /**
+     * Engine fan-out width. 16 is the fork's default; while a cache
+     * download runs, the bridge dips it to [CACHE_DOWNLOAD_THREADS]
+     * (reference counted via [acquireCacheDownloadDip]) so bulk chapter
+     * fetching stays gentle on rate-limited sites — the fork's own
+     * parallel search clamp (min(threadCount, MAX_THREAD=9)) also
+     * narrows during the dip, which is deliberate device courtesy.
+     */
+    override val threadCount: Int
+        get() = if (cacheDownloadDipHolders > 0) CACHE_DOWNLOAD_THREADS else 16
+
+    companion object {
+        private const val CACHE_DOWNLOAD_THREADS = 4
+
+        @Volatile
+        private var cacheDownloadDipHolders = 0
+
+        @Synchronized
+        fun acquireCacheDownloadDip() {
+            cacheDownloadDipHolders++
+        }
+
+        @Synchronized
+        fun releaseCacheDownloadDip() {
+            if (cacheDownloadDipHolders > 0) cacheDownloadDipHolders--
+        }
+    }
     override val tocCountWords: Boolean get() = bool("tocCountWords", false)
     override fun setTocCountWords(value: Boolean) {
         prefs.edit().putBoolean("tocCountWords", value).apply()
@@ -355,8 +394,8 @@ class LegadoConfigAccessor(context: Context) : AppConfigAccessor {
  * - getChapterFiles: the fork lists the book's download-cache folder
  *   (BookHelp.getChapterFiles, with BookHelpShared.shouldSkipChapterFiles
  *   as the guard); the host lists the same book folder inside
- *   [LegadoBookHelp]'s cache root (the host's own layout, keyed by
- *   MD5(bookUrl) — see LegadoBookHelp.chapterFile).
+ *   [LegadoBookHelp]'s cache root (since P5.7 the fork's folder-name
+ *   layout — see LegadoBookHelp).
  *
  * Deviations from the fork, all mechanical: the instance map is guarded
  * by a lock (bridge calls arrive on engine coroutine threads; the fork's
@@ -377,7 +416,10 @@ class LegadoContentProcessor(
 
         override fun getChapterFiles(book: Book): Set<String> {
             if (BookHelpShared.shouldSkipChapterFiles(book)) return emptySet()
-            val dir = File(bookCacheRoot, MD5Utils.md5Encode(book.bookUrl))
+            // P5.7: the book-cache layout moved to the fork's
+            // folder-name scheme (see LegadoBookHelp), so chapter
+            // files now live in the folder-name directory.
+            val dir = File(bookCacheRoot, book.getFolderName())
             return dir.list()?.toSet() ?: emptySet()
         }
     }
@@ -452,18 +494,39 @@ class LegadoContentProcessor(
 }
 
 /**
- * BookHelpAccessor with a simple deterministic on-disk layout under the
- * engine data dir. The bridge fetches content with needSave=false, so
- * saveContent is only a safety net for engine-internal callers; it is
- * paired with getContent below so the two stay consistent.
+ * BookHelpAccessor with the fork's on-disk layout under the engine data
+ * dir (P5.7 migration): `book_cache/<Book.getFolderName()>/<chapter
+ * .nb file>` for chapter text and `.../images/<md5(src)>.<suffix>` for
+ * chapter images — the exact layout the fork's BookHelp/BookHelpLogic
+ * use, so the engine's CacheBook orchestrator, the content processor's
+ * chapter-files listing and this accessor all address the same files.
+ * (The previous host layout — `MD5(bookUrl)/<index>_<MD5>.txt` — was a
+ * never-exercised safety net: the bridge fetched with needSave=false,
+ * so no real cache files existed under it; nothing is migrated.)
+ *
+ * saveContent delegates to the fork's BookHelpShared orchestration
+ * (BookStorage.saveText + SAVE_CONTENT event), mirroring fork
+ * BookHelp.saveContent's delegation. The image trio mirrors fork
+ * BookHelpLogic semantics: downloads via the replicated
+ * BookImageDownloadShared, existence = non-empty file, and
+ * hasImageContent validates every extracted image by decoding it,
+ * deleting corrupt files (fork parity; SVG validity is sniffed by
+ * tag presence instead of fork's SvgUtils size parse — the only
+ * deliberate deviation, since SvgUtils lives in the fork app module).
  */
 class LegadoBookHelp(private val cacheRoot: File, private val coversDir: File) : BookHelpAccessor {
     override val cachePath: String get() = cacheRoot.absolutePath
 
-    private fun chapterFile(book: Book, bookChapter: BookChapter): File {
-        val bookDir = File(cacheRoot, MD5Utils.md5Encode(book.bookUrl))
-        return File(bookDir, "${bookChapter.index}_${MD5Utils.md5Encode(bookChapter.url)}.txt")
-    }
+    /** Book cache folder: `<cacheRoot>/<Book.getFolderName()>`. */
+    fun bookDir(book: Book): File = File(cacheRoot, book.getFolderName())
+
+    /** Chapter text file: `<bookDir>/<BookChapter.getFileName()>`. */
+    fun chapterFile(book: Book, bookChapter: BookChapter): File =
+        File(bookDir(book), bookChapter.getFileName())
+
+    /** Chapter image file: `<bookDir>/images/<imageFileName(src)>`. */
+    fun imageFile(book: Book, src: String): File =
+        File(File(bookDir(book), "images"), imageFileName(src))
 
     override fun saveContent(
         bookSource: BookSource,
@@ -471,25 +534,258 @@ class LegadoBookHelp(private val cacheRoot: File, private val coversDir: File) :
         bookChapter: BookChapter,
         content: String
     ) {
-        runCatching {
-            val file = chapterFile(book, bookChapter)
-            file.parentFile?.mkdirs()
-            file.writeText(content, Charsets.UTF_8)
+        BookHelpShared.saveContent(book, bookChapter, content)
+    }
+
+    /** fork BookHelp.saveText: atomic write + word count, empty no-op. */
+    fun saveText(book: Book, bookChapter: BookChapter, content: String) {
+        if (content.isEmpty()) return
+        val file = chapterFile(book, bookChapter)
+        if (writeTextAtomically(file, content)) {
+            runCatching { BookHelpShared.upWordCount(book, bookChapter, content) }
         }
     }
 
     override fun getContent(book: Book, bookChapter: BookChapter): String? {
         val file = chapterFile(book, bookChapter)
-        return if (file.isFile) runCatching { file.readText(Charsets.UTF_8) }.getOrNull() else null
+        if (!file.isFile) return null
+        return runCatching { file.readText(Charsets.UTF_8) }
+            .getOrNull()
+            ?.takeIf { it.isNotEmpty() }
     }
+
+    /** fork BookHelp.hasContent: skip-guarded chapter-file existence. */
+    fun hasContentFile(book: Book, bookChapter: BookChapter): Boolean =
+        if (BookHelpShared.shouldSkipHasContent(book, bookChapter)) {
+            true
+        } else {
+            chapterFile(book, bookChapter).exists()
+        }
 
     override fun getCoverPath(bookUrl: String): String {
         coversDir.mkdirs()
         return File(coversDir, "${MD5Utils.md5Encode(bookUrl)}.jpg").absolutePath
     }
 
+    override suspend fun saveImages(
+        bookSource: BookSource,
+        book: Book,
+        bookChapter: BookChapter,
+        content: String,
+        concurrency: Int
+    ) {
+        BookImageDownloadShared.saveImages(bookSource, book, bookChapter, content, concurrency)
+    }
+
+    override suspend fun saveImage(
+        bookSource: BookSource?,
+        book: Book,
+        src: String,
+        chapter: BookChapter?
+    ) {
+        BookImageDownloadShared.saveImage(bookSource, book, src, chapter)
+    }
+
+    override fun getImage(book: Book, src: String): File = imageFile(book, src)
+
+    override fun isImageExist(book: Book, src: String): Boolean =
+        isCachedImageUsable(imageFile(book, src).absolutePath)
+
+    override fun hasImageContent(book: Book, bookChapter: BookChapter): Boolean {
+        if (!hasContentFile(book, bookChapter)) return false
+        val content = getContent(book, bookChapter) ?: return false
+        var allOk = true
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        for (image in ChapterContentParserShared.extractImages(content)) {
+            val src = image.src
+            if (src.isBlank()) continue
+            val file = imageFile(book, src)
+            if (!file.exists()) {
+                allOk = false
+                continue
+            }
+            BitmapFactory.decodeFile(file.absolutePath, options)
+            if (options.outWidth < 1 && options.outHeight < 1 && !isSvgFile(file)) {
+                allOk = false
+                file.delete()
+            }
+        }
+        return allOk
+    }
+
+    /** fork BookHelpLogic.writeImage: atomic write, throws on failure. */
+    fun writeImage(book: Book, src: String, bytes: ByteArray) {
+        val file = imageFile(book, src)
+        if (!writeBytesAtomically(file, bytes)) {
+            throw IOException("图片缓存写入失败: ${file.absolutePath}")
+        }
+    }
+
+    /** fork BookHelpLogic.checkImage: decode-bounds validity (+SVG sniff). */
+    fun checkImage(bytes: ByteArray): Boolean {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        return if (options.outWidth < 1 && options.outHeight < 1) {
+            isSvgBytes(bytes)
+        } else {
+            true
+        }
+    }
+
     override suspend fun clearCacheExtra() = Unit
+
+    companion object {
+        /** fork BookHelpLogic.imageFileName: md5-16 of src + url suffix. */
+        fun imageFileName(src: String): String =
+            "${MD5Utils.md5Encode16(src)}.${UrlUtil.getSuffix(src, "jpg")}"
+
+        private fun isSvgFile(file: File): Boolean =
+            runCatching { isSvgBytes(file.readBytes().copyOf(2048)) }
+                .getOrDefault(false)
+
+        private fun isSvgBytes(bytes: ByteArray): Boolean =
+            String(bytes, 0, minOf(bytes.size, 2048), Charsets.UTF_8)
+                .contains("<svg")
+    }
 }
+
+/**
+ * BookStorage (P5.7): the fork's AndroidBookStorage thin shell over the
+ * host BookHelp, registered so BookHelpShared.saveContent /
+ * CacheBookShared can persist and probe chapter files. All paths come
+ * from [LegadoBookHelp]'s fork-layout accessors.
+ */
+class LegadoBookStorage(private val help: LegadoBookHelp) : BookStorage {
+    override val rootPath: String get() = help.cachePath
+
+    override fun getFolderName(book: Book): String = book.getFolderName()
+
+    override fun saveText(book: Book, chapter: BookChapter, content: String) =
+        help.saveText(book, chapter, content)
+
+    override fun getContent(book: Book, chapter: BookChapter): String? =
+        help.getContent(book, chapter)
+
+    override fun getChapterFiles(book: Book): List<String> =
+        if (BookHelpShared.shouldSkipChapterFiles(book)) {
+            emptyList()
+        } else {
+            help.bookDir(book).list()?.toList() ?: emptyList()
+        }
+
+    override fun hasCacheFile(book: Book, fileName: String): Boolean =
+        File(help.bookDir(book), fileName).exists()
+
+    override fun readCacheFile(book: Book, fileName: String): String? {
+        val file = File(help.bookDir(book), fileName)
+        return if (file.isFile) runCatching { file.readText(Charsets.UTF_8) }.getOrNull() else null
+    }
+
+    override fun createCacheFile(book: Book, fileName: String): Boolean {
+        val file = File(help.bookDir(book), fileName)
+        file.parentFile?.mkdirs()
+        return if (file.exists()) true else file.createNewFile()
+    }
+
+    override fun deleteCacheFile(book: Book, fileName: String): Boolean =
+        File(help.bookDir(book), fileName).delete()
+
+    override fun delContent(book: Book) {
+        help.bookDir(book).deleteRecursively()
+    }
+
+    override fun delContent(book: Book, bookChapter: BookChapter) {
+        help.chapterFile(book, bookChapter).delete()
+    }
+
+    override fun hasContent(book: Book, bookChapter: BookChapter): Boolean =
+        help.hasContentFile(book, bookChapter)
+
+    override fun clearCache() {
+        File(rootPath).listFiles()?.forEach { it.deleteRecursively() }
+    }
+
+    override fun clearCache(book: Book) = delContent(book)
+
+    override fun updateCacheFolder(old: Book, new: Book) {
+        if (!BookHelpShared.shouldUpdateCacheFolder(old, new)) return
+        val oldDir = help.bookDir(old)
+        val newDir = help.bookDir(new)
+        if (oldDir.exists() && !newDir.exists()) oldDir.renameTo(newDir)
+    }
+
+    override fun clearInvalidCache(maxSize: Long) {
+        runBlocking {
+            BookHelpShared.evictMangaCache(
+                rootPath, BookHelpShared.cacheImageFolderName, maxSize
+            )
+        }
+    }
+
+    override fun clearInvalidBookFolders(
+        validBookUrls: Set<String>,
+        imageSubFolderName: String,
+        maxChapterCacheSize: Long
+    ) {
+        runBlocking {
+            BookHelpShared.clearInvalidBookFolders(
+                rootPath, validBookUrls, imageSubFolderName, maxChapterCacheSize
+            )
+        }
+    }
+}
+
+/**
+ * BookImageStorage (P5.7): the fork's AndroidBookImageStorage thin shell
+ * over the host BookHelp, registered so the replicated
+ * BookImageDownloadShared can write downloaded chapter images.
+ */
+class LegadoBookImageStorage(private val help: LegadoBookHelp) : BookImageStorage {
+    override fun saveImage(book: Book, src: String, bytes: ByteArray): String? {
+        if (bytes.isEmpty()) return null
+        return runCatching {
+            help.writeImage(book, src, bytes)
+            help.getImage(book, src).absolutePath
+        }.getOrNull()
+    }
+
+    override fun getImagePath(book: Book, src: String): String? =
+        help.getImage(book, src).takeIf { it.exists() }?.absolutePath
+
+    override fun isImageExist(book: Book, src: String): Boolean =
+        help.isImageExist(book, src)
+
+    override fun hasImageContent(book: Book): Boolean =
+        help.imageFile(book, "placeholder").parentFile
+            ?.listFiles()
+            ?.isNotEmpty() == true
+
+    override fun clearCache(book: Book) {
+        help.imageFile(book, "placeholder").parentFile?.deleteRecursively()
+    }
+
+    override fun checkImageBytes(bytes: ByteArray): Boolean = help.checkImage(bytes)
+
+    override fun writeImageBytes(book: Book, src: String, bytes: ByteArray) =
+        help.writeImage(book, src, bytes)
+}
+
+/** Host-local atomic file write (fork `writeTextAtomically` semantics). */
+internal fun writeTextAtomically(file: File, content: String): Boolean =
+    writeBytesAtomically(file, content.toByteArray(Charsets.UTF_8))
+
+/** Host-local atomic file write (fork `writeBytesAtomically` semantics). */
+internal fun writeBytesAtomically(file: File, bytes: ByteArray): Boolean =
+    runCatching {
+        file.parentFile?.mkdirs()
+        val tmp = File(file.parentFile, "${file.name}.part")
+        tmp.writeBytes(bytes)
+        if (!tmp.renameTo(file)) {
+            tmp.copyTo(file, overwrite = true)
+            tmp.delete()
+        }
+        true
+    }.getOrDefault(false)
 
 /**
  * CookieStore: CookieStoreBase (engine :data) + the Android hooks the fork
@@ -929,9 +1225,19 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     // book-cache root, so the book help is built first and both
     // registrations share the one instance / folder.
     val bookCacheRoot = File(dataDir, "book_cache")
-    BookHelpProviders.register(
-        LegadoBookHelp(bookCacheRoot, File(dataDir, "covers"))
-    )
+    val bookHelp = LegadoBookHelp(bookCacheRoot, File(dataDir, "covers"))
+    BookHelpProviders.register(bookHelp)
+    // Cache download support (P5.7): BookStorage backs
+    // BookHelpShared.saveContent / CacheBookShared persistence;
+    // BookImageStorage backs the replicated BookImageDownloadShared;
+    // CacheBookCallbacks is the fork's reader-notification seam — the
+    // Flutter reader re-reads through the bridge (cache-first), so the
+    // default no-op implementation is the correct host behaviour and
+    // only the registration matters (CacheBookCallbacks.get() throws
+    // without one).
+    BookStorageProviders.register(LegadoBookStorage(bookHelp))
+    BookImageStorageProviders.register(LegadoBookImageStorage(bookHelp))
+    CacheBookCallbacks.register(object : CacheBookCallback {})
     ContentProcessorProviders.register(
         LegadoContentProcessor(legadoToaster, bookCacheRoot)
     )

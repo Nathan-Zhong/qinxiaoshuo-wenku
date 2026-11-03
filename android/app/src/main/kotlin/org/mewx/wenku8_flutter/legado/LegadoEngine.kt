@@ -7,8 +7,15 @@ import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
+import io.legado.app.help.book.BookHelpProviders
+import io.legado.app.help.book.BookHelpShared
+import io.legado.app.help.book.BookStorageProviders
 import io.legado.app.help.book.ContentProcessorProviders
+import io.legado.app.help.book.getFolderName
+import io.legado.app.help.book.BookImageStorageProviders
 import io.legado.app.help.config.AppConfigProviders
+import io.legado.app.model.CacheBookCallbacks
+import io.legado.app.model.CacheBookShared
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.exploreKinds
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
@@ -22,10 +29,16 @@ import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.scan.TagScan
 import io.legado.engine.LegadoEngineFacade
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** One-line exception summary (class + message) for events and self-checks. */
 internal fun Throwable.legadoBrief(max: Int = 400): String =
@@ -464,6 +477,22 @@ object LegadoEngine {
             recordBridgeError("selfCheck.chineseConverterType", e)
             "ERROR ${e.legadoBrief()}"
         }
+        // Cache download plane (P5.7): the three providers CacheBook
+        // needs beyond BookHelp, plus the live thread-count width.
+        out["cacheProviders"] = runCatching {
+            val storage = runCatching { BookStorageProviders.get(); true }
+                .getOrDefault(false)
+            val images = runCatching { BookImageStorageProviders.get(); true }
+                .getOrDefault(false)
+            val callbacks = runCatching { CacheBookCallbacks.get(); true }
+                .getOrDefault(false)
+            "ok: bookStorage=$storage, bookImageStorage=$images, " +
+                "cacheCallbacks=$callbacks, " +
+                "threadCount=${AppConfigProviders.get().threadCount}"
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.cacheProviders", e)
+            "ERROR ${e.legadoBrief()}"
+        }
         out["recentBridgeErrors"] = recentBridgeErrors().take(6)
         out["recentAppLog"] = AppLog.logs.take(5).map { (_, message, throwable) ->
             val head = message.lineSequence().firstOrNull() ?: ""
@@ -877,9 +906,16 @@ object LegadoEngine {
             index = chapterIndex,
             variable = chapterVariable
         )
-        var content = WebBook.getContentAwait(
-            source, book, chapter, nextChapterUrl, needSave = false
-        )
+        // Cache-first (P5.7): a chapter persisted by the cache
+        // download is served from disk — the fork reader consults
+        // BookHelp.getContent before the network the same way. A miss
+        // falls through to the live fetch, still needSave=false:
+        // online reads do not implicitly populate the offline cache;
+        // only the explicit cache download (startCacheChapters) does.
+        var content = BookHelpProviders.get().getContent(book, chapter)
+            ?: WebBook.getContentAwait(
+                source, book, chapter, nextChapterUrl, needSave = false
+            )
         val isImageChapter = source.bookSourceType == 2
         // Image chapters carry an image-URL list, not prose: the fork
         // never runs the text pipeline over it (an image book's
@@ -908,6 +944,7 @@ object LegadoEngine {
         }
         val images = if (isImageChapter) {
             extractImages(content, chapter.getAbsoluteURL(book))
+                .map { localCachedImagePath(book, it) ?: it }
         } else {
             emptyList()
         }
@@ -916,6 +953,206 @@ object LegadoEngine {
             "images" to images,
             "isImageChapter" to isImageChapter
         )
+    }
+
+    /**
+     * P5.7: when the cache download already persisted this chapter
+     * image, hand the reader its local file path instead of the remote
+     * URL (the Dart side treats a leading '/' as a local file). The
+     * download side stores images through BookImageDownloadShared,
+     * whose extraction (TagScan) truncates a `src="URL,{...}"`
+     * attribute at `URL,{`, so the lookup tries both the full src this
+     * bridge extracted and that truncated key form.
+     */
+    private fun localCachedImagePath(book: Book, src: String): String? {
+        if (!src.startsWith("http://") && !src.startsWith("https://")) return null
+        val help = BookHelpProviders.get()
+        val cut = src.indexOf(",{")
+        val keys = if (cut >= 0) listOf(src, src.substring(0, cut + 2)) else listOf(src)
+        for (key in keys) {
+            if (help.isImageExist(book, key)) {
+                return help.getImage(book, key).absolutePath
+            }
+        }
+        return null
+    }
+
+    // ------------------------------------------------------------------
+    // Cache download (P5.7, G15 + G8): the fork's CacheBookShared
+    // ------------------------------------------------------------------
+
+    /**
+     * Runs an offline cache download for the chapter range
+     * [fromIndex]..[toIndex] (engine chapter indexes, inclusive) on the
+     * fork's own CacheBookShared orchestrator — per-chapter WebBook
+     * fetch with needSave (chapter text persisted in the fork layout),
+     * chapter images persisted through BookHelp.saveImages, three
+     * strikes per chapter before it lands in the failure set.
+     *
+     * This function is only the bridge adapter around it:
+     * - host books live in the Flutter-side registry, not the engine
+     *   book table, so the model is seeded via
+     *   [CacheBookShared.getOrCreate] with (source, book) before
+     *   enqueueing (the bookUrl overload would miss the model map);
+     * - the TOC is refreshed into the engine DB up front because
+     *   CacheBook reads chapters from bookChapterDao;
+     * - the engine thread count is dipped while downloading (see
+     *   [LegadoConfigAccessor.acquireCacheDownloadDip]);
+     * - the model's public state (successDownloadSet /
+     *   errorDownloadMap) is polled into `cacheProgress` task events
+     *   {taskId, done, total, failed:[chapter indexes]} — the shape
+     *   the Dart CacheProgressEvent parses. A fatal error is reported
+     *   as a terminal all-failed progress event. Cancelling the
+     *   returned Job stops this book's model (fork stop semantics)
+     *   and releases the dip.
+     */
+    fun startCacheChapters(
+        taskId: Int,
+        origin: String,
+        bookUrl: String,
+        tocUrl: String?,
+        name: String?,
+        author: String?,
+        variable: String?,
+        fromIndex: Int,
+        toIndex: Int,
+        emit: (Map<String, Any?>) -> Unit
+    ): Job = scope.launch {
+        fun progress(done: Int, total: Int, failed: List<Int>) {
+            emit(
+                mapOf(
+                    "type" to "cacheProgress",
+                    "taskId" to taskId,
+                    "done" to done,
+                    "total" to total,
+                    "failed" to failed
+                )
+            )
+        }
+        var book: Book? = null
+        var dipped = false
+        try {
+            requireInit()
+            val source = sourceOrThrow(origin)
+            val built = buildBook(
+                origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable
+            )
+            book = built
+            WebBook.getChapterListAwait(source, built).getOrElse { throw it }
+            val totalChapters = db.bookChapterDao.getChapterCount(built.bookUrl)
+            if (totalChapters <= 0) {
+                progress(0, 0, emptyList())
+                return@launch
+            }
+            val from = fromIndex.coerceIn(0, totalChapters - 1)
+            val to = toIndex.coerceIn(from, totalChapters - 1)
+            val indexes = (from..to).toList()
+            val total = indexes.size
+            LegadoConfigAccessor.acquireCacheDownloadDip()
+            dipped = true
+            val model = CacheBookShared.getOrCreate(source, built)
+            if (!CacheBookShared.enqueueDownload(built.bookUrl, from, to)) {
+                progress(0, total, indexes)
+                return@launch
+            }
+            // The fork's CacheBookService role: drive the shared
+            // process loop. It winds down on its own once every model
+            // drains, so this job deliberately does not join it.
+            scope.launch { CacheBookShared.startProcessJob() }
+            val keys = db.bookChapterDao.getChapterList(built.bookUrl)
+                .associateBy { it.index }
+                .let { byIndex -> indexes.map { byIndex[it]?.primaryStr() } }
+            var lastDone = -1
+            var lastFailed: List<Int>? = null
+            while (true) {
+                var succeeded = 0
+                val failed = ArrayList<Int>()
+                for ((offset, key) in keys.withIndex()) {
+                    if (key == null) continue
+                    if (model.successDownloadSet.contains(key)) {
+                        succeeded++
+                    } else if ((model.errorDownloadMap[key] ?: 0) >= 3) {
+                        failed.add(indexes[offset])
+                    }
+                }
+                if (succeeded != lastDone || failed != lastFailed) {
+                    progress(succeeded, total, failed)
+                    lastDone = succeeded
+                    lastFailed = failed
+                }
+                val drained = CacheBookShared.getCacheBookModel(built.bookUrl) == null ||
+                    model.isIdle()
+                if (drained || succeeded + failed.size >= total) {
+                    // Terminal: everything not failed counts as done
+                    // (volume chapters complete without a success
+                    // entry in the model).
+                    progress(total - failed.size, total, failed)
+                    break
+                }
+                delay(400)
+            }
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                runCatching {
+                    book?.let {
+                        CacheBookShared.getCacheBookModel(it.bookUrl)?.stop()
+                    }
+                }
+            }
+            throw e
+        } catch (e: Exception) {
+            AppLog.put("缓存下载失败: ${e.message}", e)
+            progress(0, 1, listOf(fromIndex))
+        } finally {
+            if (dipped) LegadoConfigAccessor.releaseCacheDownloadDip()
+        }
+    }
+
+    /**
+     * Engine chapter indexes whose chapter text file is present in the
+     * fork-layout book cache folder (P5.7) — the bridge's view of
+     * "which chapters are available offline" for one book.
+     */
+    suspend fun getCachedChapterIndexes(
+        origin: String,
+        bookUrl: String,
+        tocUrl: String?,
+        name: String?,
+        author: String?,
+        variable: String?
+    ): List<Int> {
+        requireInit()
+        val source = sourceOrThrow(origin)
+        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable)
+        if (BookHelpShared.shouldSkipChapterFiles(book)) return emptyList()
+        val dir = java.io.File(BookStorageProviders.get().rootPath, book.getFolderName())
+        val names = dir.list() ?: return emptyList()
+        return names.mapNotNull { fileName ->
+            // Fork chapter files are `<index padded>-<title md5>.nb`
+            // (BookChapter.getFileName); the index is the dash prefix.
+            if (!fileName.endsWith(".nb")) {
+                null
+            } else {
+                fileName.substringBefore('-').trimStart('0')
+                    .ifEmpty { "0" }
+                    .toIntOrNull()
+            }
+        }.distinct().sorted()
+    }
+
+    /** Drops one book's whole offline cache folder (text + images). */
+    suspend fun clearBookCache(
+        origin: String,
+        bookUrl: String,
+        tocUrl: String?,
+        name: String?,
+        author: String?,
+        variable: String?
+    ) {
+        requireInit()
+        val source = sourceOrThrow(origin)
+        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable)
+        BookStorageProviders.get().clearCache(book)
     }
 
     // ------------------------------------------------------------------

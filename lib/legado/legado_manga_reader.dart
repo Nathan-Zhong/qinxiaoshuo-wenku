@@ -171,6 +171,11 @@ Future<Uint8List> loadLegadoMangaImageBytes({
   required String origin,
   required String url,
 }) async {
+  // Offline cache hit (P5.7): the bridge substitutes a downloaded
+  // chapter image's local file path for its remote URL. A missing
+  // file throws here and surfaces through the tile's existing
+  // failure + retry presentation.
+  if (url.startsWith('/')) return File(url).readAsBytes();
   if (origin.isNotEmpty) {
     final target = await legadoImageResolver.resolve(origin, url);
     if (target != null && (target.url != url || target.headers.isNotEmpty)) {

@@ -3071,6 +3071,13 @@ class _DetailLoaderPageState extends State<DetailLoaderPage> {
     final chapters = await widget.repository.chapters(widget.novel.id);
     final loaded = detail.withChapters(chapters);
     await widget.state.rememberNovel(loaded);
+    // Legado books: refresh the engine-side offline-cache snapshot so
+    // the header's 缓存 X / N 章 reflects downloads from earlier
+    // sessions (P5.7). Fire-and-forget; the status line listens to the
+    // repository and updates when the probe lands.
+    if (widget.repository case final OfflineNovelRepository offline) {
+      unawaited(offline.refreshLegadoCacheState(loaded));
+    }
     return loaded;
   }
 

@@ -44,8 +44,11 @@ import org.mewx.wenku8_flutter.legado.legadoErrorCode
  * and the management plane (P5.6: checkSources with progress on the
  * task EventChannel, subscription CRUD + updates, replace-rule CRUD,
  * getBookByUrl, and the chinese converter switch — see
- * legado/LegadoManage.kt). Remaining contract methods (change-source
- * candidates, cache download) return notImplemented.
+ * legado/LegadoManage.kt), and the cache download plane (P5.7:
+ * cacheChapters with progress on the task EventChannel,
+ * getCachedChapterIndexes, clearBookCache — see
+ * legado/LegadoEngine.kt). The remaining contract method
+ * (change-source candidates) returns notImplemented.
  *
  * Threading: engine work runs on [LegadoEngine.scope] (IO); channel
  * results and event sinks are always delivered on the main thread.
@@ -426,6 +429,55 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
                 }.onFailure { e ->
                     result.error(legadoErrorCode(e), e.message ?: e.toString(), null)
                 }
+            }
+
+            "cacheChapters" -> {
+                val taskId = call.argument<Int>("taskId")
+                if (taskId == null) {
+                    result.error("UNKNOWN", "cacheChapters needs taskId", null)
+                    return
+                }
+                runCatching {
+                    taskJobs[taskId] = LegadoEngine.startCacheChapters(
+                        taskId = taskId,
+                        origin = call.argument<String>("origin") ?: "",
+                        bookUrl = call.argument<String>("bookUrl") ?: "",
+                        tocUrl = call.argument<String>("tocUrl"),
+                        name = call.argument<String>("name"),
+                        author = call.argument<String>("author"),
+                        variable = call.argument<String>("variable"),
+                        fromIndex = call.argument<Int>("fromIndex") ?: 0,
+                        toIndex = call.argument<Int>("toIndex") ?: 0
+                    ) { event -> emitTaskEvent(event) }
+                    result.success(mapOf("taskId" to taskId))
+                }.onFailure { e ->
+                    result.error(legadoErrorCode(e), e.message ?: e.toString(), null)
+                }
+            }
+
+            "getCachedChapterIndexes" -> launchEngine(result) {
+                mapOf(
+                    "indexes" to LegadoEngine.getCachedChapterIndexes(
+                        origin = call.argument<String>("origin") ?: "",
+                        bookUrl = call.argument<String>("bookUrl") ?: "",
+                        tocUrl = call.argument<String>("tocUrl"),
+                        name = call.argument<String>("name"),
+                        author = call.argument<String>("author"),
+                        variable = call.argument<String>("variable")
+                    )
+                )
+            }
+
+            "clearBookCache" -> launchEngine(result) {
+                LegadoEngine.clearBookCache(
+                    origin = call.argument<String>("origin") ?: "",
+                    bookUrl = call.argument<String>("bookUrl") ?: "",
+                    tocUrl = call.argument<String>("tocUrl"),
+                    name = call.argument<String>("name"),
+                    author = call.argument<String>("author"),
+                    variable = call.argument<String>("variable")
+                )
+                mapOf("cleared" to true)
             }
 
             "listSubscriptions" -> launchEngine(result) {

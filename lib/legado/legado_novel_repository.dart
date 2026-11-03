@@ -292,12 +292,78 @@ class LegadoNovelRepository extends NovelRepository {
         }
       }
     }
-    var urls = sanitizeLegadoImageUrls(result.images, baseUrl: baseUrl);
+    var urls = legadoChapterImageUrls(result.images, baseUrl: baseUrl);
     if (urls.isEmpty && result.content.trim().isNotEmpty) {
       urls = parseLegadoImageUrls(result.content, baseUrl: baseUrl);
     }
     return ChapterImageList(origin: record.origin, urls: urls);
   }
+
+  // ------------------------------------------------------------------
+  // Offline cache download (P5.7)
+  // ------------------------------------------------------------------
+
+  /// Starts the engine-side cache download for the inclusive engine
+  /// chapter-index range; progress arrives via [cacheTaskEvents].
+  /// Returns the bridge task id (for [cancelCacheTask]).
+  Future<int> startCacheDownload(
+    int novelId, {
+    required int fromIndex,
+    required int toIndex,
+  }) async {
+    final record = await _recordFor(novelId);
+    return client.cacheChapters(
+      book: record.toBookInfo(),
+      fromIndex: fromIndex,
+      toIndex: toIndex,
+    );
+  }
+
+  /// Cache-progress events for one bridge task.
+  Stream<CacheProgressEvent> cacheTaskEvents(int taskId) => client.taskEvents
+      .where((event) => event is CacheProgressEvent && event.taskId == taskId)
+      .cast<CacheProgressEvent>();
+
+  /// Engine chapter indexes present in the book's offline cache.
+  Future<List<int>> cachedChapterIndexes(int novelId) async {
+    final record = await _recordFor(novelId);
+    return client.getCachedChapterIndexes(book: record.toBookInfo());
+  }
+
+  /// Drops the book's whole engine-side offline cache.
+  Future<void> clearBookCache(int novelId) async {
+    final record = await _recordFor(novelId);
+    await client.clearBookCache(book: record.toBookInfo());
+  }
+
+  /// Cancels a running cache task (best effort, like the bridge's
+  /// other task cancels).
+  Future<void> cancelCacheTask(int taskId) => client.cancelTask(taskId);
+}
+
+/// The reader-facing URL list for an image chapter: remote entries go
+/// through [sanitizeLegadoImageUrls] one by one (resolve + validate);
+/// entries starting with '/' are local cache files substituted by the
+/// bridge (P5.7) and pass through verbatim — resolving an absolute
+/// file path against the chapter URL would mangle it into a bogus
+/// https URL. Order is preserved; duplicates collapse.
+List<String> legadoChapterImageUrls(
+  List<String> raw, {
+  required String baseUrl,
+}) {
+  final seen = <String>{};
+  final out = <String>[];
+  for (final entry in raw) {
+    final String? url;
+    if (entry.startsWith('/')) {
+      url = entry;
+    } else {
+      final cleaned = sanitizeLegadoImageUrls([entry], baseUrl: baseUrl);
+      url = cleaned.isEmpty ? null : cleaned.first;
+    }
+    if (url != null && url.isNotEmpty && seen.add(url)) out.add(url);
+  }
+  return out;
 }
 
 /// Routes host repository calls by book identity: Legado ids go to the
@@ -345,6 +411,33 @@ class LegadoDispatchRepository extends NovelRepository
   ) => isLegadoBookId(novelId)
       ? legado.chapterImages(novelId, chapter)
       : Future<ChapterImageList?>.value(null);
+
+  // Offline cache download (P5.7): engine books only; the legacy side
+  // keeps using the Flutter-side chapter cache in OfflineNovelRepository.
+
+  Future<int> startCacheDownload(
+    int novelId, {
+    required int fromIndex,
+    required int toIndex,
+  }) => legado.startCacheDownload(
+    novelId,
+    fromIndex: fromIndex,
+    toIndex: toIndex,
+  );
+
+  Stream<CacheProgressEvent> cacheTaskEvents(int taskId) =>
+      legado.cacheTaskEvents(taskId);
+
+  Future<List<int>> cachedChapterIndexes(int novelId) async =>
+      isLegadoBookId(novelId)
+      ? legado.cachedChapterIndexes(novelId)
+      : const <int>[];
+
+  Future<void> clearBookCache(int novelId) async {
+    if (isLegadoBookId(novelId)) await legado.clearBookCache(novelId);
+  }
+
+  Future<void> cancelCacheTask(int taskId) => legado.cancelCacheTask(taskId);
 
   @override
   Future<NovelPage> browse({
