@@ -66,6 +66,23 @@
     public static ** valueOf(java.lang.String);
 }
 
+# --- Missing-class tolerance --------------------------------------------------
+# R8 (full mode) fails the build on references to classes that do not exist
+# on Android at all: hutool's desktop utilities (java.awt / javax.tools /
+# java.beans / JMX) and the Play Core split-install classes Flutter's
+# deferred-components manager references optionally. None of these code
+# paths can execute on a phone (the engine only uses hutool-crypto).
+-dontwarn com.google.android.play.core.**
+-dontwarn java.awt.**
+-dontwarn javax.swing.**
+-dontwarn javax.tools.**
+-dontwarn javax.imageio.**
+-dontwarn java.beans.**
+-dontwarn java.lang.management.**
+-dontwarn cn.hutool.core.swing.**
+-dontwarn cn.hutool.core.compiler.**
+-dontwarn cn.hutool.core.img.**
+
 # --- Libraries that ship without consumer rules in this dependency set ------
 -dontwarn okhttp3.**
 -dontwarn okio.**
