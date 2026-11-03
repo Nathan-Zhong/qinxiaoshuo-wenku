@@ -12,6 +12,7 @@ export 'legado_books.dart';
 export 'legado_dto.dart';
 export 'legado_engine_client.dart';
 export 'legado_explore.dart';
+export 'legado_image_urls.dart';
 export 'legado_novel_repository.dart';
 export 'legado_search_controller.dart';
 export 'legado_source_section.dart';

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import 'catalog.dart';
 import 'book_search.dart';
+import 'legado/legado_novel_repository.dart';
 import 'offline_cache.dart';
 import 'local_books.dart';
 import 'network_status.dart';
@@ -440,6 +441,22 @@ class OfflineNovelRepository extends FrameChangeNotifier
     if (text.trim().isEmpty) throw const FormatException('章节正文为空');
     return text;
   }();
+
+  /// Structured image-chapter payloads for the reader's manga mode.
+  /// Only the Legado dispatch remote can answer; the offline text
+  /// cache is deliberately bypassed — it stores chapter PROSE (for
+  /// image chapters that would be the placeholder notice), while the
+  /// image list must come from the engine fetch itself.
+  Future<ChapterImageList?> chapterImages(
+    int novelId,
+    NovelChapter chapter,
+  ) {
+    final target = remote;
+    if (target is LegadoDispatchRepository) {
+      return target.chapterImages(novelId, chapter);
+    }
+    return Future<ChapterImageList?>.value(null);
+  }
 
   @override
   Future<String> chapterContent(int novelId, NovelChapter chapter) async {

@@ -41,6 +41,7 @@ import 'library_search_repository.dart';
 import 'legado/legado_book_registry.dart';
 import 'legado/legado_books.dart';
 import 'legado/legado_explore.dart';
+import 'legado/legado_manga_reader.dart';
 import 'legado/legado_novel_repository.dart';
 import 'legado/legado_search_controller.dart';
 import 'legado/legado_source_section.dart';
@@ -4074,6 +4075,24 @@ class _ReaderPageState extends State<ReaderPage>
   final _selection = ReaderSelectionController();
   late ReaderMode _readerMode;
   bool get _paginated => _readerMode.paginated;
+
+  /// Image (manga) chapter payloads by chapter index, filled by the
+  /// content probe in _prepareContent for Legado image books. A
+  /// chapter present here renders as a vertical image column inside
+  /// the ordinary reader shell instead of paginated/scrolling prose.
+  final _preparedChapterImages = <int, ChapterImageList>{};
+
+  ChapterImageList? get _currentChapterImages =>
+      _preparedChapterImages[_chapter];
+
+  bool get _imageMode => _currentChapterImages != null;
+
+  /// Whether the paged machinery (ReaderPagedView, page anchors,
+  /// page-mode progress) drives this chapter. Image chapters always
+  /// scroll — the manga format is vertical scroll — so every
+  /// behavioural `_paginated` check goes through here; the two are
+  /// identical for text chapters.
+  bool get _pagedActive => _paginated && !_imageMode;
   ReadingPosition? _restorePending;
   bool _restoreQueued = false;
   bool _restoring = false;
@@ -4170,7 +4189,7 @@ class _ReaderPageState extends State<ReaderPage>
         !_listeningScrollSceneActive) {
       return;
     }
-    if (_paginated) {
+    if (_pagedActive) {
       if (!_paged.ready) return;
       _autoPageSeconds += ((elapsed - previous).inMicroseconds / 1000000).clamp(
         0.0,
@@ -4539,7 +4558,7 @@ class _ReaderPageState extends State<ReaderPage>
                   !_followLocallyPaused));
       if (!allowed()) return;
       try {
-        if (_paginated) {
+        if (_pagedActive) {
           if (allowed() && _paged.ready) {
             _paged.reveal(ReaderTextAnchor(paragraph, start));
           }
@@ -4680,7 +4699,7 @@ class _ReaderPageState extends State<ReaderPage>
         if (!mounted || pendingProgress == null) return;
         final target = pendingProgress!.clamp(0.0, 1.0);
         pendingProgress = null;
-        if (_paginated) {
+        if (_pagedActive) {
           _paged.seek(target);
         } else if (_scroll.hasClients) {
           _scroll.jumpTo(target * _scroll.position.maxScrollExtent);
@@ -4787,6 +4806,26 @@ class _ReaderPageState extends State<ReaderPage>
     }
   }
 
+  /// Asks the repository chain for a chapter's structured image
+  /// payload. Only Legado image books can produce one (the repository
+  /// answers from the book record's type bitmask, without an engine
+  /// call, for every other book), and only the offline wrapper knows
+  /// the dispatch remote — every other repository shape answers null
+  /// here and the chapter stays on the prose path, unchanged.
+  Future<ChapterImageList?> _probeChapterImages(int index) {
+    final repository = widget.repository;
+    if (repository is! OfflineNovelRepository) {
+      return Future<ChapterImageList?>.value(null);
+    }
+    if (!isLegadoBookId(widget.novel.id)) {
+      return Future<ChapterImageList?>.value(null);
+    }
+    return repository.chapterImages(
+      widget.novel.id,
+      widget.novel.chapters[index],
+    );
+  }
+
   Future<ReaderContent> _prepareContent(int index, {bool refresh = false}) {
     if (!refresh) {
       if (_preparedContent[index] case final content?) {
@@ -4797,6 +4836,21 @@ class _ReaderPageState extends State<ReaderPage>
     late final Future<ReaderContent> request;
     request = () async {
       try {
+        final images = await _probeChapterImages(index);
+        if (images != null) {
+          // An image chapter carries no prose: the empty content
+          // keeps the load state machine (ready flag, chrome,
+          // progress) on its ordinary path while _article renders
+          // the image column from _preparedChapterImages instead.
+          const content = ReaderContent(<String>[]);
+          if (mounted &&
+              (index - _chapter).abs() <= 1 &&
+              identical(_contentLoads[index], request)) {
+            _preparedChapterImages[index] = images;
+            _preparedContent[index] = content;
+          }
+          return content;
+        }
         final content = await ReaderContent.parse(
           await _requestContent(index, refresh: refresh),
         );
@@ -4819,6 +4873,9 @@ class _ReaderPageState extends State<ReaderPage>
   void _prefetchAdjacent() {
     _automaticContent.removeWhere((index, _) => (index - _chapter).abs() > 1);
     _preparedContent.removeWhere((index, _) => (index - _chapter).abs() > 1);
+    _preparedChapterImages.removeWhere(
+      (index, _) => (index - _chapter).abs() > 1,
+    );
     for (final index in [_chapter + 1, _chapter - 1]) {
       if (index < 0 || index >= widget.novel.chapters.length) continue;
       if (widget.repository case final OfflineNovelRepository offline) {
@@ -4851,7 +4908,7 @@ class _ReaderPageState extends State<ReaderPage>
       final preparing =
           !_ready ||
           _restoring ||
-          (_paginated
+          (_pagedActive
               ? !_paged.ready
               : _chapterRevealPending || _chapterReveal.isAnimating);
       if (entering || preparing) {
@@ -4984,7 +5041,7 @@ class _ReaderPageState extends State<ReaderPage>
       _chromeReserved = visible;
       // Scrolling has a constant status-bar inset. Only paged text changes
       // its reserved area; leave the scrolling article and paragraphs intact.
-      if (_paginated) setState(() {});
+      if (_pagedActive) setState(() {});
     }
     if (widget.state.reduceMotion || MediaQuery.disableAnimationsOf(context)) {
       _chrome.value = visible ? 1 : 0;
@@ -5068,7 +5125,7 @@ class _ReaderPageState extends State<ReaderPage>
     }
     _stopAutoScroll();
     _suspendListeningFollow();
-    if (_paginated) {
+    if (_pagedActive) {
       if (!_paged.ready || _paged.pageBy(direction)) return;
       _continueChapter(direction);
       return;
@@ -5123,6 +5180,10 @@ class _ReaderPageState extends State<ReaderPage>
 
   Future<void> _refreshIllustrations({bool automatic = false}) async {
     if (_illustrationsRefreshing) return;
+    // Image chapters have no prose illustrations to repair: their
+    // pages retry individually, and a chapter-level reload goes
+    // through the ordinary content load, never this text pipeline.
+    if (_preparedChapterImages[_chapter] != null) return;
     final chapter = _chapter;
     final generation = _contentGeneration;
     setState(() => _illustrationsRefreshing = true);
@@ -5249,6 +5310,55 @@ class _ReaderPageState extends State<ReaderPage>
     );
   }
 
+  /// The image column for an image (manga) chapter: the chapter's
+  /// pages stacked vertically at the text column's width, inside the
+  /// reader's ordinary scroll view (same controller, same header and
+  /// footer slivers, same overscroll chapter continuation). An image
+  /// chapter whose extraction found nothing shows the reader's
+  /// missing-illustration panel composition with a chapter retry.
+  Widget _mangaSliver() {
+    final images = _currentChapterImages!;
+    if (images.urls.isEmpty) {
+      return SliverToBoxAdapter(
+        child: ContentPanel(
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(CupertinoIcons.photo),
+                const SizedBox(height: 10),
+                const AppText('暂未取得本章图片'),
+                GlassTextButton(
+                  onPressed: () => setState(() {
+                    _content = _loadContent(refresh: true);
+                  }),
+                  child: const AppText('重试本章'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    return SliverList.builder(
+      itemCount: images.urls.length,
+      itemBuilder: (context, index) {
+        // Keep the pages around the one being built warm, so the
+        // column scrolls without stalling on the next page's load.
+        warmMangaImages(
+          origin: images.origin,
+          urls: images.urls,
+          around: index,
+        );
+        return MangaChapterImage(
+          key: ValueKey('manga-page-$_contentGeneration-$index'),
+          origin: images.origin,
+          url: images.urls[index],
+        );
+      },
+    );
+  }
+
   @override
   void didChangeMetrics() {
     if (!mounted || !_ready || _restoring) return;
@@ -5292,7 +5402,7 @@ class _ReaderPageState extends State<ReaderPage>
       _idleSave = null;
       if (mounted &&
           generation == _contentGeneration &&
-          (_paginated
+          (_pagedActive
               ? _paged.ready
               : _scroll.hasClients &&
                     !_scroll.position.isScrollingNotifier.value)) {
@@ -5309,7 +5419,7 @@ class _ReaderPageState extends State<ReaderPage>
         _sourceChanged ||
         !_ready ||
         _restoring ||
-        (_paginated ? !_paged.ready : !_scroll.hasClients) ||
+        (_pagedActive ? !_paged.ready : !_scroll.hasClients) ||
         (_typographyPreviewing && !finalSave)) {
       return;
     }
@@ -5336,8 +5446,8 @@ class _ReaderPageState extends State<ReaderPage>
             chapter: _chapter,
             offset:
                 position?.offset ??
-                (_paginated ? _paged.fraction : _scroll.offset),
-            maximum: _paginated ? 1 : _scroll.position.maxScrollExtent,
+                (_pagedActive ? _paged.fraction : _scroll.offset),
+            maximum: _pagedActive ? 1 : _scroll.position.maxScrollExtent,
             width: _layoutWidth,
             notify: notify,
             paragraphIndex: position?.paragraphIndex,
@@ -5358,11 +5468,11 @@ class _ReaderPageState extends State<ReaderPage>
   }) {
     if (!_ready ||
         _restoring ||
-        (_paginated ? !_paged.ready : !_scroll.hasClients) ||
+        (_pagedActive ? !_paged.ready : !_scroll.hasClients) ||
         widget.novel.chapters.isEmpty) {
       return null;
     }
-    if (_paginated) {
+    if (_pagedActive) {
       final visible = _paged.anchor;
       final owner = _currentContent?.inlineOwners[visible?.paragraph];
       final anchor = owner == null
@@ -5725,7 +5835,7 @@ class _ReaderPageState extends State<ReaderPage>
 
   void _landBookmark(ReadingPosition? saved, {int? paragraphIndex}) {
     if (!_bookmarkLandingPending ||
-        (_paginated ? !_paged.ready : !_scroll.hasClients)) {
+        (_pagedActive ? !_paged.ready : !_scroll.hasClients)) {
       return;
     }
     _bookmarkLandingPending = false;
@@ -5733,7 +5843,7 @@ class _ReaderPageState extends State<ReaderPage>
     final index =
         savedIndex != null && savedIndex >= 0 && savedIndex < _paragraphCount
         ? savedIndex
-        : (_paginated
+        : (_pagedActive
                   ? _paged.anchor?.paragraph
                   : _paragraphRegistry
                         .capture(_scroll.offset + _readingInset)
@@ -5950,9 +6060,9 @@ class _ReaderPageState extends State<ReaderPage>
   }
 
   Future<void> _seekProgress(double fraction) async {
-    if (!_ready || (_paginated ? !_paged.ready : !_scroll.hasClients)) return;
+    if (!_ready || (_pagedActive ? !_paged.ready : !_scroll.hasClients)) return;
     _clearBookmarkLanding();
-    if (_paginated) {
+    if (_pagedActive) {
       _paged.seek(fraction);
       return;
     }
@@ -5985,7 +6095,7 @@ class _ReaderPageState extends State<ReaderPage>
   }
 
   void _restoreAfterLayout() {
-    if (_paginated) return;
+    if (_pagedActive) return;
     if (_restoreQueued) return;
     _restoreQueued = true;
     final generation = _contentGeneration;
@@ -6347,7 +6457,7 @@ class _ReaderPageState extends State<ReaderPage>
                 animation: _chrome,
                 topInset: _chromeStatusInset(context),
                 compact: _hideSystemStatus,
-                blurBottom: !_hideSystemStatus || _paginated,
+                blurBottom: !_hideSystemStatus || _pagedActive,
               ),
             ),
           ),
@@ -6451,7 +6561,7 @@ class _ReaderPageState extends State<ReaderPage>
                                 key: const ValueKey('reader-auto-resume'),
                                 onPressed: _startAutoScroll,
                                 child: AppText(
-                                  _paginated ? '继续自动翻页' : '继续自动滚动',
+                                  _pagedActive ? '继续自动翻页' : '继续自动滚动',
                                 ),
                               ),
                           ],
@@ -6605,7 +6715,7 @@ class _ReaderPageState extends State<ReaderPage>
             color: prefs.background(dark),
             child: DefaultTextStyle.merge(
               style: TextStyle(color: prefs.foreground(dark)),
-              child: _paginated && !ready && !failed
+              child: _pagedActive && !ready && !failed
                   ? ReaderPageSkeleton(
                       title: chapter.title,
                       padding: pagedPadding,
@@ -6613,7 +6723,7 @@ class _ReaderPageState extends State<ReaderPage>
                       vertical: prefs.mode == ReaderMode.vertical,
                       margin: prefs.bindingMargin,
                     )
-                  : _paginated && ready
+                  : _pagedActive && ready
                   ? ReaderPagedView(
                       key: ValueKey('reader-pages-$_contentGeneration'),
                       content: content,
@@ -6739,7 +6849,7 @@ class _ReaderPageState extends State<ReaderPage>
                                             child: Align(
                                               alignment: Alignment.centerRight,
                                               child: ArchiveCode(
-                                                'CH.${(_chapter + 1).toString().padLeft(3, '0')} / TEXT',
+                                                'CH.${(_chapter + 1).toString().padLeft(3, '0')} / ${_imageMode ? 'IMAGE' : 'TEXT'}',
                                                 color: prefs
                                                     .foreground(dark)
                                                     .withValues(alpha: .65),
@@ -6789,12 +6899,21 @@ class _ReaderPageState extends State<ReaderPage>
                                   ),
                                 )
                               else ...[
-                                SliverPadding(
-                                  padding: EdgeInsets.only(
-                                    left: prefs.leftMargin,
-                                    right: prefs.rightMargin,
-                                  ),
-                                  sliver: ReaderScrollSliver(
+                                if (_imageMode)
+                                  SliverPadding(
+                                    padding: EdgeInsets.only(
+                                      left: prefs.leftMargin,
+                                      right: prefs.rightMargin,
+                                    ),
+                                    sliver: _mangaSliver(),
+                                  )
+                                else
+                                  SliverPadding(
+                                    padding: EdgeInsets.only(
+                                      left: prefs.leftMargin,
+                                      right: prefs.rightMargin,
+                                    ),
+                                    sliver: ReaderScrollSliver(
                                     anchor: _scrollAnchor,
                                     itemCount:
                                         content.readingOrder?.length ??
@@ -7102,7 +7221,7 @@ class _ReaderPageState extends State<ReaderPage>
       _highlightTimer = Timer(const Duration(seconds: 8), () {
         if (mounted) _findMatch.value = null;
       });
-      if (_paginated) {
+      if (_pagedActive) {
         _paged.reveal(ReaderTextAnchor(match.paragraph, match.start));
         _saveWhenIdle();
         _showChrome(true);

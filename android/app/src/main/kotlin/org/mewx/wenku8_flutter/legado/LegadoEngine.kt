@@ -19,13 +19,13 @@ import io.legado.app.model.script.JsEngines
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.ui.book.search.SearchScope
 import io.legado.app.utils.NetworkUtils
+import io.legado.app.utils.scan.TagScan
 import io.legado.engine.LegadoEngineFacade
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
-import org.jsoup.Jsoup
 
 /** One-line exception summary (class + message) for events and self-checks. */
 internal fun Throwable.legadoBrief(max: Int = 400): String =
@@ -981,19 +981,150 @@ object LegadoEngine {
      * this in its UI layer, so the bridge does it here per ENGINE-study
      * §1.7). Uses the engine's vendored jsoup, the only copy in the app.
      */
-    private fun extractImages(html: String, baseUrl: String): List<String> {
-        if (!html.contains("<img", ignoreCase = true)) return emptyList()
-        return runCatching {
-            val doc = Jsoup.parse(html, baseUrl)
-            doc.select("img").mapNotNull { el ->
-                val abs = el.attr("abs:src")
-                val raw = if (abs.isNotBlank()) abs else el.attr("src")
-                if (raw.isBlank()) {
-                    null
-                } else {
-                    NetworkUtils.getAbsoluteURL(baseUrl, raw)
+    // ------------------------------------------------------------------
+    // Image-chapter payloads
+    // ------------------------------------------------------------------
+
+    // The fork BookController's imgTagRegex, verbatim: the src capture
+    // tolerates one inner quote when the value continues to a closing
+    // `}` — the Legado URL-option suffix form `URL,{"headers":{...}}`.
+    private val imgSrcRegex = Regex(
+        """<img[^>]*\ssrc=['"]([^'"]*(?:['"][^>]+\})?)['"][^>]*>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val imgDataSrcRegex = Regex(
+        """<img[^>]*\sdata-src=['"]([^'"]*(?:['"][^>]+\})?)['"][^>]*>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val mdImgRegex = Regex("""!\[[^\]]*\]\(([^\s\)]+)\)""")
+
+    /**
+     * Extracts an image chapter's image URLs, in reading order, from the
+     * engine's processed chapter content.
+     *
+     * String scanning, NOT a DOM parse — deliberately. Manga rules wrap
+     * each image as `<img src="URL,{"headers":{...}}">`, and a DOM
+     * parser (verified against both jsoup 1.15.3 and the app's own
+     * ksoup 0.2.6) ends the double-quoted src at the JSON's first inner
+     * quote, returning a truncated `URL,{` and destroying the per-image
+     * headers the G7 resolver exists to recover. The fork's own reading
+     * surfaces scan strings for the same reason (ChapterContentParser /
+     * TagScan in :ui, BookController's regex passes for the web API);
+     * this mirrors them:
+     * - `<img>` tags via the BookController regex (data-src preferred,
+     *   as HtmlFormatter prefers it);
+     * - a TagScan.attr fallback for tag shapes the regex misses
+     *   (unquoted src, odd spacing);
+     * - Markdown `![alt](url)` and bare image-URL lines
+     *   (BookController.isImageOrHttpLine's test).
+     *
+     * A candidate keeps a COMPLETE `,{...}` suffix (AnalyzeUrl consumes
+     * it in resolveImageRequest). A dangling, unbalanced `,{` fragment
+     * — the remnant left when the engine's HtmlFormatter re-emits a tag
+     * through its DOM walk — is cut, keeping the bare URL.
+     */
+    private fun extractImages(content: String, baseUrl: String): List<String> {
+        if (content.isBlank()) return emptyList()
+        val results = LinkedHashSet<String>()
+        fun addCandidate(raw: String) {
+            val cleaned = cleanImageCandidate(raw) ?: return
+            results.add(absolutizeImageCandidate(cleaned, baseUrl))
+        }
+        for (line in content.split('\n')) {
+            val trimmed = line.trim().trim('　')
+            if (trimmed.isEmpty()) continue
+            if (trimmed.contains("<img", ignoreCase = true)) {
+                // Tag by tag, so several images sharing one line all
+                // survive, each with its own data-src-over-src
+                // preference; TagScan covers tag shapes the regexes
+                // miss (unquoted src, odd spacing — it still truncates
+                // a quoted suffix at the inner quote, but the candidate
+                // cleanup salvages the bare URL from that).
+                val tagUrls = mutableListOf<String>()
+                var searchFrom = 0
+                while (true) {
+                    val tagStart = trimmed.indexOf("<img", searchFrom, ignoreCase = true)
+                    if (tagStart < 0) break
+                    val tagEnd = trimmed.indexOf('>', tagStart)
+                    if (tagEnd < 0) break
+                    val tag = trimmed.substring(tagStart, tagEnd + 1)
+                    val captured = imgDataSrcRegex.find(tag)?.groupValues?.get(1)
+                        ?: imgSrcRegex.find(tag)?.groupValues?.get(1)
+                        ?: TagScan.attr(tag, "data-src")
+                        ?: TagScan.attr(tag, "src")
+                    if (captured != null) tagUrls.add(captured)
+                    searchFrom = tagEnd + 1
+                }
+                if (tagUrls.isNotEmpty()) {
+                    tagUrls.forEach(::addCandidate)
+                    continue
                 }
             }
-        }.getOrDefault(emptyList())
+            val md = mdImgRegex.find(trimmed)
+            if (md != null) {
+                addCandidate(md.groupValues[1])
+                continue
+            }
+            if (isImageOrHttpLine(trimmed)) addCandidate(trimmed)
+        }
+        return results.toList()
+    }
+
+    private fun cleanImageCandidate(raw: String): String? {
+        var candidate = raw.trim().trim('　').trim()
+        if (candidate.isEmpty()) return null
+        val suffixAt = candidate.indexOf(",{")
+        val head: String
+        if (suffixAt >= 0 && !candidate.endsWith("}")) {
+            // Incomplete option suffix (truncated upstream): the bare
+            // URL before it is still fetchable.
+            candidate = candidate.substring(0, suffixAt).trim()
+            head = candidate
+        } else {
+            head = if (suffixAt >= 0) candidate.substring(0, suffixAt) else candidate
+        }
+        if (head.isEmpty()) return null
+        // Only the head is held to the no-quotes rule: a complete
+        // suffix is the fork's URL-option JSON — its quotes are the
+        // JSON's own, and the whole string, quotes included, is what
+        // AnalyzeUrl consumes downstream. Quotes, markup debris or
+        // raw whitespace in the head mean this was never a URL
+        // (a percent-encoded URL contains none of these).
+        if (head.any { it == '"' || it == '\'' || it == '<' || it == '>' || it.isWhitespace() }) {
+            return null
+        }
+        return candidate
+    }
+
+    private fun absolutizeImageCandidate(candidate: String, baseUrl: String): String {
+        if (candidate.startsWith("data:", ignoreCase = true)) return candidate
+        val suffixAt = candidate.indexOf(",{")
+        val head = if (suffixAt >= 0) candidate.substring(0, suffixAt) else candidate
+        val suffix = if (suffixAt >= 0) candidate.substring(suffixAt) else ""
+        if (head.startsWith("http://", ignoreCase = true) ||
+            head.startsWith("https://", ignoreCase = true)
+        ) {
+            return candidate
+        }
+        return NetworkUtils.getAbsoluteURL(baseUrl, head) + suffix
+    }
+
+    /** The fork BookController.isImageOrHttpLine test, verbatim logic. */
+    private fun isImageOrHttpLine(line: String): Boolean {
+        if (line.isBlank()) return false
+        if (line.startsWith("http://", ignoreCase = true) ||
+            line.startsWith("https://", ignoreCase = true) ||
+            line.startsWith("//")
+        ) {
+            return true
+        }
+        val clean = line.substringBefore(",{").trim()
+        return clean.endsWith(".jpg", ignoreCase = true) ||
+            clean.endsWith(".jpeg", ignoreCase = true) ||
+            clean.endsWith(".png", ignoreCase = true) ||
+            clean.endsWith(".gif", ignoreCase = true) ||
+            clean.endsWith(".webp", ignoreCase = true) ||
+            clean.endsWith(".bmp", ignoreCase = true) ||
+            clean.endsWith(".avif", ignoreCase = true)
     }
 }

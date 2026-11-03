@@ -1,18 +1,54 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show listEquals;
+
 import '../book_search.dart';
 import '../catalog.dart';
 import '../tag_catalogue.dart';
 import 'legado_book_registry.dart';
 import 'legado_dto.dart';
 import 'legado_engine_client.dart';
+import 'legado_image_urls.dart';
 import 'search_merge.dart';
 
-/// Body served in place of an image (manga) chapter in this phase: the
-/// reader renders it as an ordinary chapter page, in the reader's own
-/// typography, instead of failing. Manga image reading lands in the
-/// next phase.
+/// Body served in place of an image (manga) chapter for STRING
+/// content callers (TTS, illustration repair, exports): those flows
+/// keep a readable placeholder, while the reader itself renders image
+/// chapters from the structured [ChapterImageList] payload instead.
 const String legadoImageChapterNotice = '本章节为图片章节，漫画阅读将在后续版本提供。';
+
+/// The image bit of the engine's BookType bitmask
+/// (`BookType.image = 1 shl 6` in the fork): a book whose record
+/// carries it came from an image (manga) source and every one of its
+/// chapters is an image chapter — the same test the native bridge
+/// applies via `source.bookSourceType == 2`.
+const int legadoImageBookTypeBit = 1 << 6;
+
+/// Whether a registry record's [LegadoBookRecord.type] bitmask marks
+/// an image (manga) book.
+bool isLegadoImageBookType(int type) => type & legadoImageBookTypeBit != 0;
+
+/// Structured payload of one image chapter for the manga reader: the
+/// book's source ([origin], the key every image resolution needs) and
+/// the chapter's image URLs in reading order. [urls] may be empty when
+/// the engine marked the chapter as an image chapter but no image
+/// could be extracted — the reader shows its empty/failed state with a
+/// retry instead of prose.
+class ChapterImageList {
+  const ChapterImageList({required this.origin, required this.urls});
+
+  final String origin;
+  final List<String> urls;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ChapterImageList &&
+      other.origin == origin &&
+      listEquals(other.urls, urls);
+
+  @override
+  int get hashCode => Object.hash(origin, Object.hashAll(urls));
+}
 
 /// Adapts the Legado engine bridge onto the host's [NovelRepository]
 /// contract, so the unmodified detail page, directory, reader, shelf
@@ -157,21 +193,25 @@ class LegadoNovelRepository extends NovelRepository {
     }
   }
 
-  @override
-  Future<String> chapterContent(int novelId, NovelChapter chapter) async {
-    final record = await _recordFor(novelId);
-    var dto = await registry.dtoChapter(novelId, chapter.id);
+  /// The engine fetch behind both [chapterContent] and
+  /// [chapterImages]: resolves the chapter DTO, then runs the full
+  /// content chain (post-processing included).
+  Future<ChapterContent> _fetchChapter(
+    LegadoBookRecord record,
+    NovelChapter chapter,
+  ) async {
+    var dto = await registry.dtoChapter(record.id, chapter.id);
     if (dto == null) {
       // The reader can outlive the in-memory TOC (process restart with
       // a restored directory snapshot): refetch the directory once.
-      await chapters(novelId);
-      dto = await registry.dtoChapter(novelId, chapter.id);
+      await chapters(record.id);
+      dto = await registry.dtoChapter(record.id, chapter.id);
     }
     if (dto == null || dto.isVolume) {
       throw const FormatException('章节不存在或已被来源移除');
     }
     await ensureEngineReady();
-    final toc = await registry.tocOf(novelId) ?? const <Chapter>[];
+    final toc = await registry.tocOf(record.id) ?? const <Chapter>[];
     final position = toc.indexOf(dto);
     String? nextChapterUrl;
     if (position >= 0) {
@@ -182,7 +222,7 @@ class LegadoNovelRepository extends NovelRepository {
         }
       }
     }
-    final result = await client.getChapterContent(
+    return client.getChapterContent(
       book: record.toBookInfo(),
       chapter: dto,
       nextChapterUrl: nextChapterUrl,
@@ -195,8 +235,68 @@ class LegadoNovelRepository extends NovelRepository {
       // below), so their content path is untouched.
       applyReplace: true,
     );
+  }
+
+  @override
+  Future<String> chapterContent(int novelId, NovelChapter chapter) async {
+    final record = await _recordFor(novelId);
+    final result = await _fetchChapter(record, chapter);
     if (result.isImageChapter) return legadoImageChapterNotice;
     return result.content;
+  }
+
+  /// The structured image-chapter payload for the manga reader, or
+  /// null when the book is not an image book (the overwhelmingly
+  /// common case — answered from the registry record's type bitmask
+  /// without any engine call, so text reading pays nothing).
+  ///
+  /// For an image book the chapter is fetched once through the same
+  /// chain as [chapterContent]. The bridge's own extracted list is
+  /// preferred; when it comes back empty the chapter body is parsed
+  /// again on this side ([parseLegadoImageUrls], the bridge
+  /// extractor's twin) so one missed shape cannot blank a chapter.
+  /// The engine's own isImageChapter verdict wins over the record: a
+  /// mismatch stays on the text path rather than rendering an empty
+  /// image list.
+  Future<ChapterImageList?> chapterImages(
+    int novelId,
+    NovelChapter chapter,
+  ) async {
+    final record = await _recordFor(novelId);
+    if (!isLegadoImageBookType(record.type)) return null;
+    final result = await _fetchChapter(record, chapter);
+    if (!result.isImageChapter) return null;
+    final dto = await registry.dtoChapter(novelId, chapter.id);
+    // The chapter's absolute URL — the base the native side resolves
+    // against (`chapter.getAbsoluteURL(book)`): the DTO url resolved
+    // against the book's toc/book URL when it is itself relative.
+    final bookBase = record.tocUrl.isNotEmpty
+        ? record.tocUrl
+        : record.bookUrl;
+    var baseUrl = bookBase;
+    final dtoUrl = dto?.url ?? '';
+    if (dtoUrl.isNotEmpty) {
+      final parsed = Uri.tryParse(dtoUrl);
+      if (parsed != null && parsed.hasScheme) {
+        baseUrl = dtoUrl;
+      } else {
+        final base = Uri.tryParse(bookBase);
+        if (base != null && base.hasScheme) {
+          try {
+            baseUrl = base.resolve(dtoUrl).toString();
+          } catch (_) {
+            baseUrl = dtoUrl;
+          }
+        } else {
+          baseUrl = dtoUrl;
+        }
+      }
+    }
+    var urls = sanitizeLegadoImageUrls(result.images, baseUrl: baseUrl);
+    if (urls.isEmpty && result.content.trim().isNotEmpty) {
+      urls = parseLegadoImageUrls(result.content, baseUrl: baseUrl);
+    }
+    return ChapterImageList(origin: record.origin, urls: urls);
   }
 }
 
@@ -236,6 +336,15 @@ class LegadoDispatchRepository extends NovelRepository
       isLegadoBookId(novelId)
       ? legado.chapterContent(novelId, chapter)
       : legacy.chapterContent(novelId, chapter);
+
+  /// Image-chapter payloads exist only for engine books; Wenku books
+  /// answer null without touching the legacy repository.
+  Future<ChapterImageList?> chapterImages(
+    int novelId,
+    NovelChapter chapter,
+  ) => isLegadoBookId(novelId)
+      ? legado.chapterImages(novelId, chapter)
+      : Future<ChapterImageList?>.value(null);
 
   @override
   Future<NovelPage> browse({
