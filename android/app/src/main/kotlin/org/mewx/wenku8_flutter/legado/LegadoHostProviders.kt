@@ -71,7 +71,6 @@ import io.legado.app.help.book.BookImageStorage
 import io.legado.app.help.book.BookImageStorageProviders
 import io.legado.app.help.book.BookStorage
 import io.legado.app.help.book.BookStorageProviders
-import io.legado.app.help.book.getFolderName
 import io.legado.app.help.book.isCachedImageUsable
 import io.legado.app.model.CacheBookCallback
 import io.legado.app.model.CacheBookCallbacks
@@ -541,9 +540,10 @@ class LegadoBookHelp(private val cacheRoot: File, private val coversDir: File) :
     fun saveText(book: Book, bookChapter: BookChapter, content: String) {
         if (content.isEmpty()) return
         val file = chapterFile(book, bookChapter)
-        if (writeTextAtomically(file, content)) {
-            runCatching { BookHelpShared.upWordCount(book, bookChapter, content) }
+        if (!writeTextAtomically(file, content)) {
+            throw IOException("章节正文写入失败: ${file.absolutePath}")
         }
+        BookHelpShared.upWordCount(book, bookChapter, content)
     }
 
     override fun getContent(book: Book, bookChapter: BookChapter): String? {
@@ -681,14 +681,15 @@ class LegadoBookStorage(private val help: LegadoBookHelp) : BookStorage {
         return if (file.isFile) runCatching { file.readText(Charsets.UTF_8) }.getOrNull() else null
     }
 
-    override fun createCacheFile(book: Book, fileName: String): Boolean {
+    override fun createCacheFile(book: Book, fileName: String) {
         val file = File(help.bookDir(book), fileName)
         file.parentFile?.mkdirs()
-        return if (file.exists()) true else file.createNewFile()
+        if (!file.exists()) file.createNewFile()
     }
 
-    override fun deleteCacheFile(book: Book, fileName: String): Boolean =
+    override fun deleteCacheFile(book: Book, fileName: String) {
         File(help.bookDir(book), fileName).delete()
+    }
 
     override fun delContent(book: Book) {
         help.bookDir(book).deleteRecursively()
@@ -738,36 +739,55 @@ class LegadoBookStorage(private val help: LegadoBookHelp) : BookStorage {
 /**
  * BookImageStorage (P5.7): the fork's AndroidBookImageStorage thin shell
  * over the host BookHelp, registered so the replicated
- * BookImageDownloadShared can write downloaded chapter images.
+ * BookImageDownloadShared can write downloaded chapter images. The
+ * interface's chapter parameter is addressing context the fork's own
+ * Android implementation ignores (its layout is per-book, keyed by
+ * image url) — mirrored here exactly.
  */
 class LegadoBookImageStorage(private val help: LegadoBookHelp) : BookImageStorage {
-    override fun saveImage(book: Book, src: String, bytes: ByteArray): String? {
+    override fun saveImage(
+        book: Book,
+        chapter: BookChapter,
+        url: String,
+        bytes: ByteArray
+    ): String? {
         if (bytes.isEmpty()) return null
         return runCatching {
-            help.writeImage(book, src, bytes)
-            help.getImage(book, src).absolutePath
+            help.writeImage(book, url, bytes)
+            help.getImage(book, url).absolutePath
         }.getOrNull()
     }
 
-    override fun getImagePath(book: Book, src: String): String? =
-        help.getImage(book, src).takeIf { it.exists() }?.absolutePath
+    override fun getImagePath(book: Book, chapter: BookChapter, url: String): String? =
+        help.getImage(book, url).takeIf { it.exists() }?.absolutePath
 
-    override fun isImageExist(book: Book, src: String): Boolean =
-        help.isImageExist(book, src)
+    override fun isImageExist(book: Book, chapter: BookChapter, url: String): Boolean =
+        help.isImageExist(book, url)
 
-    override fun hasImageContent(book: Book): Boolean =
-        help.imageFile(book, "placeholder").parentFile
-            ?.listFiles()
-            ?.isNotEmpty() == true
+    override fun hasImageContent(book: Book): Boolean {
+        val imageDir = imagesDir(book)
+        return imageDir.exists() && (imageDir.listFiles()?.isNotEmpty() == true)
+    }
 
     override fun clearCache(book: Book) {
-        help.imageFile(book, "placeholder").parentFile?.deleteRecursively()
+        val imageDir = imagesDir(book)
+        if (imageDir.exists()) imageDir.deleteRecursively()
     }
 
     override fun checkImageBytes(bytes: ByteArray): Boolean = help.checkImage(bytes)
 
-    override fun writeImageBytes(book: Book, src: String, bytes: ByteArray) =
-        help.writeImage(book, src, bytes)
+    override fun writeImageBytes(
+        book: Book,
+        chapter: BookChapter,
+        url: String,
+        bytes: ByteArray
+    ) {
+        help.writeImage(book, url, bytes)
+    }
+
+    /** fork AndroidBookImageStorage.imagesDir: probe-derived. */
+    private fun imagesDir(book: Book): File =
+        help.getImage(book, "probe").parentFile ?: File("")
 }
 
 /** Host-local atomic file write (fork `writeTextAtomically` semantics). */

@@ -5,8 +5,11 @@ package io.legado.app.help.book
  * (huajideshutiao/legado @ d31c0a2, ui/src/commonMain/.../BookImageDownloadShared.kt),
  * 同包同名, 因为 `:ui` 未 vendored、而 fork 的四端图片下载编排 (存在性短路 /
  * per-src 去重 / 插件源分流 / 解密 / 校验失败仍落盘) 是其 BookHelp.saveImages
- * 的唯一实现, 缓存下载的图片落盘必须与 fork 一致 (先例同上)。除本说明外
- * 与 fork 原文零差异; 其依赖 (ChapterContentParserShared 同为宿主复刻件,
+ * 的唯一实现, 缓存下载的图片落盘必须与 fork 一致 (先例同上)。唯一偏差:
+ * onEachParallel 是 JVM 21 目标的 inline 函数无法 inline 进宿主
+ * (JVM 17), saveImages 的一处调用改走文件末尾逐字等价的非 inline 复刻
+ * onEachParallelHost; 其余与 fork 原文零差异。其依赖
+ * (ChapterContentParserShared 同为宿主复刻件,
  * BookImageStorageProviders / AnalyzeUrlFactories / ImageUtils /
  * MangaPluginImageFetcherProviders 等) 均已在 vendored AAR 或宿主复刻中。
  */
@@ -27,15 +30,17 @@ import io.legado.app.model.script.runScriptWithContext
 import io.legado.app.ui.book.read.page.provider.ChapterContentParserShared
 import io.legado.app.utils.ImageUtils
 import io.legado.app.utils.concurrent.newConcurrentMap
-import io.legado.app.utils.onEachParallel
 import io.legado.app.utils.readAllAndClose
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flatMapMerge
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -89,7 +94,7 @@ object BookImageDownloadShared {
         content: String,
         concurrency: Int = AppConfigProviders.get().threadCount
     ) = coroutineScope {
-        flowImages(bookChapter, content).onEachParallel(concurrency) { mSrc ->
+        flowImages(bookChapter, content).onEachParallelHost(concurrency) { mSrc ->
             saveImage(bookSource, book, mSrc, bookChapter)
         }.collect()
     }
@@ -230,3 +235,21 @@ object BookImageDownloadShared {
     private fun BookChapter?.forStorage(book: Book): BookChapter =
         this ?: BookChapter(bookUrl = book.bookUrl)
 }
+
+/**
+ * 宿主偏差 (P5.7): 与 `io.legado.app.utils.onEachParallel` 逐字等价的
+ * 非 inline 实现。原函数是 inline 函数, 其 AAR 字节码以 JVM 21 目标
+ * 编译, 无法 inline 进本宿主模块 (JVM 17 目标)。语义与原文一致:
+ * flatMapMerge(concurrency) 逐项执行 action 后原样 emit, buffer(0)。
+ * 除本函数与 saveImages 的一处调用改名外, 本文件与 fork 原文零差异。
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+private fun <T> Flow<T>.onEachParallelHost(
+    concurrency: Int,
+    action: suspend (T) -> Unit
+): Flow<T> = flatMapMerge(concurrency) { value ->
+    flow {
+        action(value)
+        emit(value)
+    }
+}.buffer(0)

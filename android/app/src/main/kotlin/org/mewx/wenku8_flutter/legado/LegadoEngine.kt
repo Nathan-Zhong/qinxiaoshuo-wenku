@@ -11,7 +11,6 @@ import io.legado.app.help.book.BookHelpProviders
 import io.legado.app.help.book.BookHelpShared
 import io.legado.app.help.book.BookStorageProviders
 import io.legado.app.help.book.ContentProcessorProviders
-import io.legado.app.help.book.getFolderName
 import io.legado.app.help.book.BookImageStorageProviders
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.model.CacheBookCallbacks
@@ -998,8 +997,9 @@ object LegadoEngine {
      *   CacheBook reads chapters from bookChapterDao;
      * - the engine thread count is dipped while downloading (see
      *   [LegadoConfigAccessor.acquireCacheDownloadDip]);
-     * - the model's public state (successDownloadSet /
-     *   errorDownloadMap) is polled into `cacheProgress` task events
+     * - the orchestrator's public state (CacheBookShared
+     *   .successDownloadSet / errorDownloadMap) is polled into
+     *   `cacheProgress` task events
      *   {taskId, done, total, failed:[chapter indexes]} — the shape
      *   the Dart CacheProgressEvent parses. A fatal error is reported
      *   as a terminal all-failed progress event. Cancelling the
@@ -1065,13 +1065,17 @@ object LegadoEngine {
             var lastDone = -1
             var lastFailed: List<Int>? = null
             while (true) {
+                // The shared orchestrator keeps its success/failure
+                // bookkeeping on the CacheBookShared object itself
+                // (chapter keys are bookUrl+chapterUrl, so concurrent
+                // books never collide).
                 var succeeded = 0
                 val failed = ArrayList<Int>()
                 for ((offset, key) in keys.withIndex()) {
                     if (key == null) continue
-                    if (model.successDownloadSet.contains(key)) {
+                    if (CacheBookShared.successDownloadSet.contains(key)) {
                         succeeded++
-                    } else if ((model.errorDownloadMap[key] ?: 0) >= 3) {
+                    } else if ((CacheBookShared.errorDownloadMap[key] ?: 0) >= 3) {
                         failed.add(indexes[offset])
                     }
                 }
@@ -1080,7 +1084,7 @@ object LegadoEngine {
                     lastDone = succeeded
                     lastFailed = failed
                 }
-                val drained = CacheBookShared.getCacheBookModel(built.bookUrl) == null ||
+                val drained = CacheBookShared.cacheBookMap[built.bookUrl] == null ||
                     model.isIdle()
                 if (drained || succeeded + failed.size >= total) {
                     // Terminal: everything not failed counts as done
@@ -1095,7 +1099,7 @@ object LegadoEngine {
             withContext(NonCancellable) {
                 runCatching {
                     book?.let {
-                        CacheBookShared.getCacheBookModel(it.bookUrl)?.stop()
+                        CacheBookShared.cacheBookMap[it.bookUrl]?.stop()
                     }
                 }
             }
