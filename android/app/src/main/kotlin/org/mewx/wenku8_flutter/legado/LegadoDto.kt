@@ -34,6 +34,11 @@ object LegadoDto {
             "respondTimeMs" to source.respondTime,
             "lastUpdateTime" to source.lastUpdateTime,
             "hasLogin" to source.hasLogin(),
+            // fix3: lets the Dart search scope exclude sources that can
+            // never search (blank searchUrl — e.g. RSS-type entries in
+            // the book-source table), mirroring the capability check
+            // the engine self-check makes per source.
+            "hasSearch" to !source.searchUrl.isNullOrBlank(),
             "comment" to source.bookSourceComment,
             "icon" to source.bookSourceIcon,
             "exploreKindCount" to exploreKindCount,

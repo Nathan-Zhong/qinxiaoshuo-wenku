@@ -104,6 +104,7 @@ class BookSourceSummary {
     this.icon,
     this.exploreKindCount,
     this.sourceJson,
+    this.hasSearch = true,
   });
 
   /// Primary key (`BookSource.bookSourceUrl`); doubles as a book's origin.
@@ -128,6 +129,13 @@ class BookSourceSummary {
   /// Full source JSON, only present on `getSource` results.
   final String? sourceJson;
 
+  /// Whether the source can search at all (non-blank `searchUrl`).
+  /// Added in fix3: the app search scope excludes sources without a
+  /// search URL — including one only ever produced the engine's
+  /// 「搜索url不能为空」 error inside the shared search round. Maps
+  /// from older native builds lack the key and default to true.
+  final bool hasSearch;
+
   factory BookSourceSummary.fromMap(Map<Object?, Object?> map) {
     final m = _keyed(map);
     return BookSourceSummary(
@@ -148,6 +156,7 @@ class BookSourceSummary {
           ? null
           : _int(m, 'exploreKindCount'),
       sourceJson: _strOrNull(m, 'sourceJson'),
+      hasSearch: _bool(m, 'hasSearch', true),
     );
   }
 
@@ -167,6 +176,7 @@ class BookSourceSummary {
     'icon': icon,
     'exploreKindCount': exploreKindCount,
     'sourceJson': sourceJson,
+    'hasSearch': hasSearch,
   };
 
   @override
@@ -186,7 +196,8 @@ class BookSourceSummary {
       other.comment == comment &&
       other.icon == icon &&
       other.exploreKindCount == exploreKindCount &&
-      other.sourceJson == sourceJson;
+      other.sourceJson == sourceJson &&
+      other.hasSearch == hasSearch;
 
   @override
   int get hashCode => Object.hash(
@@ -205,6 +216,7 @@ class BookSourceSummary {
     icon,
     exploreKindCount,
     sourceJson,
+    hasSearch,
   );
 }
 

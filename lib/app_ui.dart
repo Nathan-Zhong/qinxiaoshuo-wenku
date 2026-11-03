@@ -1326,7 +1326,22 @@ class CoverGlow extends StatelessWidget {
                       1,
                       0,
                     ]),
-                    child: Image.memory(snapshot.data!, fit: BoxFit.cover),
+                    // fix3 (performance): this backdrop is blurred
+                    // (sigma 30) and grayscaled before display, but the
+                    // bytes used to decode at the cover's native size —
+                    // often several megapixels — on every detail-page
+                    // entry. Decoding at the layer's own pixel width is
+                    // lossless for a blurred full-screen backdrop and
+                    // removes that spike. Visual output is unchanged.
+                    child: Image.memory(
+                      snapshot.data!,
+                      fit: BoxFit.cover,
+                      cacheWidth:
+                          (MediaQuery.sizeOf(context).width *
+                                  MediaQuery.devicePixelRatioOf(context))
+                              .ceil()
+                              .clamp(1, 2048),
+                    ),
                   ),
                 ),
                 DecoratedBox(

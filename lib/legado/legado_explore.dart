@@ -190,7 +190,12 @@ class LegadoExploreRepository extends NovelRepository {
   /// queued. Explore results only — search results are out of scope.
   void Function(Novel novel)? onCoverFilled;
 
-  static const int _coverPrefetchConcurrency = 3;
+  /// fix3 (performance): lowered from 3 to 2 — each prefetch is a full
+  /// detail fetch whose completion swaps a feed row and starts a cover
+  /// download/decode; two in flight still fill a page promptly while
+  /// leaving more headroom for scrolling and page transitions. The
+  /// prefetch itself (Cassidy's fix1 request) is unchanged.
+  static const int _coverPrefetchConcurrency = 2;
   final Set<String> _coverPrefetchAttempted = <String>{};
   final List<LegadoBookRecord> _coverPrefetchQueue = <LegadoBookRecord>[];
   int _coverPrefetchActive = 0;

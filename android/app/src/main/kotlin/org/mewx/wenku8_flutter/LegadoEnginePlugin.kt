@@ -10,6 +10,8 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.legado.app.data.entities.SearchBook
+import io.legado.app.help.http.OkHttpClientProviders
+import io.legado.app.help.http.newCallStrResponse
 import io.legado.app.model.webBook.SearchModel
 import io.legado.app.model.webBook.SourceSearchGroup
 import io.legado.app.ui.book.search.SearchScope
@@ -18,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.mewx.wenku8_flutter.legado.LegadoBridgeException
 import org.mewx.wenku8_flutter.legado.LegadoDto
@@ -655,6 +658,10 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
     }
 }
 
+/** fix3: upper bound for one retried search unit (warm-up solve window
+ *  plus the retried page request) before the session gives up on it. */
+private const val RETRY_WATCHDOG_MS = 90_000L
+
 /**
  * One Dart search task, fanned out over one engine [SearchModel] per scope
  * unit (a single all/group scope, or one model per explicitly listed
@@ -679,6 +686,10 @@ private class LegadoSearchSession(
     /** Per-unit failures captured from onSearchCancel (engine semantics
      *  swallow them into a silent zero-result unit otherwise). */
     private val unitErrors = ConcurrentHashMap<Int, Map<String, Any?>>()
+
+    /** Units that already used their one automatic retry this round
+     *  (fix3 — see the retry in onSearchCancel). */
+    private val unitRetried = ConcurrentHashMap<Int, Boolean>()
     private val finishedCount = AtomicInteger(0)
     private val roundFinishEmitted = AtomicBoolean(false)
     private val active = AtomicBoolean(true)
@@ -724,6 +735,7 @@ private class LegadoSearchSession(
         if (!active.get()) return
         unitFinished.clear()
         unitErrors.clear()
+        unitRetried.clear()
         finishedCount.set(0)
         roundFinishEmitted.set(false)
         LegadoEngine.scope.launch {
@@ -791,8 +803,74 @@ private class LegadoSearchSession(
                     "errorCode" to exception.javaClass.simpleName,
                     "message" to exception.legadoBrief()
                 )
+                // fix3: ONE automatic retry per unit per round, the way
+                // a Legado user re-searches a failed source by hand —
+                // but first warm the source up OUTSIDE SearchModel's
+                // budget. Root cause this addresses: SearchModel caps
+                // every page request at AppConst.timeLimit (15s), while
+                // the host Cloudflare solver's challenge window is 30s
+                // (CHALLENGE_TIMEOUT_MS). A cold cf_clearance therefore
+                // reliably kills a shielded source's in-session request
+                // (TimeoutCancellationException, zero books), even
+                // though the very same request succeeds when the
+                // timeout-free self-check path runs it — the solver
+                // simply never gets to finish inside the session. The
+                // warm-up below is a plain GET of the source's own URL
+                // through the engine's shared client (the Cloudflare
+                // interceptor sits at index 0 of it and stores the
+                // solved cf_clearance in the shared cookie store), so
+                // the retried page request passes without a challenge.
+                // Non-shielded sources just pay one homepage GET on a
+                // round that had already failed. The engine itself is
+                // untouched; this is session orchestration only.
+                if (keyword.isNotEmpty() &&
+                    scope.isSource() &&
+                    unitRetried.put(unit, true) == null
+                ) {
+                    val sourceUrl = scope.toString().substringAfter("::")
+                    if (sourceUrl.isNotEmpty() &&
+                        models.getOrNull(unit) != null
+                    ) {
+                        warmUpAndRestart(unit, sourceUrl)
+                        return // the retried attempt finishes this unit
+                    }
+                }
             }
             markUnitFinished(unit)
+        }
+    }
+
+    /**
+     * fix3 retry worker: warm the source through the engine's own
+     * client (no SearchModel timeout — the Cloudflare interceptor gets
+     * its full solve window), then restart just this unit's source for
+     * page 1 through the model's own restart path. A watchdog finishes
+     * the unit if the restarted attempt somehow never reports back, so
+     * a round can never hang on a retried unit.
+     */
+    private fun warmUpAndRestart(unit: Int, sourceUrl: String) {
+        LegadoEngine.scope.launch {
+            runCatching {
+                OkHttpClientProviders.get().okHttpClient
+                    .newCallStrResponse { url(sourceUrl) }
+            }
+            if (!active.get()) return@launch
+            val model = models.getOrNull(unit) ?: run {
+                markUnitFinished(unit)
+                return@launch
+            }
+            runCatching { model.restartSource(sourceUrl) }
+                .onFailure { markUnitFinished(unit) }
+            launch {
+                delay(RETRY_WATCHDOG_MS)
+                if (active.get() && unitFinished[unit] != true) {
+                    LegadoEngine.recordBridgeError(
+                        "searchUnitRetry",
+                        IllegalStateException("重试后仍未返回: $sourceUrl")
+                    )
+                    markUnitFinished(unit)
+                }
+            }
         }
     }
 

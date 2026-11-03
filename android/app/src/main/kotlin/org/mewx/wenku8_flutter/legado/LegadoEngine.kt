@@ -7,6 +7,7 @@ import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.SearchBook
 import io.legado.app.help.book.BookHelpProviders
 import io.legado.app.help.book.BookHelpShared
 import io.legado.app.help.book.BookStorageProviders
@@ -15,6 +16,8 @@ import io.legado.app.help.book.BookImageStorageProviders
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.model.CacheBookCallbacks
 import io.legado.app.model.CacheBookShared
+import io.legado.app.help.http.OkHttpClientProviders
+import io.legado.app.help.http.newCallStrResponse
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.exploreKinds
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
@@ -22,13 +25,19 @@ import io.legado.app.model.analyzeRule.RuleData
 import io.legado.app.model.script.JsBindingInjector
 import io.legado.app.model.script.JsBindings
 import io.legado.app.model.script.JsEngines
+import io.legado.app.model.webBook.SearchModel
+import io.legado.app.model.webBook.SourceSearchGroup
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.ui.book.search.SearchScope
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.scan.TagScan
 import io.legado.engine.LegadoEngineFacade
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -38,6 +47,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** One-line exception summary (class + message) for events and self-checks. */
 internal fun Throwable.legadoBrief(max: Int = 400): String =
@@ -330,9 +340,17 @@ object LegadoEngine {
         // Sequential on purpose — this is a diagnostic, not a search.
         out["perSourceSearch"] = runCatching {
             val lines = enabledList.take(10).map { source ->
-                "${source.bookSourceName} | searchUrlResolved: " +
-                    "${probeResolvedSearchUrl(source)} | " +
-                    "webBookSearch: ${probeWebBookSearch(source)}"
+                // fix3: sources without a search URL (e.g. the type-5
+                // RSS 源仓库 entry) only ever answered 「搜索url不能为空」
+                // here, which read like a failure in the report. They
+                // are not searchable by design; say so and skip the call.
+                if (source.searchUrl.isNullOrBlank()) {
+                    "${source.bookSourceName} | skipped: 无搜索地址（不可搜索）"
+                } else {
+                    "${source.bookSourceName} | searchUrlResolved: " +
+                        "${probeResolvedSearchUrl(source)} | " +
+                        "webBookSearch: ${probeWebBookSearch(source)}"
+                }
             }
             when {
                 enabledList.isEmpty() -> listOf("(no enabled sources)")
@@ -342,6 +360,32 @@ object LegadoEngine {
             }
         }.getOrElse { e ->
             recordBridgeError("selfCheck.perSourceSearch", e)
+            listOf("ERROR ${e.legadoBrief()}")
+        }
+        // fix3 app-path probe: perSourceSearch above calls WebBook
+        // directly with NO timeout, but the App's real search goes
+        // through SearchModel, which caps every page request at
+        // AppConst.timeLimit (15s) — shorter than the host Cloudflare
+        // solver's 30s challenge window. A shielded source can thus be
+        // "ok" above and still return zero books in the App. This
+        // section runs each searchable text/manga source through the
+        // exact session construction (one SearchModel over a
+        // single-source SearchScope, 斗破）, INCLUDING the session's
+        // fix3 warm-up + retry, and reports what the App would see.
+        out["appSearchProbe"] = runCatching {
+            val probeSources = enabledList.filter { source ->
+                (source.bookSourceType == 0 || source.bookSourceType == 2) &&
+                    !source.searchUrl.isNullOrBlank()
+            }
+            when {
+                probeSources.isEmpty() ->
+                    listOf("(no searchable text/manga source)")
+                else -> probeSources.take(6).map { source ->
+                    probeAppSearchPath(source)
+                }
+            }
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.appSearchProbe", e)
             listOf("ERROR ${e.legadoBrief()}")
         }
         // Image-request resolution probe (G7, P5.1): proves the two
@@ -603,6 +647,86 @@ object LegadoEngine {
             recordBridgeError("selfCheck.webBookSearch.perSource", e)
             "ERROR ${e.legadoStack()}"
         }
+
+    /**
+     * fix3: one source through the App's REAL search path — a
+     * SearchModel over a single-source SearchScope, built exactly like
+     * the plugin session builds it, with the session's warm-up + retry
+     * mirrored — reporting what the App search would actually surface
+     * for 斗破： aggregate size, first book name/type, attempt count,
+     * whether the warm-up ran, the cancel exception (if any) and wall
+     * time. Compare against [probeWebBookSearch] (same source, direct
+     * call, no 15s cap) to isolate the session layer.
+     */
+    private suspend fun probeAppSearchPath(source: BookSource): String {
+        val startedAt = System.currentTimeMillis()
+        val done = CompletableDeferred<Unit>()
+        val aggregate = AtomicReference<List<SearchBook>>(emptyList())
+        val cancelBrief = AtomicReference<String?>(null)
+        val attempts = AtomicInteger(1)
+        val warmed = AtomicBoolean(false)
+        val modelRef = AtomicReference<SearchModel?>(null)
+        val callback = object : SearchModel.CallBack {
+            override fun getSearchScope(): SearchScope = SearchScope(source)
+            override fun onSearchStart() = Unit
+            override fun onSearchSuccess(searchBooks: List<SearchBook>) {
+                aggregate.set(searchBooks)
+            }
+
+            override fun onSearchGroupsChanged(
+                groups: List<SourceSearchGroup>
+            ) = Unit
+
+            override fun onSearchFinish(isEmpty: Boolean, hasMore: Boolean) {
+                done.complete(Unit)
+            }
+
+            override fun onSearchCancel(exception: Throwable?) {
+                if (exception == null) {
+                    done.complete(Unit)
+                    return
+                }
+                cancelBrief.set(exception.legadoBrief())
+                if (attempts.compareAndSet(1, 2)) {
+                    scope.launch {
+                        runCatching {
+                            OkHttpClientProviders.get().okHttpClient
+                                .newCallStrResponse {
+                                    url(source.bookSourceUrl)
+                                }
+                            warmed.set(true)
+                        }
+                        runCatching {
+                            modelRef.get()?.restartSource(
+                                source.bookSourceUrl
+                            )
+                        }
+                    }
+                } else {
+                    done.complete(Unit)
+                }
+            }
+        }
+        val model = SearchModel(scope, callback)
+        modelRef.set(model)
+        return try {
+            model.search(1L, "斗破")
+            val finished = withTimeoutOrNull(120_000) { done.await() } != null
+            val books = aggregate.get()
+            val firstBook = books.firstOrNull()
+            "${source.bookSourceName} | sessionBooks: ${books.size} | " +
+                "firstType: ${firstBook?.type} | " +
+                "firstName: ${firstBook?.name} | " +
+                "attempts: ${attempts.get()} | warmed: ${warmed.get()} | " +
+                "finished: $finished | " +
+                "cancelErr: ${cancelBrief.get() ?: "none"} | " +
+                "elapsedMs: ${System.currentTimeMillis() - startedAt}"
+        } catch (e: Throwable) {
+            "${source.bookSourceName} | ERROR ${e.legadoBrief()}"
+        } finally {
+            runCatching { model.close() }
+        }
+    }
 
     // ------------------------------------------------------------------
     // Sources

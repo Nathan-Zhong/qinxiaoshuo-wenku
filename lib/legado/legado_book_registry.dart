@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -260,6 +261,13 @@ class LegadoBookRegistry extends ChangeNotifier {
   int _nextSeq = 0;
   Timer? _persistTimer;
 
+  /// Monotonic persist generations (fix3): a background-isolate encode
+  /// can finish after a newer persist was scheduled; only the latest
+  /// generation may write, so a stale encode never overwrites fresher
+  /// state.
+  int _persistSeq = 0;
+  final Map<int, int> _tocPersistSeq = {};
+
   /// Completes once the persisted state has been read. All mutating or
   /// allocating operations await it internally; synchronous lookups are
   /// only meaningful after it (the UI paths that use them run after a
@@ -333,16 +341,27 @@ class LegadoBookRegistry extends ChangeNotifier {
     final prefs = _prefs;
     if (prefs == null || !_loaded) return;
     try {
-      await prefs.setString(
-        _registryKey,
-        jsonEncode({
-          'nextSeq': _nextSeq,
-          'entries': [for (final record in _records.values) record.toJson()],
-          'groups': {
-            for (final entry in _groups.entries) entry.key: entry.value,
-          },
-        }),
-      );
+      final payload = <String, Object?>{
+        'nextSeq': _nextSeq,
+        'entries': [for (final record in _records.values) record.toJson()],
+        'groups': {
+          for (final entry in _groups.entries) entry.key: entry.value,
+        },
+      };
+      // fix3 (performance): the whole-registry JSON encode used to run
+      // on the UI isolate on every debounced persist; with a few
+      // hundred registered books that is a visible hitch during search
+      // and discovery browsing. Large payloads are encoded in a
+      // background isolate instead (the payload is plain JSON values,
+      // safe to send across). Small registries keep the synchronous
+      // path — cheaper than spawning an isolate, and identical output.
+      final entries = payload['entries'] as List<Object?>;
+      final seq = ++_persistSeq;
+      final encoded = entries.length > 100
+          ? await compute(jsonEncode, payload)
+          : jsonEncode(payload);
+      if (seq != _persistSeq) return; // superseded while encoding
+      await prefs.setString(_registryKey, encoded);
     } catch (_) {
       // Persistence is best-effort; in-memory state stays authoritative
       // for this process.
@@ -504,10 +523,16 @@ class LegadoBookRegistry extends ChangeNotifier {
     final prefs = _prefs;
     if (prefs == null) return;
     try {
-      await prefs.setString(
-        _tocKey(id),
-        jsonEncode([for (final chapter in chapters) chapter.toMap()]),
-      );
+      // Same fix3 rule as the registry blob: long chapter lists are
+      // encoded off the UI isolate, latest generation wins.
+      final maps = [for (final chapter in chapters) chapter.toMap()];
+      final seq = (_tocPersistSeq[id] ?? 0) + 1;
+      _tocPersistSeq[id] = seq;
+      final encoded = maps.length > 300
+          ? await compute(jsonEncode, maps)
+          : jsonEncode(maps);
+      if (_tocPersistSeq[id] != seq) return;
+      await prefs.setString(_tocKey(id), encoded);
     } catch (_) {
       // Same best-effort rule as the registry blob.
     }

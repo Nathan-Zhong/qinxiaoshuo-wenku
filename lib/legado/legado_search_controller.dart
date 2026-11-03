@@ -122,6 +122,15 @@ class LegadoSearchFeedController extends NovelFeedController {
   /// ends empty WITH a recorded failure is an error, not "no results".
   SearchErrorEvent? _roundError;
 
+  /// Signature of the last snapshot this generation actually merged
+  /// and registered (fix3, performance). The native session re-emits
+  /// the same aggregate more than once per page (its success and
+  /// groups-changed callbacks fire back to back), and re-running the
+  /// merge + registry pass for an identical snapshot is pure cost:
+  /// it churns registry notifications and persist scheduling without
+  /// changing a single visible row. Identical repeats are skipped.
+  String? _lastSnapshotSignature;
+
   // -------------------------------------------------------------------
   // NovelFeedController surface
   // -------------------------------------------------------------------
@@ -315,6 +324,7 @@ class LegadoSearchFeedController extends NovelFeedController {
     _refreshingValue = false;
     _resultStartIndexValue = 0;
     _roundError = null;
+    _lastSnapshotSignature = null;
   }
 
   Future<void> _warmSources() async {
@@ -390,6 +400,17 @@ class LegadoSearchFeedController extends NovelFeedController {
     if (_disposed || generation != _generation) return;
     switch (event) {
       case SearchSnapshotEvent():
+        final signature = _snapshotSignature(event);
+        if (signature == _lastSnapshotSignature) {
+          // Identical re-emission: nothing to re-merge. A flipped
+          // hasMore still matters (it arms the load-more trigger).
+          if (_hasMoreValue != event.hasMore) {
+            _hasMoreValue = event.hasMore;
+            notifyListeners();
+          }
+          return;
+        }
+        _lastSnapshotSignature = signature;
         final merged = mergeSearchBooks(event.books);
         final novels = <Novel>[];
         for (final book in merged) {
@@ -430,6 +451,30 @@ class LegadoSearchFeedController extends NovelFeedController {
       case UnknownSearchEvent():
         break;
     }
+  }
+
+  /// Cheap content signature of one snapshot: every field that can
+  /// change the merged list or a registered record, in arrival order.
+  String _snapshotSignature(SearchSnapshotEvent event) {
+    final buffer = StringBuffer();
+    for (final book in event.books) {
+      buffer
+        ..write(book.origin)
+        ..write('\u0000')
+        ..write(book.bookUrl)
+        ..write('\u0000')
+        ..write(book.name)
+        ..write('\u0000')
+        ..write(book.author)
+        ..write('\u0000')
+        ..write(book.type)
+        ..write('\u0000')
+        ..write(book.coverUrl ?? '')
+        ..write('\u0000')
+        ..write(book.latestChapterTitle ?? '')
+        ..write('\u0001');
+    }
+    return buffer.toString();
   }
 
   void _applyFilter() {

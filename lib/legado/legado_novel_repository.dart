@@ -84,6 +84,13 @@ class LegadoNovelRepository extends NovelRepository {
 
   /// Sources eligible for searching/browsing under PLAN item 5: enabled
   /// text-novel (0) and manga (2) sources only.
+  ///
+  /// fix3: sources without a search URL are excluded as well. They can
+  /// never return results (the engine answers 「搜索url不能为空」), and
+  /// inside a shared search round that junk unit only ever produced a
+  /// spurious per-source failure — the same reason the engine self-check
+  /// probes skip them. Explore browsing is unaffected: [exploreOnly]
+  /// callers keep every enabled text/manga source.
   Future<List<BookSourceSummary>> eligibleSources({
     bool exploreOnly = false,
   }) async {
@@ -93,7 +100,11 @@ class LegadoNovelRepository extends NovelRepository {
       exploreOnly: exploreOnly,
     );
     return sources
-        .where((source) => source.type == 0 || source.type == 2)
+        .where(
+          (source) =>
+              (source.type == 0 || source.type == 2) &&
+              (exploreOnly || source.hasSearch),
+        )
         .toList(growable: false);
   }
 

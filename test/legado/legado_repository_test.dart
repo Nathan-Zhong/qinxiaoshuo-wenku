@@ -472,7 +472,7 @@ void main() {
       expect(fills, 0);
     });
 
-    test('prefetch runs at most three detail fetches at a time', () async {
+    test('prefetch runs at most two detail fetches at a time', () async {
       var infoCalls = 0;
       var active = 0;
       var maxActive = 0;
@@ -508,7 +508,7 @@ void main() {
       await drainUntil(() => filled.length >= 6);
       expect(infoCalls, 6);
       expect(filled, hasLength(6));
-      expect(maxActive, lessThanOrEqualTo(3));
+      expect(maxActive, lessThanOrEqualTo(2));
       expect(maxActive, greaterThan(1));
     });
 
