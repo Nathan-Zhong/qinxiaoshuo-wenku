@@ -109,7 +109,11 @@ jobs:
           ls -l "$apk"
           echo "--- ABIs in lib/:"
           unzip -l "$apk" | grep -o 'lib/[^/]*/' | sort -u
-          test "$(unzip -l "$apk" | grep -o 'lib/[^/]*/' | sort -u)" = "lib/arm64-v8a/"
+          # lib/assets/ is a non-ABI folder an engine AAR ships; only real
+          # ABI directories count for the single-ABI assertion.
+          abis=$(unzip -l "$apk" | grep -oE 'lib/(arm64-v8a|armeabi-v7a|armeabi|x86_64|x86)/' | sort -u)
+          echo "ABI dirs: $abis"
+          test "$abis" = "lib/arm64-v8a/"
           bt=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
           bt_dir=$(dirname "$bt")
           "$bt_dir/aapt" dump badging "$apk" | head -3
