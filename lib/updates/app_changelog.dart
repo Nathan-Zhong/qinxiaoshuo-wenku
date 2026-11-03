@@ -40,6 +40,18 @@ class AppVersionNotes {
 /// 按这个顺序翻页。
 const appChangelog = <AppVersionNotes>[
   AppVersionNotes(
+    version: '1.0.4',
+    build: 10004,
+    date: '2026-11-04',
+    summary: ['漫画点开能看图了，搜索也更靠谱了。'],
+    items: [
+      '修复漫画点开只能看到提示页、看不了图的问题',
+      '全书源一起搜时，漫画源不再被网站验证拖没：超时或被验证页顶替会自动预热重试',
+      '搜索排序对齐阅读 App：书名或作者与搜索词完全一致的先出，其余相关在后，文字和漫画同等对待',
+      '发现页立体书架改为每日随机选书：同一天同一书源不变，隔天换一批',
+    ],
+  ),
+  AppVersionNotes(
     version: '1.0.3',
     build: 10003,
     date: '2026-11-04',

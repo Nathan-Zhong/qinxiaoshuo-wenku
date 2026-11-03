@@ -371,7 +371,10 @@ object LegadoEngine {
         // section runs each searchable text/manga source through the
         // exact session construction (one SearchModel over a
         // single-source SearchScope, 斗破）, INCLUDING the session's
-        // fix3 warm-up + retry, and reports what the App would see.
+        // warm-up + retry semantics (fix3 exception retry; fix4 added
+        // the silence watchdog and the challenged-zero retry, both
+        // mirrored in probeAppSearchPath), and reports what the App
+        // would see.
         out["appSearchProbe"] = runCatching {
             val probeSources = enabledList.filter { source ->
                 (source.bookSourceType == 0 || source.bookSourceType == 2) &&
@@ -666,42 +669,83 @@ object LegadoEngine {
         val attempts = AtomicInteger(1)
         val warmed = AtomicBoolean(false)
         val modelRef = AtomicReference<SearchModel?>(null)
+        // fix4: the probe mirrors the session's CURRENT semantics
+        // (LegadoSearchSession), which grew two triggers beyond
+        // fix3's exception retry: a silence watchdog (a unit killed
+        // by SearchModel's 15s timeout fires NEITHER terminal
+        // callback — the timeout exception is a CancellationException
+        // and the flow's .catch never sees it) and a challenged-zero
+        // retry (challenge page parsed as an empty list). The flags
+        // land in the report line so one screenshot shows which path
+        // a source took.
+        val lastCallbackAt = java.util.concurrent.atomic.AtomicLong(startedAt)
+        val silenceRetried = AtomicBoolean(false)
+        val challengeRetried = AtomicBoolean(false)
+
+        fun warmAndRestart() {
+            lastCallbackAt.set(System.currentTimeMillis())
+            scope.launch {
+                runCatching {
+                    OkHttpClientProviders.get().okHttpClient
+                        .newCallStrResponse {
+                            url(source.bookSourceUrl)
+                        }
+                    warmed.set(true)
+                }
+                runCatching {
+                    modelRef.get()?.restartSource(
+                        source.bookSourceUrl
+                    )
+                }
+            }
+        }
+
         val callback = object : SearchModel.CallBack {
             override fun getSearchScope(): SearchScope = SearchScope(source)
-            override fun onSearchStart() = Unit
+            override fun onSearchStart() {
+                lastCallbackAt.set(System.currentTimeMillis())
+            }
+
             override fun onSearchSuccess(searchBooks: List<SearchBook>) {
+                lastCallbackAt.set(System.currentTimeMillis())
                 aggregate.set(searchBooks)
             }
 
             override fun onSearchGroupsChanged(
                 groups: List<SourceSearchGroup>
-            ) = Unit
+            ) {
+                lastCallbackAt.set(System.currentTimeMillis())
+            }
 
             override fun onSearchFinish(isEmpty: Boolean, hasMore: Boolean) {
+                lastCallbackAt.set(System.currentTimeMillis())
+                // fix4 challenged-zero: clean finish, zero books, but
+                // the host WAS challenged during this probe — the
+                // empty list is the challenge page, not an answer.
+                val host = runCatching {
+                    java.net.URI(source.bookSourceUrl).host
+                }.getOrNull()
+                if (aggregate.get().isEmpty() &&
+                    host != null &&
+                    LegadoChallengeSignals.challengedSince(host, startedAt) &&
+                    attempts.compareAndSet(1, 2)
+                ) {
+                    challengeRetried.set(true)
+                    warmAndRestart()
+                    return
+                }
                 done.complete(Unit)
             }
 
             override fun onSearchCancel(exception: Throwable?) {
+                lastCallbackAt.set(System.currentTimeMillis())
                 if (exception == null) {
                     done.complete(Unit)
                     return
                 }
                 cancelBrief.set(exception.legadoBrief())
                 if (attempts.compareAndSet(1, 2)) {
-                    scope.launch {
-                        runCatching {
-                            OkHttpClientProviders.get().okHttpClient
-                                .newCallStrResponse {
-                                    url(source.bookSourceUrl)
-                                }
-                            warmed.set(true)
-                        }
-                        runCatching {
-                            modelRef.get()?.restartSource(
-                                source.bookSourceUrl
-                            )
-                        }
-                    }
+                    warmAndRestart()
                 } else {
                     done.complete(Unit)
                 }
@@ -709,6 +753,26 @@ object LegadoEngine {
         }
         val model = SearchModel(scope, callback)
         modelRef.set(model)
+        // fix4 silence watchdog (probe replica of the session's):
+        // 30s without any callback on attempt 1 → warm-up + restart;
+        // on attempt 2 give the retried unit 60s before reporting
+        // what the App would have seen (nothing more is coming).
+        val watchdog = scope.launch {
+            while (!done.isCompleted) {
+                kotlinx.coroutines.delay(5_000)
+                if (done.isCompleted) break
+                val silentMs = System.currentTimeMillis() - lastCallbackAt.get()
+                if (attempts.get() == 1 && silentMs > 30_000 &&
+                    attempts.compareAndSet(1, 2)
+                ) {
+                    silenceRetried.set(true)
+                    warmAndRestart()
+                } else if (attempts.get() == 2 && silentMs > 60_000) {
+                    done.complete(Unit)
+                    break
+                }
+            }
+        }
         return try {
             model.search(1L, "斗破")
             val finished = withTimeoutOrNull(120_000) { done.await() } != null
@@ -718,12 +782,15 @@ object LegadoEngine {
                 "firstType: ${firstBook?.type} | " +
                 "firstName: ${firstBook?.name} | " +
                 "attempts: ${attempts.get()} | warmed: ${warmed.get()} | " +
+                "silenceRetried: ${silenceRetried.get()} | " +
+                "challengeRetried: ${challengeRetried.get()} | " +
                 "finished: $finished | " +
                 "cancelErr: ${cancelBrief.get() ?: "none"} | " +
                 "elapsedMs: ${System.currentTimeMillis() - startedAt}"
         } catch (e: Throwable) {
             "${source.bookSourceName} | ERROR ${e.legadoBrief()}"
         } finally {
+            watchdog.cancel()
             runCatching { model.close() }
         }
     }
@@ -968,7 +1035,8 @@ object LegadoEngine {
         tocUrl: String?,
         name: String?,
         author: String?,
-        variable: String?
+        variable: String?,
+        bookType: Int
     ): Book = Book(
         bookUrl = bookUrl,
         tocUrl = tocUrl ?: "",
@@ -976,7 +1044,18 @@ object LegadoEngine {
         originName = originName,
         name = name ?: "",
         author = author ?: "",
-        variable = variable
+        variable = variable,
+        // fix4: carry the SOURCE's book type into the built book. The
+        // fork's BookInfo.analyzeBookInfo never assigns Book.type (only
+        // BookList's search/explore items stamp it via
+        // bookSource.getBookType()), so a book built here kept the
+        // entity default BookType.text — and the DTO then reported a
+        // manga (type-2 source) book as text. On the Dart side that
+        // overwrote the registry record's correct image type on every
+        // detail()/chapters() absorb, which silently rerouted manga
+        // chapters to the text reader (image-chapter notice page).
+        // Mirrors how the fork itself seeds a book from its source.
+        type = bookType
     )
 
     suspend fun getBookInfo(
@@ -989,7 +1068,7 @@ object LegadoEngine {
     ): Map<String, Any?> {
         requireInit()
         val source = sourceOrThrow(origin)
-        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable)
+        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable, source.getBookType())
         val result = WebBook.getBookInfoAwait(source, book)
         return LegadoDto.book(result)
     }
@@ -1004,7 +1083,7 @@ object LegadoEngine {
     ): Map<String, Any?> {
         requireInit()
         val source = sourceOrThrow(origin)
-        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable)
+        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable, source.getBookType())
         // The engine always resolves the TOC through its own chain (which
         // also writes chapters into the engine DB as a side effect, like
         // Legado itself). forceRefresh is accepted by the contract; this
@@ -1032,7 +1111,7 @@ object LegadoEngine {
     ): Map<String, Any?> {
         requireInit()
         val source = sourceOrThrow(origin)
-        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable)
+        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable, source.getBookType())
         val chapter = BookChapter(
             url = chapterUrl,
             // The TOC title (already title-rule processed by the
@@ -1174,7 +1253,8 @@ object LegadoEngine {
             requireInit()
             val source = sourceOrThrow(origin)
             val built = buildBook(
-                origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable
+                origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable,
+                source.getBookType()
             )
             book = built
             WebBook.getChapterListAwait(source, built).getOrElse { throw it }
@@ -1266,7 +1346,7 @@ object LegadoEngine {
     ): List<Int> {
         requireInit()
         val source = sourceOrThrow(origin)
-        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable)
+        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable, source.getBookType())
         if (BookHelpShared.shouldSkipChapterFiles(book)) return emptyList()
         val dir = java.io.File(BookStorageProviders.get().rootPath, book.getFolderName())
         val names = dir.list() ?: return emptyList()
@@ -1294,7 +1374,7 @@ object LegadoEngine {
     ) {
         requireInit()
         val source = sourceOrThrow(origin)
-        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable)
+        val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable, source.getBookType())
         BookStorageProviders.get().clearCache(book)
     }
 

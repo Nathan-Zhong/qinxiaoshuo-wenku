@@ -161,7 +161,7 @@ class LegadoNovelRepository extends NovelRepository {
     } finally {
       await subscription.cancel();
     }
-    final merged = mergeSearchBooks(latest);
+    final merged = orderMergedSearchResults(mergeSearchBooks(latest), term);
     return <Novel>[
       for (final book in merged)
         (await registry.registerMerged(book)).first.toNovel(),

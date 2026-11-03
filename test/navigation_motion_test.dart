@@ -46,6 +46,20 @@ Finder control(String label) => find.byWidgetPredicate(
   (widget) => widget is GlassIconButton && widget.label == label,
 );
 
+/// Opens the discovery shelf's focused book through its entry label.
+/// fix4: the shelf's books are a daily random draw (Cassidy-ordered),
+/// so the focused book is no longer the pool's first book; the
+/// label's title text is its tappable spot (the label's centre sits
+/// under the glass dock).
+Future<void> tapDiscoveryShelfBook(WidgetTester tester) => tester.tap(
+  find
+      .descendant(
+        of: find.byKey(const ValueKey('archive-shelf-open')),
+        matching: find.byType(Text),
+      )
+      .first,
+);
+
 // Explicitly finish the paper flight before advancing the staggered reveal.
 Future<void> finishDetailIntro(WidgetTester tester) async {
   await tester.pump();
@@ -391,7 +405,7 @@ void main() {
     'detail uses a visible Cupertino push and interactive edge return',
     (tester) async {
       await mountApp(tester);
-      await tester.tap(find.text(demoNovels.first.title).last);
+      await tapDiscoveryShelfBook(tester);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 80));
       final route = ModalRoute.of(
@@ -414,16 +428,27 @@ void main() {
       await mountApp(tester, repository: repository);
       // B2: the discovery row's book is an engine book now; its id is
       // allocated by the registry, so read it from the cover itself.
+      // fix4: the shelf's focused book is a daily random draw, so
+      // read its title from the shelf's open label (its first text)
+      // and open it through that same surface.
+      final openLabel = find.byKey(const ValueKey('archive-shelf-open'));
+      final focusedTitle = tester
+          .widget<Text>(
+            find
+                .descendant(of: openLabel, matching: find.byType(Text))
+                .first,
+          )
+          .data!;
       final source = find.byWidgetPredicate(
         (widget) =>
             widget is NovelCover &&
-            widget.novel.title == demoNovels.first.title &&
+            widget.novel.title == focusedTitle &&
             widget.heroTag != null,
       );
       final sourceRect = tester.getRect(source);
       final sourceCover = tester.widget<NovelCover>(source);
       final tag = sourceCover.heroTag;
-      await tester.tap(find.text(demoNovels.first.title).last);
+      await tapDiscoveryShelfBook(tester);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 16));
       final flight = find.byKey(
@@ -531,7 +556,7 @@ void main() {
     await state.setReduceMotion(true);
     await tester.pumpAndSettle();
     expect(find.byType(Hero), findsNothing);
-    await tester.tap(find.text(demoNovels.first.title).last);
+    await tapDiscoveryShelfBook(tester);
     await tester.pumpAndSettle();
     final route = ModalRoute.of(tester.element(find.byType(DetailLoaderPage)))!;
     expect(route.transitionDuration, Duration.zero);

@@ -25,6 +25,7 @@ import eu.kanade.tachiyomi.network.interceptor.CloudflareBypassException
 import io.legado.app.constant.AppLog
 import io.legado.app.help.http.CookieStoreProviders
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import okhttp3.CookieJar
@@ -190,6 +191,14 @@ class LegadoCloudflareInterceptor(
     }
 
     override fun solve(request: Request, oldClearance: String?) {
+        // fix4: remember that this host served a Cloudflare challenge
+        // just now. A search request can come back from a challenged
+        // host as a cleanly-parsed EMPTY result (the interstitial
+        // parsed by the source's rules) or die silently inside
+        // SearchModel's 15s timeout — neither leaves an exception for
+        // the search session to retry on. This timestamp is the signal
+        // the session consults (see LegadoSearchSession).
+        LegadoChallengeSignals.record(request.url.host)
         resolveWithWebView(request, oldClearance)
         syncCookiesToHostStore(request.url)
     }
@@ -438,6 +447,30 @@ private fun WebView.setUserAgent(userAgent: String) {
     } catch (e: Exception) {
         Log.e(TAG, "setUserAgentMetadata failed: $e")
     }
+}
+
+/**
+ * fix4: last-challenge timestamps per host, written by
+ * [LegadoCloudflareInterceptor.solve] — which the fork's challenge
+ * state machine only calls after a response actually carried
+ * Cloudflare's challenge markers, so a record here means "this host
+ * challenged us at this time", never a guess. Read by the search
+ * session (LegadoEnginePlugin) to decide whether a zero-result or
+ * silently-dead search unit deserves the warm-up + retry that fix3
+ * wired to hard failures only. Process-lifetime, in-memory only.
+ */
+object LegadoChallengeSignals {
+    private val lastChallengeAtMs = ConcurrentHashMap<String, Long>()
+
+    fun record(host: String) {
+        if (host.isNotEmpty()) {
+            lastChallengeAtMs[host] = System.currentTimeMillis()
+        }
+    }
+
+    /** True when [host] was challenged at or after [sinceMs]. */
+    fun challengedSince(host: String, sinceMs: Long): Boolean =
+        (lastChallengeAtMs[host] ?: 0L) >= sinceMs
 }
 
 private const val TAG = "WebViewUtil"

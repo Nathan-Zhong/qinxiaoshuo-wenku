@@ -309,3 +309,63 @@ MergedSearchBook _mergeGroup(
     chapterWordCount: primaryBook.chapterWordCount,
   );
 }
+
+/// Relevance ordering for merged search results (fix4, 2026-11-04).
+///
+/// Mirrors the fork SearchModel's own aggregate ordering
+/// (`SearchModel.rebuildAggregate`), which the bridge's per-source
+/// session shape cannot apply across sources: each unit aggregates
+/// only its own source, and the host concatenates units in scope
+/// order — so without this pass a book's position was decided by
+/// which source happened to be listed first, not by how well it
+/// matches the keyword (a manga whose source sat late in the list
+/// trailed pages of loosely-related novels).
+///
+/// Tiers, exactly as the fork computes them:
+/// 1. title or author EQUALS the keyword;
+/// 2. title or author CONTAINS the keyword;
+/// 3. everything else.
+/// Tiers 1–2 order by merged source count, descending (more sources
+/// carrying the same book = the canonical hit), ties keep arrival
+/// order; tier 3 keeps pure arrival order. Text and manga entries
+/// rank identically — the media bucket only separates entries, it
+/// never demotes one.
+///
+/// One deliberate refinement over the fork's raw-string compare,
+/// inherited from this file's merge normalization so ordering agrees
+/// with grouping: comparisons run on [legadoNormalizeTitle] output
+/// (full/half width folded, case folded, whitespace and punctuation
+/// stripped), so a title that differs from the keyword only by such
+/// decoration (「斗破·苍穹」, trailing spaces, full-width forms)
+/// still counts as an exact hit instead of dropping to contains.
+///
+/// Pure and stable: safe to re-apply on every streaming snapshot —
+/// an entry's tier never worsens as more sources report, so results
+/// settle toward the top instead of reshuffling.
+List<MergedSearchBook> orderMergedSearchResults(
+  List<MergedSearchBook> merged,
+  String keyword,
+) {
+  final key = legadoNormalizeTitle(keyword.trim());
+  if (key.isEmpty || merged.length < 2) return merged;
+  int tierOf(MergedSearchBook book) {
+    final name = legadoNormalizeTitle(book.name);
+    final author = legadoNormalizeTitle(book.author);
+    if (name == key || author == key) return 0;
+    if (name.contains(key) || author.contains(key)) return 1;
+    return 2;
+  }
+
+  final decorated = <(int, int, MergedSearchBook)>[
+    for (var i = 0; i < merged.length; i++) (tierOf(merged[i]), i, merged[i]),
+  ];
+  decorated.sort((a, b) {
+    if (a.$1 != b.$1) return a.$1.compareTo(b.$1);
+    if (a.$1 < 2) {
+      final bySources = b.$3.sources.length.compareTo(a.$3.sources.length);
+      if (bySources != 0) return bySources;
+    }
+    return a.$2.compareTo(b.$2);
+  });
+  return <MergedSearchBook>[for (final entry in decorated) entry.$3];
+}

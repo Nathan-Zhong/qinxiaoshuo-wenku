@@ -411,7 +411,15 @@ class LegadoSearchFeedController extends NovelFeedController {
           return;
         }
         _lastSnapshotSignature = signature;
-        final merged = mergeSearchBooks(event.books);
+        // fix4: relevance ordering across sources (the fork's
+        // SearchModel tiers only apply inside one source's unit; the
+        // session concatenates units in scope order). Exact title /
+        // author matches first, then contains, then the rest in
+        // arrival order — text and manga ranked alike.
+        final merged = orderMergedSearchResults(
+          mergeSearchBooks(event.books),
+          _queryValue,
+        );
         final novels = <Novel>[];
         for (final book in merged) {
           final records = await registry.registerMerged(book);

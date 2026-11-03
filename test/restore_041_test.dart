@@ -11,8 +11,8 @@ import 'package:wenku8_flutter/updates/release_highlights.dart';
 // assertions about our own changelog and versioning.
 void main() {
   test('own version constants match the changelog head and pubspec line', () {
-    expect(currentAppVersion, '1.0.3');
-    expect(currentAppBuild, 10003);
+    expect(currentAppVersion, '1.0.4');
+    expect(currentAppBuild, 10004);
     expect(appChangelog.first.version, currentAppVersion);
     expect(appChangelog.first.build, currentAppBuild);
   });
@@ -21,7 +21,7 @@ void main() {
       'version', () {
     expect(
       appChangelog.map((e) => e.version).toList(),
-      ['1.0.3', '1.0.2', '1.0.1', '1.0.0'],
+      ['1.0.4', '1.0.3', '1.0.2', '1.0.1', '1.0.0'],
     );
     for (final entry in appChangelog) {
       expect(entry.summary, isNotEmpty);

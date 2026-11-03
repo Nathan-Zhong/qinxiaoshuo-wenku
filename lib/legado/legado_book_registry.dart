@@ -21,6 +21,11 @@ const int legadoBookIdBase = 0x40000000;
 
 bool isLegadoBookId(int id) => id >= legadoBookIdBase && !isLocalBook(id);
 
+/// The fork's `BookType.image` bit. Mirrors `legadoImageBookTypeBit`
+/// in legado_novel_repository.dart (kept local to avoid an import
+/// cycle; same convention as search_merge.dart).
+const int _imageBookTypeBit = 1 << 6;
+
 /// Deterministic cover colour pairs (same role as the hand-picked pairs
 /// on the demo/wenku novels): books whose cover image cannot be loaded
 /// fall back to the host's generated cover in these colours.
@@ -128,7 +133,17 @@ class LegadoBookRecord {
     author = _absorbDisplayText(author, book.author);
     if (book.originName.isNotEmpty) originName = book.originName;
     if (book.tocUrl.isNotEmpty) tocUrl = book.tocUrl;
-    type = book.type;
+    // fix4: the image bit is sticky. Whether a book is a manga is a
+    // property of its SOURCE, and the search/explore hits stamp it
+    // correctly; a later absorb must never strip it back off. (The
+    // bridge used to rebuild the book for getBookInfo/getChapterList
+    // without the source's type, so every detail open silently
+    // reclassified a manga as text and the reader fell back to the
+    // image-chapter notice. The bridge now stamps the type too; this
+    // guard keeps any single type-losing hop from ever re-poisoning a
+    // record.) The engine's own isImageChapter verdict still wins at
+    // read time, so a wrongly-kept bit costs at most one probe fetch.
+    type = book.type | (type & _imageBookTypeBit);
     kind = book.kind ?? kind;
     coverUrl = book.coverUrl ?? coverUrl;
     intro = book.intro ?? intro;

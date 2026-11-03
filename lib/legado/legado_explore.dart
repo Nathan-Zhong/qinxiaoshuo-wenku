@@ -9,6 +9,7 @@ import '../glass_choices.dart';
 import '../library_state.dart';
 import '../novel_feed_controller.dart';
 import '../pages.dart' show DiscoverPage;
+import 'daily_discovery.dart';
 import 'legado_book_registry.dart';
 import 'legado_dto.dart';
 import 'search_merge.dart';
@@ -362,14 +363,38 @@ class LegadoDiscoverTab extends StatefulWidget {
   State<LegadoDiscoverTab> createState() => _LegadoDiscoverTabState();
 }
 
+/// The discovery feed: the host feed controller, with the visible
+/// item order passed through the daily-random shelf draw (fix4 —
+/// see [DailyDiscoveryPicker]). Pagination, cover-prefetch swaps and
+/// result revisions all run on the underlying pool exactly as
+/// before; only which books the shelf's first slice lands on changes.
+class _DailyShelfFeedController extends NovelFeedController {
+  _DailyShelfFeedController(
+    super.repository, {
+    required this.selection,
+    super.initialItems,
+  });
+
+  final LegadoExploreSelection selection;
+  final DailyDiscoveryPicker picker = DailyDiscoveryPicker();
+
+  @override
+  List<Novel> get items => picker.arrange(
+    super.items,
+    sourceUrl: selection.sourceUrl,
+    kindUrl: selection.kindUrl,
+  );
+}
+
 class _LegadoDiscoverTabState extends State<LegadoDiscoverTab> {
   late final LegadoExploreSelection _selection = LegadoExploreSelection(
     repository: widget.engine,
   );
   late final LegadoExploreRepository _exploreRepository =
       LegadoExploreRepository(selection: _selection, engine: widget.engine);
-  late final NovelFeedController _feed = NovelFeedController(
+  late final NovelFeedController _feed = _DailyShelfFeedController(
     _exploreRepository,
+    selection: _selection,
     initialItems: 20,
   );
 

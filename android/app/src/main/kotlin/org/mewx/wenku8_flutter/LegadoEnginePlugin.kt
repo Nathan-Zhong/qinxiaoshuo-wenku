@@ -19,10 +19,13 @@ import io.legado.engine.LegadoEngineFacade
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.mewx.wenku8_flutter.legado.LegadoBridgeException
+import org.mewx.wenku8_flutter.legado.LegadoChallengeSignals
 import org.mewx.wenku8_flutter.legado.LegadoDto
 import org.mewx.wenku8_flutter.legado.LegadoEngine
 import org.mewx.wenku8_flutter.legado.LegadoManage
@@ -662,6 +665,15 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
  *  plus the retried page request) before the session gives up on it. */
 private const val RETRY_WATCHDOG_MS = 90_000L
 
+/** fix4: a search unit that reports NOTHING for this long is dead,
+ *  not slow. SearchModel caps every page request at
+ *  AppConst.timeLimit (15s), so a live unit always calls back within
+ *  that budget; 30s of total silence means its flow died without a
+ *  terminal callback — which the fork's flow plumbing makes possible
+ *  (see the session watchdog). */
+private const val UNIT_SILENCE_MS = 30_000L
+private const val WATCHDOG_TICK_MS = 5_000L
+
 /**
  * One Dart search task, fanned out over one engine [SearchModel] per scope
  * unit (a single all/group scope, or one model per explicitly listed
@@ -690,6 +702,16 @@ private class LegadoSearchSession(
     /** Units that already used their one automatic retry this round
      *  (fix3 — see the retry in onSearchCancel). */
     private val unitRetried = ConcurrentHashMap<Int, Boolean>()
+
+    /** fix4: when the current round started (wall clock); anchors the
+     *  challenge-signal window and the silence math. */
+    private val roundStartedAtMs = AtomicLong(0)
+
+    /** fix4: last sign of life per unit (any model callback). A unit
+     *  whose flow died silently never calls back again; the watchdog
+     *  below is what notices. */
+    private val unitLastActivityMs = ConcurrentHashMap<Int, Long>()
+    private var watchdogJob: Job? = null
     private val finishedCount = AtomicInteger(0)
     private val roundFinishEmitted = AtomicBoolean(false)
     private val active = AtomicBoolean(true)
@@ -724,6 +746,7 @@ private class LegadoSearchSession(
         scopes.forEachIndexed { index, scope ->
             models += SearchModel(LegadoEngine.scope, callbackFor(index, scope))
         }
+        beginRound()
         LegadoEngine.scope.launch {
             models.forEach { model ->
                 runCatching { model.search(taskId.toLong(), keyword) }
@@ -738,11 +761,131 @@ private class LegadoSearchSession(
         unitRetried.clear()
         finishedCount.set(0)
         roundFinishEmitted.set(false)
+        beginRound()
         LegadoEngine.scope.launch {
             models.forEach { model ->
                 runCatching { model.search(taskId.toLong(), keyword) }
             }
         }
+    }
+
+    /** fix4: (re)arms the per-round bookkeeping and the silence
+     *  watchdog. */
+    private fun beginRound() {
+        val now = System.currentTimeMillis()
+        roundStartedAtMs.set(now)
+        unitLastActivityMs.clear()
+        for (unit in scopes.indices) unitLastActivityMs[unit] = now
+        watchdogJob?.cancel()
+        watchdogJob = LegadoEngine.scope.launch {
+            while (active.get() && !roundFinishEmitted.get()) {
+                delay(WATCHDOG_TICK_MS)
+                checkSilentUnits()
+            }
+        }
+    }
+
+    private fun touchUnit(unit: Int) {
+        unitLastActivityMs[unit] = System.currentTimeMillis()
+    }
+
+    /**
+     * fix4 watchdog pass. Why a unit can die silently: the fork's
+     * SearchModel runs each source's page request inside
+     * `withTimeout(AppConst.timeLimit)` in a flow whose terminal
+     * operators are `onCompletion { if (it == null) onSearchFinish }`
+     * and `.catch { onSearchCancel }`. A timeout surfaces as
+     * TimeoutCancellationException — a CancellationException — and a
+     * flow's `.catch` never observes cancellation, while
+     * `onCompletion` sees a non-null cause and stays quiet too. The
+     * unit therefore fires NEITHER terminal callback: fix3's retry
+     * (hung off onSearchCancel) never runs, and the round's finish
+     * never emits. Multi-source searches made this likely rather
+     * than rare: every source's model shares the device at once, so
+     * a shielded source's request — whose Cloudflare solve alone can
+     * need most of the 15s budget — is exactly the one that times
+     * out; alone, with the device to itself, it squeaks through.
+     *
+     * A unit silent for [UNIT_SILENCE_MS] gets the treatment fix3
+     * gave hard failures: one warm-up + restart for a source unit
+     * (its retried attempt is then owned by warmUpAndRestart's own
+     * watchdog), or an immediate finish for a scope unit that has no
+     * single source to restart. User cancel still wins: the loop
+     * stops with the session.
+     */
+    private fun checkSilentUnits() {
+        if (!active.get() || roundFinishEmitted.get()) return
+        val now = System.currentTimeMillis()
+        for (unit in scopes.indices) {
+            if (unitFinished[unit] == true) continue
+            // A retry is already in flight for this unit; its own
+            // post-restart watchdog (RETRY_WATCHDOG_MS) owns it.
+            if (unitRetried[unit] == true) continue
+            val last = unitLastActivityMs[unit] ?: roundStartedAtMs.get()
+            if (now - last < UNIT_SILENCE_MS) continue
+            val scope = scopes[unit]
+            val sourceUrl = if (scope.isSource()) {
+                scope.toString().substringAfter("::")
+            } else {
+                ""
+            }
+            if (keyword.isNotEmpty() &&
+                sourceUrl.isNotEmpty() &&
+                models.getOrNull(unit) != null &&
+                unitRetried.put(unit, true) == null
+            ) {
+                LegadoEngine.recordBridgeError(
+                    "searchUnitSilent",
+                    IllegalStateException("源单元静默超时，预热重试: $sourceUrl")
+                )
+                unitErrors[unit] = mapOf(
+                    "sourceUrl" to sourceUrl,
+                    "errorCode" to "SilentUnitTimeout",
+                    "message" to "搜索超时（无返回）"
+                )
+                touchUnit(unit)
+                warmUpAndRestart(unit, sourceUrl)
+            } else {
+                markUnitFinished(unit)
+            }
+        }
+    }
+
+    /**
+     * fix4: a unit that finished CLEANLY with zero books may never
+     * have searched at all — behind a Cloudflare shield, the
+     * challenge interstitial can be parsed by the source's own rules
+     * as an empty book list: no exception, no books, nothing for
+     * fix3's failure retry to hang on. If this unit's host was
+     * actually challenged during THIS round (the host interceptor
+     * records every challenge it solves — see
+     * [LegadoChallengeSignals]) and the unit still came back empty,
+     * give it the same one warm-up + restart a failed unit gets,
+     * before its finish is allowed to close the unit.
+     */
+    private fun maybeRetryChallengedZero(unit: Int, scope: SearchScope): Boolean {
+        if (!active.get() || keyword.isEmpty() || !scope.isSource()) {
+            return false
+        }
+        if ((unitBooks[unit]?.size ?: 0) > 0) return false
+        if (unitRetried[unit] == true) return false
+        val sourceUrl = scope.toString().substringAfter("::")
+        if (sourceUrl.isEmpty() || models.getOrNull(unit) == null) {
+            return false
+        }
+        val host = runCatching { java.net.URI(sourceUrl).host }.getOrNull()
+            ?: return false
+        if (!LegadoChallengeSignals.challengedSince(
+                host,
+                roundStartedAtMs.get()
+            )
+        ) {
+            return false
+        }
+        if (unitRetried.put(unit, true) != null) return false
+        touchUnit(unit)
+        warmUpAndRestart(unit, sourceUrl)
+        return true
     }
 
     fun restartSource(sourceUrl: String) {
@@ -753,34 +896,45 @@ private class LegadoSearchSession(
     /** User-initiated cancel: stop everything; the plugin emits searchCancel. */
     fun cancelByUser() {
         active.set(false)
+        watchdogJob?.cancel()
         models.forEach { runCatching { it.cancelSearch() } }
         models.forEach { runCatching { it.close() } }
     }
 
     fun shutdown() {
         active.set(false)
+        watchdogJob?.cancel()
         models.forEach { runCatching { it.close() } }
     }
 
     private fun callbackFor(unit: Int, scope: SearchScope) = object : SearchModel.CallBack {
         override fun getSearchScope(): SearchScope = scope
 
-        override fun onSearchStart() = Unit
+        override fun onSearchStart() {
+            touchUnit(unit)
+        }
 
         override fun onSearchSuccess(searchBooks: List<SearchBook>) {
             if (!active.get()) return
+            touchUnit(unit)
             unitBooks[unit] = searchBooks
             emitSnapshot()
         }
 
         override fun onSearchGroupsChanged(groups: List<SourceSearchGroup>) {
             if (!active.get()) return
+            touchUnit(unit)
             unitGroups[unit] = groups
             emitSnapshot()
         }
 
         override fun onSearchFinish(isEmpty: Boolean, hasMore: Boolean) {
+            touchUnit(unit)
             unitHasMore[unit] = hasMore
+            // fix4: a clean-but-empty finish from a host that served
+            // a Cloudflare challenge this round is retried once
+            // (warm-up + restart) before the unit is allowed to close.
+            if (maybeRetryChallengedZero(unit, scope)) return
             markUnitFinished(unit)
         }
 
