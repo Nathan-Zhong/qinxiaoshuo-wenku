@@ -9,6 +9,7 @@ import '../glass_choices.dart';
 import '../library_state.dart';
 import '../novel_feed_controller.dart';
 import '../pages.dart' show DiscoverPage;
+import 'legado_book_registry.dart';
 import 'legado_dto.dart';
 import 'legado_novel_repository.dart';
 
@@ -169,6 +170,30 @@ class LegadoExploreRepository extends NovelRepository {
   final LegadoExploreSelection selection;
   final LegadoNovelRepository engine;
 
+  /// Discovery cover prefetch (fix1, 2026-11-03 — a Cassidy-ordered
+  /// enhancement, not a bug fix): sources whose LIST rules carry no
+  /// cover rule (only ruleBookInfo has one) show text covers in
+  /// explore lists, exactly as in Legado itself. For those books this
+  /// repository quietly fetches the detail info in the background
+  /// once a page has landed, and reports each filled book through
+  /// [onCoverFilled] so the tab can swap the list item's cover in
+  /// place. No UI is added and list rendering never waits for it.
+  ///
+  /// Deliberately conservative: at most [_coverPrefetchConcurrency]
+  /// fetches in flight; one attempt per book for the repository's
+  /// lifetime (the attempted set doubles as the negative cache, so a
+  /// failed or coverless detail fetch is never retried — no request
+  /// loops against shielded sites); every failure is silent and the
+  /// text cover simply stays. Books whose registry record already
+  /// has a cover (e.g. fetched earlier for the shelf) are never
+  /// queued. Explore results only — search results are out of scope.
+  void Function(Novel novel)? onCoverFilled;
+
+  static const int _coverPrefetchConcurrency = 3;
+  final Set<String> _coverPrefetchAttempted = <String>{};
+  final List<LegadoBookRecord> _coverPrefetchQueue = <LegadoBookRecord>[];
+  int _coverPrefetchActive = 0;
+
   @override
   Future<NovelPage> browse({
     NovelSort sort = NovelSort.lastUpdate,
@@ -187,16 +212,69 @@ class LegadoExploreRepository extends NovelRepository {
       page: page,
     );
     final novels = <Novel>[];
+    final records = <LegadoBookRecord>[];
     for (final book in result.books) {
       final record = await engine.registry.registerSearchBook(book);
+      records.add(record);
       novels.add(record.toNovel());
     }
+    _scheduleCoverPrefetch(records);
     return NovelPage(
       items: novels,
       page: page,
       totalPages: result.hasMore ? page + 1 : page,
       totalItems: novels.length,
     );
+  }
+
+  void _scheduleCoverPrefetch(List<LegadoBookRecord> records) {
+    for (final record in records) {
+      final cover = record.coverUrl;
+      if (cover != null && cover.isNotEmpty) continue;
+      if (!_coverPrefetchAttempted.add(record.bookKey)) continue;
+      _coverPrefetchQueue.add(record);
+    }
+    _pumpCoverPrefetch();
+  }
+
+  void _pumpCoverPrefetch() {
+    while (_coverPrefetchActive < _coverPrefetchConcurrency &&
+        _coverPrefetchQueue.isNotEmpty) {
+      final record = _coverPrefetchQueue.removeAt(0);
+      _coverPrefetchActive++;
+      unawaited(
+        _fetchCover(record).whenComplete(() {
+          _coverPrefetchActive--;
+          _pumpCoverPrefetch();
+        }),
+      );
+    }
+  }
+
+  Future<void> _fetchCover(LegadoBookRecord record) async {
+    try {
+      // The record may have gained its cover through another path
+      // (detail page, shelf) while it waited in the queue.
+      if (record.coverUrl == null || record.coverUrl!.isEmpty) {
+        await engine.ensureEngineReady();
+        final info = await engine.client.getBookInfo(
+          origin: record.origin,
+          bookUrl: record.bookUrl,
+          tocUrl: record.tocUrl.isEmpty ? null : record.tocUrl,
+          variable: record.variable,
+          name: record.name,
+          author: record.author,
+        );
+        engine.registry.absorbBookInfo(info);
+      }
+      final cover = record.coverUrl;
+      if (cover != null && cover.isNotEmpty) {
+        onCoverFilled?.call(record.toNovel());
+      }
+    } catch (_) {
+      // Silent by design (see [onCoverFilled]): the attempted set
+      // keeps this book out of the queue for the rest of the session.
+    }
   }
 
   @override
@@ -257,8 +335,10 @@ class _LegadoDiscoverTabState extends State<LegadoDiscoverTab> {
   late final LegadoExploreSelection _selection = LegadoExploreSelection(
     repository: widget.engine,
   );
+  late final LegadoExploreRepository _exploreRepository =
+      LegadoExploreRepository(selection: _selection, engine: widget.engine);
   late final NovelFeedController _feed = NovelFeedController(
-    LegadoExploreRepository(selection: _selection, engine: widget.engine),
+    _exploreRepository,
     initialItems: 20,
   );
 
@@ -266,6 +346,13 @@ class _LegadoDiscoverTabState extends State<LegadoDiscoverTab> {
   void initState() {
     super.initState();
     _selection.addListener(_selectionChanged);
+    // Cover prefetch results swap the matching feed item in place;
+    // the feed ignores them once it has been disposed, and this tab
+    // drops them after unmount.
+    _exploreRepository.onCoverFilled = (novel) {
+      if (!mounted) return;
+      _feed.replaceItems([novel]);
+    };
     unawaited(_bootstrap());
   }
 
@@ -286,6 +373,7 @@ class _LegadoDiscoverTabState extends State<LegadoDiscoverTab> {
 
   @override
   void dispose() {
+    _exploreRepository.onCoverFilled = null;
     _selection.removeListener(_selectionChanged);
     _selection.dispose();
     _feed.dispose();

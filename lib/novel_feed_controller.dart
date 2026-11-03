@@ -52,6 +52,35 @@ class NovelFeedController extends ChangeNotifier {
     return _load(replace: true, force: true);
   }
 
+  /// Swaps already-loaded items for fresher snapshots of the same
+  /// books (matched by id) when the replacement brings a cover the
+  /// loaded item lacks. Pagination, the result revision and the
+  /// entrance sequence are deliberately untouched: the discovery
+  /// cover prefetch (fix1) uses this to trade a text cover for the
+  /// real one a background detail fetch brought back, in place.
+  /// Unknown ids and coverless replacements are ignored.
+  void replaceItems(Iterable<Novel> replacements) {
+    if (_disposed) return;
+    final byId = <int, Novel>{
+      for (final novel in replacements) novel.id: novel,
+    };
+    if (byId.isEmpty || _items.isEmpty) return;
+    var changed = false;
+    final next = List<Novel>.of(_items);
+    for (var i = 0; i < next.length; i++) {
+      final fresh = byId[next[i].id];
+      if (fresh != null &&
+          fresh.coverUrl != null &&
+          fresh.coverUrl != next[i].coverUrl) {
+        next[i] = fresh;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    _items = List.unmodifiable(next);
+    notifyListeners();
+  }
+
   Future<void> loadInitial() => _load(replace: true);
   Future<void> loadMore() async {
     if (loading || !hasMore || error != null) return;

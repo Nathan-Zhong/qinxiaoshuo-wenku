@@ -7,6 +7,7 @@ import 'package:wenku8_flutter/legado/legado_dto.dart';
 import 'package:wenku8_flutter/legado/legado_engine_client.dart';
 import 'package:wenku8_flutter/legado/legado_explore.dart';
 import 'package:wenku8_flutter/legado/legado_novel_repository.dart';
+import 'package:wenku8_flutter/novel_feed_controller.dart';
 
 const _sourceUrl = 'https://src.example';
 
@@ -348,6 +349,197 @@ void main() {
       );
       await second.load();
       expect(second.kindUrl, 'kind/ds');
+    });
+  });
+
+  group('explore cover prefetch (fix1)', () {
+    Future<void> drainUntil(bool Function() done) async {
+      for (var i = 0; i < 500 && !done(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 2));
+      }
+    }
+
+    Object? Function(MethodCall) exploreResponder({
+      required List<Map<String, Object?>> books,
+      required Object? Function(MethodCall) onInfo,
+    }) {
+      return (call) {
+        switch (call.method) {
+          case 'init':
+            return {'ok': true, 'engineVersion': 'test', 'sourceCount': 1};
+          case 'listSources':
+            return [_sourceMap()];
+          case 'getExploreKinds':
+            return [
+              {'title': '玄幻', 'url': 'kind/xh', 'viewName': 'text', 'style': 3},
+            ];
+          case 'getExploreBooks':
+            return {'books': books, 'hasMore': false};
+          case 'getBookInfo':
+            return onInfo(call);
+        }
+        return null;
+      };
+    }
+
+    Future<LegadoExploreRepository> coverExplore() async {
+      final selection = LegadoExploreSelection(
+        repository: repository,
+        preferences: SharedPreferences.getInstance(),
+      );
+      await selection.load();
+      return LegadoExploreRepository(selection: selection, engine: repository);
+    }
+
+    test('a coverless explore book is filled from detail info, once', () async {
+      var infoCalls = 0;
+      responder = exploreResponder(
+        books: [
+          {..._bookMap(), 'coverUrl': null},
+        ],
+        onInfo: (call) {
+          infoCalls++;
+          return _bookMap();
+        },
+      );
+      final explore = await coverExplore();
+      final filled = <Novel>[];
+      explore.onCoverFilled = filled.add;
+      final page = await explore.browse(page: 1);
+      // The page lands immediately with the text cover; the fill is
+      // a background follow-up, never a browse-time wait.
+      expect(page.items.single.coverUrl, isNull);
+      await drainUntil(() => filled.isNotEmpty);
+      expect(infoCalls, 1);
+      expect(filled.single.coverUrl, 'https://img.example/c.jpg');
+      expect(
+        registry.recordById(page.items.single.id)?.coverUrl,
+        'https://img.example/c.jpg',
+      );
+      // Browsing the same page again fetches nothing: the record
+      // carries the cover now (and the session cache is warm anyway).
+      await explore.browse(page: 1);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(infoCalls, 1);
+    });
+
+    test(
+      'a failed detail fetch is silent and never retried this session',
+      () async {
+        var infoCalls = 0;
+        responder = exploreResponder(
+          books: [
+            {..._bookMap(), 'coverUrl': null},
+          ],
+          onInfo: (call) {
+            infoCalls++;
+            throw PlatformException(code: 'NET', message: 'down');
+          },
+        );
+        final explore = await coverExplore();
+        final filled = <Novel>[];
+        explore.onCoverFilled = filled.add;
+        final page = await explore.browse(page: 1);
+        expect(page.items.single.coverUrl, isNull);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(infoCalls, 1);
+        expect(filled, isEmpty);
+        // Negative cache: a later browse of the same book does not
+        // re-queue it (no retry loop against a shielded site).
+        await explore.browse(page: 1);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(infoCalls, 1);
+        expect(filled, isEmpty);
+      },
+    );
+
+    test('books that already carry a cover are never prefetched', () async {
+      var infoCalls = 0;
+      var fills = 0;
+      responder = exploreResponder(
+        books: [_bookMap()],
+        onInfo: (call) {
+          infoCalls++;
+          return _bookMap();
+        },
+      );
+      final explore = await coverExplore();
+      explore.onCoverFilled = (_) => fills++;
+      final page = await explore.browse(page: 1);
+      expect(page.items.single.coverUrl, 'https://img.example/c.jpg');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(infoCalls, 0);
+      expect(fills, 0);
+    });
+
+    test('prefetch runs at most three detail fetches at a time', () async {
+      var infoCalls = 0;
+      var active = 0;
+      var maxActive = 0;
+      responder = exploreResponder(
+        books: [
+          for (var i = 0; i < 6; i++)
+            {
+              ..._bookMap(),
+              'name': '书$i',
+              'bookUrl': 'https://src.example/book/x$i',
+              'coverUrl': null,
+            },
+        ],
+        onInfo: (call) async {
+          infoCalls++;
+          active++;
+          if (active > maxActive) maxActive = active;
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+          active--;
+          final args = (call.arguments as Map).cast<String, Object?>();
+          return {
+            ..._bookMap(),
+            'bookUrl': args['bookUrl'],
+            'name': args['name'],
+          };
+        },
+      );
+      final explore = await coverExplore();
+      final filled = <Novel>[];
+      explore.onCoverFilled = filled.add;
+      final page = await explore.browse(page: 1);
+      expect(page.items, hasLength(6));
+      await drainUntil(() => filled.length >= 6);
+      expect(infoCalls, 6);
+      expect(filled, hasLength(6));
+      expect(maxActive, lessThanOrEqualTo(3));
+      expect(maxActive, greaterThan(1));
+    });
+
+    test('feed replaceItems swaps in a filled cover only', () async {
+      responder = exploreResponder(
+        books: [
+          {..._bookMap(), 'coverUrl': null},
+        ],
+        onInfo: (call) => _bookMap(),
+      );
+      final explore = await coverExplore();
+      final feed = NovelFeedController(explore);
+      await feed.loadInitial();
+      final item = feed.items.single;
+      expect(item.coverUrl, isNull);
+      final revision = feed.resultRevision;
+      var notifications = 0;
+      feed.addListener(() => notifications++);
+      // A coverless replacement changes nothing and stays silent.
+      feed.replaceItems([item]);
+      expect(notifications, 0);
+      // Once the background prefetch has filled the registry record,
+      // its fresh snapshot swaps the cover in place — pagination and
+      // the result revision are untouched.
+      await drainUntil(() => registry.recordById(item.id)?.coverUrl != null);
+      feed.replaceItems([registry.novelById(item.id)!]);
+      expect(feed.items.single.coverUrl, 'https://img.example/c.jpg');
+      expect(feed.resultRevision, revision);
+      expect(feed.page, 1);
+      expect(notifications, 1);
+      feed.dispose();
     });
   });
 }
