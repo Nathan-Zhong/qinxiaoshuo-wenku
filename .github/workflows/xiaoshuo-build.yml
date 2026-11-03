@@ -55,6 +55,10 @@ jobs:
 
   build-release-apk:
     # FINAL 正式包：release + R8/资源压缩 + 只打 arm64（小米14），固定密钥签名。
+    # analyze/test 与 debug job 同提交同步骤，已在那边把关；本 job 不再重复跑，
+    # 既省时也避免测试产物与 R8 构建在同一台 runner 上叠加吃满磁盘/内存
+    # （run 41586652004 两次 attempt 均死在构建步中途、步结论 cancelled）。
+    needs: build-debug-apk
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -91,8 +95,11 @@ jobs:
           keyPassword=$KEY_PASSWORD
           EOF
       - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+      - name: Runner headroom (disk snapshot + lower Gradle heap for this runner only)
+        run: |
+          df -h / /home/runner | tail -3
+          sed -i 's/-Xmx8G/-Xmx5G/' android/gradle.properties
+          grep jvmargs android/gradle.properties
       - name: Build release APK (arm64 only, minified)
         run: flutter build apk --release --target-platform android-arm64
       - name: Verify APK (single ABI, identity, signer)
