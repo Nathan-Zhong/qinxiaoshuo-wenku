@@ -1343,10 +1343,14 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     // FIX8: AnalyzeUrl now also goes through a host thin subclass
     // (LegadoAnalyzeUrl): it percent-encodes header values OkHttp would
     // reject (拷贝漫画 7789 / G社漫画 put the unencoded request URL in a
-    // referer header and crashed every non-ASCII search), and both thin
-    // subclasses expose the legacy aesBase64DecodeToString /
-    // aesEncodeToBase64String pair the fork dropped (漫画柜 6028 family).
-    // See FIX8-REPORT.md.
+    // referer header and crashed every non-ASCII search). See FIX8-REPORT.md.
+    // FIX9: the legacy AES pair FIX8 briefly exposed on both thin subclasses
+    // was removed again — R8 renamed those host-only JS-called-by-name
+    // methods out of the release build (the host bridge package was outside
+    // the keep surface), so 6028 kept failing on device. The pair plus
+    // desEncodeToBase64String now lives in the engine (JsExtensionsCommon),
+    // and legado-keep.pro keeps this whole bridge package as defense in
+    // depth. See FIX9-REPORT.md.
     AnalyzeRuleFactories.register { ruleData, source, preUpdateJs ->
         LegadoAnalyzeRule(ruleData, source, preUpdateJs)
     }

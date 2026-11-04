@@ -32,29 +32,14 @@ class LegadoAnalyzeRule(
     preUpdateJs: Boolean = false,
 ) : AnalyzeRuleCore(ruleData, source, preUpdateJs) {
 
-    /**
-     * Legacy upstream API the fork dropped (FIX8): xiaohan-template rule
-     * scripts bootstrap with
-     * `eval(String(java.aesBase64DecodeToString(source.variableComment, …)))`
-     * and the decrypted payload calls the encode twin. Without these the
-     * call is `TypeError: not a function` in QuickJS. Semantics mirror
-     * upstream; see [LegadoLegacyCrypto].
-     */
-    @JvmOverloads
-    fun aesBase64DecodeToString(
-        str: String,
-        key: String,
-        transformation: String = "AES/ECB/PKCS7Padding",
-        iv: String = "",
-    ): String? = LegadoLegacyCrypto.aesBase64DecodeToString(str, key, transformation, iv)
-
-    @JvmOverloads
-    fun aesEncodeToBase64String(
-        str: String,
-        key: String,
-        transformation: String = "AES/ECB/PKCS7Padding",
-        iv: String = "",
-    ): String? = LegadoLegacyCrypto.aesEncodeToBase64String(str, key, transformation, iv)
+    // Note (FIX9): the legacy AES pair that FIX8 temporarily delegated here
+    // (aesBase64DecodeToString / aesEncodeToBase64String) was removed again:
+    // on the 1.0.8 device build those host-only method names were renamed
+    // away by R8 (the host bridge package was outside the keep surface), so
+    // JS never saw them. The pair — plus desEncodeToBase64String — now lives
+    // in the engine itself (JsExtensionsCommon), restored with upstream
+    // semantics; see FIX9-REPORT.md. Do not re-add JS-visible methods to
+    // host subclasses: names here are not R8-stable.
 
     override fun refreshTocUrl() {
         val bookSource = getSource() as? BookSource

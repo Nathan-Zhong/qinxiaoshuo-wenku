@@ -25,8 +25,9 @@ import kotlin.coroutines.EmptyCoroutineContext
  *    construction — via [sanitizeHeaderMap], which leaves already-legal
  *    values byte-identical.
  *
- * 2. The legacy AES pair (see [LegadoLegacyCrypto]) for URL/header JS
- *    contexts, where `java` binds to this object.
+ * (FIX9 removed the legacy AES pair that FIX8 briefly delegated here —
+ * host-only JS-visible method names are not R8-stable; the pair now lives
+ * in the engine's JsExtensionsCommon. See FIX9-REPORT.md.)
  */
 class LegadoAnalyzeUrl(
     rawUrl: String,
@@ -58,20 +59,4 @@ class LegadoAnalyzeUrl(
             headerMap.putAll(cleaned!!)
         }
     }
-
-    @JvmOverloads
-    fun aesBase64DecodeToString(
-        str: String,
-        key: String,
-        transformation: String = "AES/ECB/PKCS7Padding",
-        iv: String = "",
-    ): String? = LegadoLegacyCrypto.aesBase64DecodeToString(str, key, transformation, iv)
-
-    @JvmOverloads
-    fun aesEncodeToBase64String(
-        str: String,
-        key: String,
-        transformation: String = "AES/ECB/PKCS7Padding",
-        iv: String = "",
-    ): String? = LegadoLegacyCrypto.aesEncodeToBase64String(str, key, transformation, iv)
 }

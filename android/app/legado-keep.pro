@@ -12,6 +12,19 @@
 -keep interface io.legado.** { *; }
 -keep enum io.legado.** { *; }
 
+# --- Host bridge package (FIX9) ----------------------------------------
+# The host's Legado bridge classes live outside io.legado.**: anything in
+# here that JavaScript reaches BY NAME (JS bindings resolve methods
+# reflectively at runtime) or that reflection looks up must keep its
+# names. FIX8's lesson: host-only JS-visible methods added to the
+# AnalyzeRule/AnalyzeUrl subclasses were renamed/stripped by R8 and the
+# device kept failing with "TypeError: not a function" while every debug
+# build passed. JS-visible APIs belong in the engine (kept above); this
+# rule is defense in depth for the rest of the bridge surface.
+-keep class org.mewx.wenku8_flutter.legado.** { *; }
+-keep interface org.mewx.wenku8_flutter.legado.** { *; }
+-keep enum org.mewx.wenku8_flutter.legado.** { *; }
+
 # --- QuickJS JNI bindings (com.script, quickjs.aar / js-api.aar) -------
 -keep class com.script.** { *; }
 -keep interface com.script.** { *; }
