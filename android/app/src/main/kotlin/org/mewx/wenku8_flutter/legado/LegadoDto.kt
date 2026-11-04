@@ -73,9 +73,19 @@ object LegadoDto {
         )
     }
 
-    /** Table C (Table B fields + book-only fields). */
-    fun book(book: Book): Map<String, Any?> {
+    /**
+     * Table C (Table B fields + book-only fields). [imageStyle] is the
+     * SOURCE's content-rule image style (`ContentRule.imageStyle`,
+     * e.g. "FULL"), not a Book entity field — the fork's reader copies
+     * it from the source into the book's read config at open time
+     * (ReadBookShared). fix7: the host records it per book so a
+     * text-type source whose chapters are entirely images (copymanga
+     * 7789: ruleContent imageStyle=FULL, body = one <img> per line)
+     * can be recognised at read time.
+     */
+    fun book(book: Book, imageStyle: String? = null): Map<String, Any?> {
         return mapOf(
+            "imageStyle" to imageStyle,
             "name" to book.name,
             "author" to book.author,
             "bookUrl" to book.bookUrl,

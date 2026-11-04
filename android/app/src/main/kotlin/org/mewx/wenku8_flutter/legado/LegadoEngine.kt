@@ -1090,7 +1090,7 @@ object LegadoEngine {
         val source = sourceOrThrow(origin)
         val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable, source.getBookType())
         val result = WebBook.getBookInfoAwait(source, book)
-        return LegadoDto.book(result)
+        return LegadoDto.book(result, source.contentRule.imageStyle)
     }
 
     suspend fun getChapterList(
@@ -1110,7 +1110,7 @@ object LegadoEngine {
         // phase does not serve a bridge-level TOC cache.
         val chapters = WebBook.getChapterListAwait(source, book).getOrElse { throw it }
         return mapOf(
-            "book" to LegadoDto.book(book),
+            "book" to LegadoDto.book(book, source.contentRule.imageStyle),
             "chapters" to chapters.map { LegadoDto.chapter(it) }
         )
     }
@@ -1179,7 +1179,18 @@ object LegadoEngine {
                 )
                 .toString()
         }
-        val images = if (isImageChapter) {
+        // fix7: also extract when the source's content rule declares
+        // an image style. A text-type source can still serve chapters
+        // that are entirely images (copymanga 7789: imageStyle=FULL,
+        // body = one <img> per line); the Dart side sniffs the body
+        // and, for an all-image chapter, consumes this list exactly
+        // like a type-2 chapter's (local-cache substitution included).
+        // For prose chapters of such a source the list simply carries
+        // the chapter's illustrations and is ignored by every caller
+        // except the image-chapter path.
+        val images = if (isImageChapter ||
+            !source.contentRule.imageStyle.isNullOrBlank()
+        ) {
             extractImages(content, chapter.getAbsoluteURL(book))
                 .map { localCachedImagePath(book, it) ?: it }
         } else {

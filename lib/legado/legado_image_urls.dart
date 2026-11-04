@@ -133,6 +133,58 @@ List<String> sanitizeLegadoImageUrls(
   return List.unmodifiable(results);
 }
 
+/// Conservative all-image verdict for one chapter body (fix7).
+///
+/// Some sources are typed TEXT (bookSourceType 0) yet serve chapters
+/// that are nothing but images — copymanga (7789) is the canonical
+/// case: its content rule emits one `<img src="...">` per page and
+/// nothing else. Legado shows those through its prose engine's native
+/// image-paragraph rendering; this host's prose path has no such
+/// rendering, so the chapter must be recognised and routed to the
+/// manga image view instead.
+///
+/// The verdict is deliberately hard to earn — a false positive would
+/// hijack a prose chapter into the image view and ruin normal
+/// reading, while a false negative only keeps today's behaviour:
+///
+/// - the body must yield at least one extractable image;
+/// - after removing every image reference (`<img>` tags, Markdown
+///   images, bare image-URL lines), the residue must contain NO
+///   letters, digits or other word characters at all — any real
+///   sentence, caption or even a trailing "（完）" disqualifies it;
+/// - the residue (whitespace and entities removed) may hold at most
+///   a few separator/punctuation characters, and a chapter with a
+///   single image earns the verdict only with a completely empty
+///   residue (a lone illustration in a prose chapter always leaves
+///   its prose behind).
+bool legadoContentIsImageChapter(String content) {
+  if (content.trim().isEmpty) return false;
+  final images = parseLegadoImageUrls(content, baseUrl: '');
+  if (images.isEmpty) return false;
+  var residue = content.replaceAll(_imgTagRegex, '');
+  residue = residue.replaceAll(_mdImgRegex, '');
+  final kept = <String>[];
+  for (final line in residue.split('\n')) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) continue;
+    if (isLegadoImageUrlLine(trimmed)) continue;
+    kept.add(trimmed);
+  }
+  final compact = kept
+      .join()
+      .replaceAll(RegExp(r'&[a-zA-Z#0-9]+;'), '')
+      .replaceAll(RegExp(r'\s'), '');
+  if (compact.isEmpty) return true;
+  if (images.length < 2) return false;
+  if (compact.length > 24) return false;
+  // Any word character (letters, digits, CJK, kana, hangul, ...) in
+  // the residue means the chapter carries real text.
+  if (RegExp(r'[\p{L}\p{N}]', unicode: true).hasMatch(compact)) {
+    return false;
+  }
+  return true;
+}
+
 /// Parses [content] (the engine's processed chapter body) into the
 /// chapter's image URLs in reading order.
 List<String> parseLegadoImageUrls(String content, {required String baseUrl}) {

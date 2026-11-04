@@ -28,6 +28,15 @@ const int legadoImageBookTypeBit = 1 << 6;
 /// an image (manga) book.
 bool isLegadoImageBookType(int type) => type & legadoImageBookTypeBit != 0;
 
+/// fix7 gate: the record's source declares a content-rule image
+/// style. On a TEXT-type book this is the signal that its chapters
+/// MAY be all-image (copymanga-style sources); the per-chapter
+/// verdict itself is [legadoContentIsImageChapter] on the fetched
+/// body, never the style alone — plenty of prose sources set an
+/// image style merely to lay out their illustrations.
+bool legadoBookHasImageStyle(LegadoBookRecord record) =>
+    (record.imageStyle ?? '').trim().isNotEmpty;
+
 /// Structured payload of one image chapter for the manga reader: the
 /// book's source ([origin], the key every image resolution needs) and
 /// the chapter's image URLs in reading order. [urls] may be empty when
@@ -60,6 +69,16 @@ class LegadoNovelRepository extends NovelRepository {
 
   final LegadoEngineClient client;
   final LegadoBookRegistry registry;
+
+  /// fix7: books gated into the image-chapter probe only by their
+  /// image style (not by the image type bit) whose probed chapter
+  /// turned out to be prose. Remembering the verdict in memory keeps
+  /// an illustrated prose book from paying a probe fetch on every
+  /// chapter; a genuinely all-image book never lands here because
+  /// its first probed chapter already sniffs as images. Process-local
+  /// on purpose: a mixed book misjudged once is re-probed after a
+  /// restart, and nothing persistent can be poisoned.
+  final Set<int> _imageStyleProseBooks = <int>{};
 
   Future<void>? _initFuture;
   bool _engineReady = false;
@@ -253,30 +272,62 @@ class LegadoNovelRepository extends NovelRepository {
     final record = await _recordFor(novelId);
     final result = await _fetchChapter(record, chapter);
     if (result.isImageChapter) return legadoImageChapterNotice;
+    // fix7: a text-type book whose chapter body is entirely images
+    // gets the same placeholder for string callers (TTS, exports);
+    // the reader itself renders it from [chapterImages].
+    if (!isLegadoImageBookType(record.type) &&
+        legadoBookHasImageStyle(record) &&
+        legadoContentIsImageChapter(result.content)) {
+      return legadoImageChapterNotice;
+    }
     return result.content;
   }
 
   /// The structured image-chapter payload for the manga reader, or
-  /// null when the book is not an image book (the overwhelmingly
-  /// common case — answered from the registry record's type bitmask
-  /// without any engine call, so text reading pays nothing).
+  /// null when the chapter is not an image chapter (the overwhelmingly
+  /// common case — answered from the registry record without any
+  /// engine call, so ordinary text reading pays nothing).
   ///
-  /// For an image book the chapter is fetched once through the same
-  /// chain as [chapterContent]. The bridge's own extracted list is
-  /// preferred; when it comes back empty the chapter body is parsed
-  /// again on this side ([parseLegadoImageUrls], the bridge
-  /// extractor's twin) so one missed shape cannot blank a chapter.
-  /// The engine's own isImageChapter verdict wins over the record: a
-  /// mismatch stays on the text path rather than rendering an empty
-  /// image list.
+  /// Two ways in:
+  /// - an image book (type bit): the chapter is fetched once through
+  ///   the same chain as [chapterContent] and the engine's own
+  ///   isImageChapter verdict decides — a mismatch stays on the text
+  ///   path rather than rendering an empty image list;
+  /// - a TEXT book whose source declares an image style (fix7): the
+  ///   chapter is fetched the same way and the body itself decides
+  ///   via [legadoContentIsImageChapter]. One prose verdict retires
+  ///   the book from probing for this process (see
+  ///   [_imageStyleProseBooks]).
+  ///
+  /// Either way the bridge's own extracted list is preferred; when
+  /// it comes back empty the chapter body is parsed again on this
+  /// side ([parseLegadoImageUrls], the bridge extractor's twin) so
+  /// one missed shape cannot blank a chapter.
   Future<ChapterImageList?> chapterImages(
     int novelId,
     NovelChapter chapter,
   ) async {
     final record = await _recordFor(novelId);
-    if (!isLegadoImageBookType(record.type)) return null;
+    final imageBook = isLegadoImageBookType(record.type);
+    final styleGated = !imageBook && legadoBookHasImageStyle(record);
+    if (!imageBook && !styleGated) return null;
+    if (styleGated && _imageStyleProseBooks.contains(record.id)) {
+      return null;
+    }
     final result = await _fetchChapter(record, chapter);
-    if (!result.isImageChapter) return null;
+    var imageChapter = result.isImageChapter;
+    if (!imageChapter && styleGated) {
+      imageChapter = legadoContentIsImageChapter(result.content);
+      if (!imageChapter) {
+        // An empty body proves nothing (a failed/blank fetch must
+        // not retire the book); a body with real prose does.
+        if (result.content.trim().isNotEmpty) {
+          _imageStyleProseBooks.add(record.id);
+        }
+        return null;
+      }
+    }
+    if (!imageChapter) return null;
     final dto = await registry.dtoChapter(novelId, chapter.id);
     // The chapter's absolute URL — the base the native side resolves
     // against (`chapter.getAbsoluteURL(book)`): the DTO url resolved

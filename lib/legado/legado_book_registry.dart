@@ -73,6 +73,7 @@ class LegadoBookRecord {
     this.latestChapterTitle,
     this.variable,
     this.totalChapterNum = 0,
+    this.imageStyle,
   });
 
   final int id;
@@ -93,6 +94,13 @@ class LegadoBookRecord {
   String? variable;
   int totalChapterNum;
 
+  /// The book's source content-rule image style (fix7), absorbed from
+  /// bridge book snapshots. A non-blank value on a TEXT-type book is
+  /// the gate that lets the reader probe its chapters for all-image
+  /// content (copymanga-style sources); the book's identity and type
+  /// are unchanged.
+  String? imageStyle;
+
   String get bookKey => '$origin\n$bookUrl';
 
   SearchBook toSearchBook() => SearchBook(
@@ -109,6 +117,7 @@ class LegadoBookRecord {
     wordCount: wordCount,
     latestChapterTitle: latestChapterTitle,
     variable: variable,
+    imageStyle: imageStyle,
   );
 
   BookInfo toBookInfo() => BookInfo.fromSearchBook(toSearchBook());
@@ -150,6 +159,12 @@ class LegadoBookRecord {
     wordCount = book.wordCount ?? wordCount;
     latestChapterTitle = book.latestChapterTitle ?? latestChapterTitle;
     variable = book.variable ?? variable;
+    // fix7: the image style is a property of the book's SOURCE (like
+    // the type above); a hop that does not carry it (plain search
+    // hits) must never erase a value a book snapshot provided.
+    if (book.imageStyle != null && book.imageStyle!.isNotEmpty) {
+      imageStyle = book.imageStyle;
+    }
   }
 
   void absorbBookInfo(BookInfo info) {
@@ -199,6 +214,7 @@ class LegadoBookRecord {
     'latestChapterTitle': latestChapterTitle,
     'variable': variable,
     'totalChapterNum': totalChapterNum,
+    'imageStyle': imageStyle,
   };
 
   factory LegadoBookRecord.fromJson(Map<String, dynamic> json) {
@@ -220,6 +236,7 @@ class LegadoBookRecord {
       latestChapterTitle: json['latestChapterTitle'] as String?,
       variable: json['variable'] as String?,
       totalChapterNum: json['totalChapterNum'] as int? ?? 0,
+      imageStyle: json['imageStyle'] as String?,
     );
   }
 }
@@ -242,6 +259,7 @@ extension on BookInfo {
     latestChapterTitle: latestChapterTitle,
     chapterWordCount: chapterWordCount,
     variable: variable,
+    imageStyle: imageStyle,
   );
 }
 
@@ -421,6 +439,7 @@ class LegadoBookRegistry extends ChangeNotifier {
       wordCount: book.wordCount,
       latestChapterTitle: book.latestChapterTitle,
       variable: book.variable,
+      imageStyle: book.imageStyle,
     );
     _records[record.id] = record;
     _idByBookKey[record.bookKey] = record.id;

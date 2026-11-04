@@ -241,6 +241,7 @@ class SearchBook {
     this.latestChapterTitle,
     this.chapterWordCount = 0,
     this.variable,
+    this.imageStyle,
   });
 
   final String name;
@@ -266,6 +267,12 @@ class SearchBook {
   /// Opaque per-source state; pass back verbatim to `getBookInfo`.
   final String? variable;
 
+  /// The source's content-rule image style (`ContentRule.imageStyle`,
+  /// e.g. "FULL"), stamped by the bridge on book snapshots (fix7).
+  /// Null on plain search hits; the registry fills it in from
+  /// `getBookInfo`/`getChapterList` absorbs before any reading.
+  final String? imageStyle;
+
   /// Engine-side identity of a book: `origin + "\n" + bookUrl`.
   String get bookKey => '$origin\n$bookUrl';
 
@@ -287,6 +294,7 @@ class SearchBook {
       latestChapterTitle: _strOrNull(m, 'latestChapterTitle'),
       chapterWordCount: _int(m, 'chapterWordCount'),
       variable: _strOrNull(m, 'variable'),
+      imageStyle: _strOrNull(m, 'imageStyle'),
     );
   }
 
@@ -306,6 +314,7 @@ class SearchBook {
     'latestChapterTitle': latestChapterTitle,
     'chapterWordCount': chapterWordCount,
     'variable': variable,
+    'imageStyle': imageStyle,
   };
 
   SearchBook copyWith({
@@ -324,6 +333,7 @@ class SearchBook {
     String? latestChapterTitle,
     int? chapterWordCount,
     String? variable,
+    String? imageStyle,
   }) {
     return SearchBook(
       name: name ?? this.name,
@@ -341,6 +351,7 @@ class SearchBook {
       latestChapterTitle: latestChapterTitle ?? this.latestChapterTitle,
       chapterWordCount: chapterWordCount ?? this.chapterWordCount,
       variable: variable ?? this.variable,
+      imageStyle: imageStyle ?? this.imageStyle,
     );
   }
 
@@ -361,7 +372,8 @@ class SearchBook {
       other.wordCount == wordCount &&
       other.latestChapterTitle == latestChapterTitle &&
       other.chapterWordCount == chapterWordCount &&
-      other.variable == variable;
+      other.variable == variable &&
+      other.imageStyle == imageStyle;
 
   @override
   int get hashCode => Object.hash(
@@ -380,6 +392,7 @@ class SearchBook {
     latestChapterTitle,
     chapterWordCount,
     variable,
+    imageStyle,
   );
 }
 
@@ -408,6 +421,7 @@ class BookInfo {
     this.latestChapterTime = 0,
     this.lastCheckCount = 0,
     this.canUpdate = true,
+    this.imageStyle,
   });
 
   final String name;
@@ -432,6 +446,10 @@ class BookInfo {
   final int latestChapterTime;
   final int lastCheckCount;
   final bool canUpdate;
+
+  /// The source's content-rule image style, as stamped by the bridge
+  /// (fix7; see [SearchBook.imageStyle]).
+  final String? imageStyle;
 
   String get bookKey => '$origin\n$bookUrl';
 
@@ -458,6 +476,7 @@ class BookInfo {
       latestChapterTime: _int(m, 'latestChapterTime'),
       lastCheckCount: _int(m, 'lastCheckCount'),
       canUpdate: _bool(m, 'canUpdate', true),
+      imageStyle: _strOrNull(m, 'imageStyle'),
     );
   }
 
@@ -478,6 +497,7 @@ class BookInfo {
       latestChapterTitle: book.latestChapterTitle,
       chapterWordCount: book.chapterWordCount,
       variable: book.variable,
+      imageStyle: book.imageStyle,
     );
   }
 
@@ -502,6 +522,7 @@ class BookInfo {
     'latestChapterTime': latestChapterTime,
     'lastCheckCount': lastCheckCount,
     'canUpdate': canUpdate,
+    'imageStyle': imageStyle,
   };
 
   /// The subset of fields the engine needs back to rebuild its `Book`
@@ -537,7 +558,8 @@ class BookInfo {
       other.totalChapterNum == totalChapterNum &&
       other.latestChapterTime == latestChapterTime &&
       other.lastCheckCount == lastCheckCount &&
-      other.canUpdate == canUpdate;
+      other.canUpdate == canUpdate &&
+      other.imageStyle == imageStyle;
 
   @override
   int get hashCode => Object.hashAll(<Object?>[
@@ -561,6 +583,7 @@ class BookInfo {
     latestChapterTime,
     lastCheckCount,
     canUpdate,
+    imageStyle,
   ]);
 }
 
