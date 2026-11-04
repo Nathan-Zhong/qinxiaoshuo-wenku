@@ -11,17 +11,21 @@ import 'package:wenku8_flutter/updates/release_highlights.dart';
 // assertions about our own changelog and versioning.
 void main() {
   test('own version constants match the changelog head and pubspec line', () {
-    expect(currentAppVersion, '1.0.4');
-    expect(currentAppBuild, 10004);
+    expect(currentAppVersion, '1.0.5');
+    expect(currentAppBuild, 10005);
     expect(appChangelog.first.version, currentAppVersion);
     expect(appChangelog.first.build, currentAppBuild);
   });
 
-  test('changelog is newest-first and covers 1.0.0 through the current '
-      'version', () {
+  // fix5 (2026-11-04): Cassidy ordered the changelog to keep only
+  // the three most recent versions — 1.0.0–1.0.2 were retired when
+  // 1.0.5 landed, and each future version drops the fourth-oldest.
+  test('changelog is newest-first and keeps only the three most '
+      'recent versions', () {
+    expect(appChangelog, hasLength(3));
     expect(
       appChangelog.map((e) => e.version).toList(),
-      ['1.0.4', '1.0.3', '1.0.2', '1.0.1', '1.0.0'],
+      ['1.0.5', '1.0.4', '1.0.3'],
     );
     for (final entry in appChangelog) {
       expect(entry.summary, isNotEmpty);

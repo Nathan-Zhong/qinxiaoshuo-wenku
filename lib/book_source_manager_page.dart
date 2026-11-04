@@ -45,6 +45,23 @@ class BookSourceManagerPage extends StatefulWidget {
 /// Converter modes in fork order: 0 不转换 / 1 繁转简 / 2 简转繁.
 const List<String> chineseConverterLabels = ['不转换', '繁转简', '简转繁'];
 
+/// Whether every selectable source row is currently selected.
+/// Group header rows are not sources and never counted; an empty
+/// list is never "all selected".
+bool bookSourcesAllSelected(Set<String> selected, Iterable<String> allUrls) {
+  final urls = allUrls.toSet();
+  return urls.isNotEmpty && urls.every(selected.contains);
+}
+
+/// The selection after one tap on 全选/取消全选: anything short of
+/// fully selected completes the selection; fully selected clears it.
+Set<String> bookSourcesToggleSelectAll(
+  Set<String> selected,
+  Iterable<String> allUrls,
+) => bookSourcesAllSelected(selected, allUrls)
+    ? <String>{}
+    : allUrls.toSet();
+
 class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
   late final LegadoEngineClient _client = widget.client ?? LegadoEngineClient();
   late final BookDocuments _documents = widget.documents ?? BookDocuments();
@@ -129,6 +146,21 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
       for (final group in order) (group: group, sources: byGroup[group]!),
       if (ungrouped.isNotEmpty) (group: null, sources: ungrouped),
     ];
+  }
+
+  bool get _allSelected => bookSourcesAllSelected(_selected, [
+    for (final source in _sources) source.sourceUrl,
+  ]);
+
+  void _toggleSelectAll() {
+    setState(() {
+      final next = bookSourcesToggleSelectAll(_selected, [
+        for (final source in _sources) source.sourceUrl,
+      ]);
+      _selected
+        ..clear()
+        ..addAll(next);
+    });
   }
 
   String _typeLabel(int type) => switch (type) {
@@ -371,6 +403,11 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
   /// Batch source check (G12): the sheet owns the task — it subscribes
   /// to the task channel first, then starts the check with its own
   /// pre-allocated task id, so no progress event can slip past.
+  ///
+  /// When the sheet is closed via its 「选中失效书源」 action it pops
+  /// with this round's failed source urls; the page then enters batch
+  /// selection with exactly those preselected, and deletion still
+  /// goes through the usual bottom bar + confirmation (fix5).
   Future<void> _runSourceCheck() async {
     if (_sourceChecking) return;
     setState(() => _sourceChecking = true);
@@ -380,7 +417,7 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
       final names = {
         for (final source in _sources) source.sourceUrl: source.sourceName,
       };
-      await showJellySheet<void>(
+      final failedUrls = await showJellySheet<List<String>>(
         context: context,
         reduceMotion: MediaQuery.disableAnimationsOf(context),
         builder: (_) => _CheckSourcesSheet(
@@ -392,6 +429,17 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
       // Checking rewrites groups/comments/respond times in the engine
       // DB; refresh the list so failure groups become visible.
       if (mounted) await _load();
+      if (mounted && failedUrls != null && failedUrls.isNotEmpty) {
+        setState(() {
+          final alive = {
+            for (final source in _sources) source.sourceUrl,
+          };
+          _selected
+            ..clear()
+            ..addAll(failedUrls.where(alive.contains));
+          if (_selected.isNotEmpty) _selecting = true;
+        });
+      }
     } catch (_) {
       if (!mounted) return;
       showNovelFeedback(context, '校验失败，请重试');
@@ -470,6 +518,13 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
                       ),
                     ),
                   ),
+                  if (_selecting)
+                    GlassTextButton(
+                      key: const ValueKey('book-source-select-all'),
+                      compact: true,
+                      onPressed: _deleting ? null : _toggleSelectAll,
+                      child: AppText(_allSelected ? '取消全选' : '全选'),
+                    ),
                   if (_selecting && _selected.isNotEmpty)
                     GlassTextButton(
                       compact: true,
@@ -1150,6 +1205,17 @@ class _CheckSourcesSheetState extends State<_CheckSourcesSheet> {
     }
   }
 
+  /// This round's failed sources, one entry per source in result
+  /// order — handed back to the page when the sheet is closed via
+  /// 「选中失效书源」, which preselects them for batch deletion.
+  List<String> get _failedUrls {
+    final seen = <String>{};
+    return [
+      for (final result in _results)
+        if (!result.ok && seen.add(result.sourceUrl)) result.sourceUrl,
+    ];
+  }
+
   @override
   void dispose() {
     if (!_finished) {
@@ -1203,6 +1269,14 @@ class _CheckSourcesSheetState extends State<_CheckSourcesSheet> {
               ),
             ),
             const SizedBox(height: 10),
+          ],
+          if (_finished && _startError == null && _failedUrls.isNotEmpty) ...[
+            GlassTextButton(
+              key: const ValueKey('book-source-check-select-failed'),
+              onPressed: () => Navigator.pop(context, _failedUrls),
+              child: AppText('选中失效书源（${_failedUrls.length} 个）'),
+            ),
+            const SizedBox(height: 8),
           ],
           GlassTextButton(
             onPressed: () => Navigator.pop(context),

@@ -18,6 +18,10 @@ void main() {
   MockStreamHandlerEventSink? taskEvents;
   int? lastCheckTaskId;
 
+  /// When true, the mock check round reports every source ok
+  /// (drives the no-failures variant of the check-sheet tests).
+  late bool checkAllOk;
+
   Map<String, Object?> sourceA() => <String, Object?>{
     'sourceUrl': 'https://a.example',
     'sourceName': 'A源',
@@ -40,6 +44,7 @@ void main() {
     converterType = 1;
     taskEvents = null;
     lastCheckTaskId = null;
+    checkAllOk = false;
     messenger.setMockStreamHandler(
       const EventChannel('org.mewx.wenku8/legado_task_events'),
       MockStreamHandler.inline(
@@ -137,20 +142,31 @@ void main() {
               'done': 1,
               'total': 2,
             });
-            sink.success(<String, Object?>{
-              'type': 'checkProgress',
-              'taskId': lastCheckTaskId,
-              'sourceUrl': 'https://m.example',
-              'state': 'fail',
-              'message': '搜索失效',
-              'done': 2,
-              'total': 2,
-            });
+            if (checkAllOk) {
+              sink.success(<String, Object?>{
+                'type': 'checkProgress',
+                'taskId': lastCheckTaskId,
+                'sourceUrl': 'https://m.example',
+                'state': 'ok',
+                'done': 2,
+                'total': 2,
+              });
+            } else {
+              sink.success(<String, Object?>{
+                'type': 'checkProgress',
+                'taskId': lastCheckTaskId,
+                'sourceUrl': 'https://m.example',
+                'state': 'fail',
+                'message': '搜索失效',
+                'done': 2,
+                'total': 2,
+              });
+            }
             sink.success(<String, Object?>{
               'type': 'checkDone',
               'taskId': lastCheckTaskId,
-              'okCount': 1,
-              'failCount': 1,
+              'okCount': checkAllOk ? 2 : 1,
+              'failCount': checkAllOk ? 0 : 1,
             });
           });
           return <String, Object?>{'taskId': args['taskId']};
@@ -578,6 +594,150 @@ void main() {
     // No detail opener is injected in this harness, so the page falls
     // back to the confirmation message.
     expect(find.textContaining('已找到《链接之书》'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  group('select-all helpers', () {
+    const urls = ['https://a.example', 'https://m.example'];
+
+    test('all selected only when every url is in the selection', () {
+      expect(bookSourcesAllSelected({}, urls), isFalse);
+      expect(bookSourcesAllSelected({'https://a.example'}, urls), isFalse);
+      expect(
+        bookSourcesAllSelected(
+          {'https://a.example', 'https://m.example'},
+          urls,
+        ),
+        isTrue,
+      );
+      // Extra stale entries do not un-complete a full selection.
+      expect(
+        bookSourcesAllSelected(
+          {'https://a.example', 'https://m.example', 'https://gone.example'},
+          urls,
+        ),
+        isTrue,
+      );
+    });
+
+    test('an empty source list is never all selected', () {
+      expect(bookSourcesAllSelected({}, const []), isFalse);
+      expect(bookSourcesToggleSelectAll({}, const []), isEmpty);
+    });
+
+    test('toggle from a partial selection completes it', () {
+      expect(
+        bookSourcesToggleSelectAll({'https://a.example'}, urls),
+        {'https://a.example', 'https://m.example'},
+      );
+      expect(
+        bookSourcesToggleSelectAll({}, urls),
+        {'https://a.example', 'https://m.example'},
+      );
+    });
+
+    test('toggle from a full selection clears it', () {
+      expect(
+        bookSourcesToggleSelectAll(
+          {'https://a.example', 'https://m.example'},
+          urls,
+        ),
+        isEmpty,
+      );
+    });
+  });
+
+  testWidgets('select-all button toggles the whole list', (tester) async {
+    await pumpPage(tester);
+    await tester.tap(find.byKey(const ValueKey('book-source-select-mode')));
+    await tester.pumpAndSettle();
+    expect(find.text('全选'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('book-source-select-all')));
+    await tester.pumpAndSettle();
+    expect(find.text('2 个书源 · 已选 2 个'), findsOneWidget);
+    expect(find.text('取消全选'), findsOneWidget);
+    expect(find.text('删除 2 个书源'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('book-source-select-all')));
+    await tester.pumpAndSettle();
+    expect(find.text('2 个书源 · 已选 0 个'), findsOneWidget);
+    expect(find.text('全选'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('select-all completes a partial selection', (tester) async {
+    await pumpPage(tester);
+    await tester.tap(find.byKey(const ValueKey('book-source-select-mode')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('book-source-https://a.example')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('2 个书源 · 已选 1 个'), findsOneWidget);
+    // A partial selection still offers 全选 (not 取消全选).
+    expect(find.text('全选'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('book-source-select-all')));
+    await tester.pumpAndSettle();
+    expect(find.text('2 个书源 · 已选 2 个'), findsOneWidget);
+    expect(find.text('取消全选'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'check sheet hands failures back preselected for batch delete',
+    (tester) async {
+      await pumpPage(tester);
+      await tester.tap(find.byKey(const ValueKey('book-source-check')));
+      await tester.pumpAndSettle();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 300)),
+      );
+      await tester.pumpAndSettle();
+      await tester.pump();
+      expect(find.text('校验完成：可用 1 · 失效 1'), findsOneWidget);
+      expect(find.text('选中失效书源（1 个）'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('book-source-check-select-failed')),
+      );
+      await tester.pumpAndSettle();
+      // Sheet closed; the page is in batch mode with only the failed
+      // source preselected. Nothing has been deleted yet.
+      expect(calls.where((call) => call.method == 'deleteSources'), isEmpty);
+      expect(find.text('2 个书源 · 已选 1 个'), findsOneWidget);
+      expect(find.text('删除 1 个书源'), findsOneWidget);
+      // Deletion still goes through the standard confirm dialog.
+      await tester.tap(
+        find.byKey(const ValueKey('book-source-delete-selected')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('删除书源？'), findsOneWidget);
+      await tester.tap(find.text('删除'));
+      await tester.pumpAndSettle();
+      final args = (callFor('deleteSources').arguments as Map)
+          .cast<String, Object?>();
+      expect(args['sourceUrls'], ['https://m.example']);
+      expect(find.text('漫画源'), findsNothing);
+      expect(find.text('A源'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('check sheet hides the preselect entry when nothing '
+      'failed', (tester) async {
+    checkAllOk = true;
+    await pumpPage(tester);
+    await tester.tap(find.byKey(const ValueKey('book-source-check')));
+    await tester.pumpAndSettle();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 300)),
+    );
+    await tester.pumpAndSettle();
+    await tester.pump();
+    expect(find.text('校验完成：可用 2 · 失效 0'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('book-source-check-select-failed')),
+      findsNothing,
+    );
+    expect(find.textContaining('选中失效书源'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }
