@@ -411,6 +411,32 @@ object LegadoEngine {
             recordBridgeError("selfCheck.appSearchProbe", e)
             listOf("ERROR ${e.legadoBrief()}")
         }
+        // fix10 (Item 2): bilinovel 7753 step-log capture. The check
+        // note channel is exhausted — the on-device failure stays
+        // `TypeError: not a function at <eval> (<input>:1:13)` with no
+        // further frames even after the note widening (fix8), and every
+        // offline path (real search page, field-rule bisect, detail-page
+        // else branch) passes on the JVM gate. The engine's own Debug
+        // channel logs each BookList step (┌获取书名/┌获取作者/...) plus
+        // the terminal error stack, so run ONE debug search for the
+        // bilinovel source and return the collected steps: the last
+        // ┌-line before the error names the exact rule that throws on
+        // device. Read-only diagnostic; no source data is modified.
+        out["bilinovelDebug"] = runCatching {
+            val target = enabledList.firstOrNull {
+                it.bookSourceUrl.contains("bilinovel", ignoreCase = true)
+            } ?: dao.all().firstOrNull {
+                it.bookSourceUrl.contains("bilinovel", ignoreCase = true)
+            }
+            if (target == null) {
+                "skip: 未导入哔哩轻小说源 (bilinovel)"
+            } else {
+                bilinovelDebugProbe(target)
+            }
+        }.getOrElse { e ->
+            recordBridgeError("selfCheck.bilinovelDebug", e)
+            "ERROR ${e.legadoBrief()}"
+        }
         // Image-request resolution probe (G7, P5.1): proves the two
         // mechanisms anti-hotlink sources rely on, with no network —
         // (1) a plain URL against the first enabled source picks up
@@ -670,6 +696,57 @@ object LegadoEngine {
             recordBridgeError("selfCheck.webBookSearch.perSource", e)
             "ERROR ${e.legadoStack()}"
         }
+
+    /**
+     * fix10 (Item 2): one bilinovel debug search through the engine's
+     * own [io.legado.app.model.Debug] channel. Installs a collecting
+     * callback, starts the debug walk for keyword 斗破， and waits
+     * until the walk reports a terminal error (state -1 line), the
+     * content stage completes, or 100s elapse — then returns the
+     * collected step lines (head-capped; the search stage is what the
+     * 1:13 failure lives in). The callback is always restored and the
+     * debug tasks cancelled, so the rest of the app is untouched.
+     */
+    private suspend fun bilinovelDebugProbe(source: BookSource): String {
+        val lines = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val terminal = AtomicBoolean(false)
+        val previous = io.legado.app.model.Debug.callback
+        io.legado.app.model.Debug.callback =
+            object : io.legado.app.model.Debug.Callback {
+                override fun printLog(state: Int, msg: String) {
+                    if (state == -1 || msg.contains("解析出错")) {
+                        terminal.set(true)
+                    }
+                    lines.add(msg)
+                }
+            }
+        try {
+            io.legado.app.model.Debug.startDebug(
+                CoroutineScope(currentCoroutineContext()),
+                source,
+                "斗破"
+            )
+            var waitedMs = 0L
+            while (!terminal.get() && waitedMs < 100_000L) {
+                delay(500)
+                waitedMs += 500
+            }
+        } finally {
+            io.legado.app.model.Debug.cancelDebug()
+            io.legado.app.model.Debug.callback = previous
+        }
+        val snapshot = synchronized(lines) { lines.toList() }
+        val head = snapshot.take(80)
+        val suffix = if (snapshot.size > head.size) {
+            "\n(截断：共 ${snapshot.size} 行，仅显示前 ${head.size} 行)"
+        } else {
+            ""
+        }
+        val joined = head.joinToString("\n")
+        return "source=${source.bookSourceName} lines=${snapshot.size} " +
+            "terminalError=${terminal.get()}\n" +
+            joined.take(4000) + suffix
+    }
 
     /**
      * fix3: one source through the App's REAL search path — a

@@ -42,6 +42,15 @@ class AppVersionNotes {
 /// 详细更新说明里每个版本占一页，按这个顺序翻页。
 const appChangelog = <AppVersionNotes>[
   AppVersionNotes(
+    version: '1.0.10',
+    build: 10010,
+    date: '2026-11-04',
+    summary: ['漫画团恢复可用。'],
+    items: [
+      '修复漫画团校验时「JS执行出错」：这类源正文解密时，脚本引擎有个小毛病会把文字弄错格式，这次在引擎里对齐了原版阅读的处理方式',
+    ],
+  ),
+  AppVersionNotes(
     version: '1.0.9',
     build: 10009,
     date: '2026-11-04',
@@ -60,15 +69,6 @@ const appChangelog = <AppVersionNotes>[
       '修复漫画柜等书源校验时「JS执行出错」：补上这类源自带小工具要用的加密函数',
       '修复拷贝漫画搜中文书名直接失败：网址里带中文的请求头现在会自动转码（G社漫画同类问题一并修复）',
       '校验失败时显示的原因更完整，方便定位问题',
-    ],
-  ),
-  AppVersionNotes(
-    version: '1.0.7',
-    build: 10007,
-    date: '2026-11-04',
-    summary: ['拷贝漫画这类源现在能看图了。'],
-    items: [
-      '拷贝漫画等「标记是小说、内容全是图」的书源，现在打开章节能直接竖滑看图',
     ],
   ),
 ];
