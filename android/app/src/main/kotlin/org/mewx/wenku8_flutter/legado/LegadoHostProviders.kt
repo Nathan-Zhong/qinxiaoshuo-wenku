@@ -115,6 +115,7 @@ import io.legado.app.help.storage.DataStorageProviders
 import io.legado.app.model.Debug
 import io.legado.app.model.SharedJsScope
 import io.legado.app.model.analyzeRule.AnalyzeRuleCore
+import io.legado.app.model.webBook.BookInfoRefreshers
 import io.legado.app.model.analyzeRule.AnalyzeRuleFactories
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
@@ -1331,15 +1332,20 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
         override fun removeCookie(tag: String) = cookieStore.removeCookie(tag)
         override fun asBinding(): Any = cookieStore
     }
-    // The fork registers its :app thin subclasses (AnalyzeRule/AnalyzeUrl)
-    // whose only additions are a toc-refresh override routed through a
-    // provider we do not register (falls back to no-op) and a media-player
-    // helper for audio/video sources. The shared cores are registered
-    // directly; JS dispatch falls back to reflection when no KSP table
-    // exists for the core classes (the quickjs module supports both paths).
+    // The fork registers its :app thin subclasses (AnalyzeRule/AnalyzeUrl).
+    // AnalyzeUrlCore is registered directly (its :app twin adds nothing the
+    // text/manga scope needs). For AnalyzeRule the :app twin's one addition
+    // DOES matter: the refreshTocUrl() override that xiaohan-template
+    // sources call from TOC pre-update JS — the shared core's hook is an
+    // empty no-op without it. LegadoAnalyzeRule mirrors that override and
+    // routes through BookInfoRefreshers, registered just below with the
+    // fork's own delegation (WebBook.getBookInfoAwait). JS dispatch falls
+    // back to reflection when no KSP table exists (the quickjs module
+    // supports both paths).
     AnalyzeRuleFactories.register { ruleData, source, preUpdateJs ->
-        AnalyzeRuleCore(ruleData, source, preUpdateJs)
+        LegadoAnalyzeRule(ruleData, source, preUpdateJs)
     }
+    BookInfoRefreshers.register(LegadoBookInfoRefresher)
     AnalyzeUrlFactories.register {
             rawUrl, baseUrl, source, ruleData, chapter, readTimeout, callTimeout,
             coroutineContext, headerMapF, hasLoginHeader, selectedOptions, variables ->
