@@ -1999,7 +1999,12 @@ class _ShelfPageState extends State<ShelfPage>
                   if (showPreview && index == 1) {
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 24),
-                      child: _preview(saved.take(10).toList()),
+                      // fix6 (Cassidy's order): the bookshelf 3D shelf
+                      // shows ALL books, not just the first 10. Only the
+                      // data fed to the carousel changes; the carousel
+                      // itself (visuals/spacing/motion/interaction) is
+                      // untouched, as is the list below.
+                      child: _preview(saved.toList()),
                     );
                   }
                   if (showPreview && index == 2) {

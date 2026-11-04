@@ -311,8 +311,11 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage> {
               if (showPreview && index == 1) {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 24),
+                  // fix6 (Cassidy's order): the bookmarks 3D shelf shows
+                  // ALL bookmarked books, not just the first 10 groups.
+                  // Only the data fed to the carousel changes.
                   child: _preview(
-                    groups.take(10).map((group) => group.key).toList(),
+                    groups.map((group) => group.key).toList(),
                   ),
                 );
               }

@@ -143,6 +143,61 @@ Tomorrow we will meet again.''';
   });
 
   testWidgets(
+    'bookmarks shelf preview shows ALL bookmarked books (fix6: no 10-book cap)',
+    (tester) async {
+      tester.view.physicalSize = const Size(800, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      // 12 distinct books, one bookmark each -> 12 groups. The old data
+      // path fed the carousel groups.take(10); fix6 feeds all groups.
+      final many = [
+        for (var i = 1; i <= 12; i++)
+          Novel(
+            id: 73000 + i,
+            title: '书签作品 $i',
+            author: '作者',
+            genre: '日常',
+            summary: '',
+            colors: const [Colors.grey, Colors.white],
+            chapters: [
+              NovelChapter('第一章', content, id: (73000 + i) * 10 + 1),
+            ],
+          ),
+      ];
+      await tester.runAsync(() async {
+        for (var i = 0; i < many.length; i++) {
+          await state.addBookmark(
+            novel: many[i],
+            position: at(0, (73000 + i + 1) * 10 + 1, updatedAt: 100 + i),
+            quote: '第 ${i + 1} 本书的句子',
+          );
+        }
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: novelTheme(Brightness.light),
+          home: BookmarkLibraryPage(
+            state: state,
+            repository: const DemoNovelRepository(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<ArchiveFileCarousel>(find.byType(ArchiveFileCarousel))
+            .books
+            .length,
+        12,
+      );
+      expect(find.text('12 本书 · 12 条书签'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'one book page lists bookmarks in chapter order with notes, editing and deletion',
     (tester) async {
       late ReaderBookmark secondChapter, firstChapter;

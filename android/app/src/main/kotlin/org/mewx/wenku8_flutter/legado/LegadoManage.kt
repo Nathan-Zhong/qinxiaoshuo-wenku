@@ -118,11 +118,25 @@ object LegadoManage {
                                 val message = if (ok) {
                                     "校验成功"
                                 } else {
+                                    // fix6: keep the WHOLE error paragraph,
+                                    // not just its first line. The engine's
+                                    // addErrorComment stores "// Error: " +
+                                    // e.message, and for JS failures that
+                                    // message is "JS执行出错\n<real cause>" —
+                                    // first-line extraction showed Cassidy
+                                    // only the wrapper and dropped the cause
+                                    // (device report 2026-11-04). The error
+                                    // block is the comment's first paragraph
+                                    // (addErrorComment prepends it ahead of a
+                                    // "\n\n" separator); collapse its inner
+                                    // newlines so the sheet stays one line.
                                     val errorLine = source.bookSourceComment
-                                        ?.lineSequence()
-                                        ?.firstOrNull { it.startsWith("// Error: ") }
+                                        ?.takeIf { it.startsWith("// Error: ") }
                                         ?.removePrefix("// Error: ")
-                                        ?.take(120)
+                                        ?.substringBefore("\n\n")
+                                        ?.replace(Regex("\\s*\\n\\s*"), " ")
+                                        ?.trim()
+                                        ?.take(300)
                                     listOfNotNull(
                                         invalid,
                                         errorLine?.takeIf { it.isNotBlank() }

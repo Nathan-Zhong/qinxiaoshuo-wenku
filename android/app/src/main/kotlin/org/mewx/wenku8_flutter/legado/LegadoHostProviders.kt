@@ -1269,6 +1269,18 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     RuleRegexes.register(null)
     registerRuleRegexForJsonPath()
     OkHttpClientProviders.register(LegadoOkHttpProvider(appContext))
+    // fix6: jsoup-compat reuses the host shared OkHttpClient, inheriting
+    // its CookieJar / rate limiting / challenge-solving interceptors —
+    // the fork's App.onCreate does exactly this (App.kt: "jsoup-compat
+    // 复用宿主共享 OkHttpClient，继承 CookieJar/限流/Cronet 拦截器",
+    // org.jsoup.Jsoup.clientFactory = { okHttpClient }). Without it,
+    // JsExtensions java.get/head/post (the Jsoup path) silently fall
+    // back to a BARE OkHttpClient: no cookie jar (enabledCookieJar
+    // sources lose cookie sharing), no Cloudflare solver — a guarded
+    // endpoint answering 403 makes Jsoup throw HttpStatusException and
+    // the source's search JS dies as a bare 「JS执行出错」
+    // （哔哩轻小说 search_guard handshake, device report 2026-11-04).
+    org.jsoup.Jsoup.clientFactory = { OkHttpClientProviders.get().okHttpClient }
     SourceHelpAccessors.register(LegadoSourceHelpAccessor)
 
     // Cookie stack: store provider first, then the OkHttp cookie-jar bridge.

@@ -20,7 +20,7 @@ void main() {
     expect(state.shelfLayout, 'list');
   });
   testWidgets(
-    'shelf preview shows up to 10 books and retains the full management list',
+    'shelf preview shows ALL books (fix6: no 10-book cap) and retains the full management list',
     (tester) async {
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1;
@@ -57,12 +57,14 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      // fix6: with 12 books on the shelf the carousel data is all 12,
+      // not the old first-10 cap.
       expect(
         tester
             .widget<ArchiveFileCarousel>(find.byType(ArchiveFileCarousel))
             .books
             .length,
-        10,
+        12,
       );
       expect(find.text('全部书籍'), findsNWidgets(2));
       final view = find.byKey(const ValueKey('shelf-view'));

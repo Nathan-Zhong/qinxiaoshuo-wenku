@@ -49,9 +49,29 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** One-line exception summary (class + message) for events and self-checks. */
-internal fun Throwable.legadoBrief(max: Int = 400): String =
-    "${javaClass.name}: ${message ?: ""}".take(max)
+/**
+ * One-line exception summary (class + message) for events and self-checks.
+ * fix6: appends the deepest cause when there is one — engine wrappers
+ * (e.g. the evalJS RuntimeException "JS执行出错") bury the actionable
+ * exception (HTTP status, SSL, JS TypeError) in the cause chain, and a
+ * screenshot of the wrapper alone cannot localize the failure.
+ */
+internal fun Throwable.legadoBrief(max: Int = 400): String {
+    val head = "${javaClass.name}: ${message ?: ""}"
+    var root: Throwable = this
+    var guard = 0
+    while (true) {
+        val next = root.cause
+        if (next == null || next === root || guard++ >= 8) break
+        root = next
+    }
+    val tail = if (root !== this) {
+        " [cause: ${root.javaClass.name}: ${root.message ?: ""}]"
+    } else {
+        ""
+    }
+    return (head + tail).take(max)
+}
 
 /**
  * Exception summary plus the first [frames] stack frames, one per line.
