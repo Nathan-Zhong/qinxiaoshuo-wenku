@@ -136,7 +136,11 @@ object LegadoManage {
                                         ?.substringBefore("\n\n")
                                         ?.replace(Regex("\\s*\\n\\s*"), " ")
                                         ?.trim()
-                                        ?.take(300)
+                                        // FIX8: widened 300 -> 1200 so a JS
+                                        // error's full QuickJS stack survives
+                                        // into the note (7753's truncated
+                                        // stack hid which eval path threw).
+                                        ?.take(1200)
                                     listOfNotNull(
                                         invalid,
                                         errorLine?.takeIf { it.isNotBlank() }

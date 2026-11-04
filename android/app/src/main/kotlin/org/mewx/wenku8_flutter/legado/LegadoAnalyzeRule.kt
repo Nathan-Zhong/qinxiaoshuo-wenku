@@ -32,6 +32,30 @@ class LegadoAnalyzeRule(
     preUpdateJs: Boolean = false,
 ) : AnalyzeRuleCore(ruleData, source, preUpdateJs) {
 
+    /**
+     * Legacy upstream API the fork dropped (FIX8): xiaohan-template rule
+     * scripts bootstrap with
+     * `eval(String(java.aesBase64DecodeToString(source.variableComment, …)))`
+     * and the decrypted payload calls the encode twin. Without these the
+     * call is `TypeError: not a function` in QuickJS. Semantics mirror
+     * upstream; see [LegadoLegacyCrypto].
+     */
+    @JvmOverloads
+    fun aesBase64DecodeToString(
+        str: String,
+        key: String,
+        transformation: String = "AES/ECB/PKCS7Padding",
+        iv: String = "",
+    ): String? = LegadoLegacyCrypto.aesBase64DecodeToString(str, key, transformation, iv)
+
+    @JvmOverloads
+    fun aesEncodeToBase64String(
+        str: String,
+        key: String,
+        transformation: String = "AES/ECB/PKCS7Padding",
+        iv: String = "",
+    ): String? = LegadoLegacyCrypto.aesEncodeToBase64String(str, key, transformation, iv)
+
     override fun refreshTocUrl() {
         val bookSource = getSource() as? BookSource
         val book = ruleData as? Book

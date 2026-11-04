@@ -19,8 +19,8 @@ const updateRepository = String.fromEnvironment(
 // 小说文库's own versioning (fix2, 2026-11-03): kept in step with
 // pubspec.yaml and app_changelog.dart. The original build's 0.4.1/88
 // fallback values were retired together with its release notes.
-const currentAppVersion = '1.0.7';
-const currentAppBuild = 10007;
+const currentAppVersion = '1.0.8';
+const currentAppBuild = 10008;
 
 /// Plain-text form of the current version's changelog entry
 /// (derived from app_changelog.dart, our own update log).

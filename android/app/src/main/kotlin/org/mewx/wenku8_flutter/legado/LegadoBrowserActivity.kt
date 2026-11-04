@@ -33,7 +33,6 @@ import io.legado.app.help.getUserAgent
 import io.legado.app.help.http.CookieStoreProviders
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.SourceVerificationHelpShared
-import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.app.utils.EscapeUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -499,7 +498,7 @@ class LegadoBrowserActivity : Activity() {
             LegadoEngine.scope.launch {
                 val body = runCatching {
                     val source = SourceHelp.getSource(req.sourceKey, req.sourceType)
-                    AnalyzeUrlCore(
+                    LegadoAnalyzeUrl(
                         req.url,
                         headerMapF = req.spec.headerMap,
                         source = source,

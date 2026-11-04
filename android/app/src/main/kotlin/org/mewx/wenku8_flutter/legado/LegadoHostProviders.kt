@@ -117,7 +117,6 @@ import io.legado.app.model.SharedJsScope
 import io.legado.app.model.analyzeRule.AnalyzeRuleCore
 import io.legado.app.model.webBook.BookInfoRefreshers
 import io.legado.app.model.analyzeRule.AnalyzeRuleFactories
-import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
 import io.legado.app.model.script.JsBindingInjector
 import io.legado.app.model.script.JsEngineType
@@ -1333,15 +1332,21 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
         override fun asBinding(): Any = cookieStore
     }
     // The fork registers its :app thin subclasses (AnalyzeRule/AnalyzeUrl).
-    // AnalyzeUrlCore is registered directly (its :app twin adds nothing the
-    // text/manga scope needs). For AnalyzeRule the :app twin's one addition
-    // DOES matter: the refreshTocUrl() override that xiaohan-template
-    // sources call from TOC pre-update JS — the shared core's hook is an
-    // empty no-op without it. LegadoAnalyzeRule mirrors that override and
-    // routes through BookInfoRefreshers, registered just below with the
-    // fork's own delegation (WebBook.getBookInfoAwait). JS dispatch falls
-    // back to reflection when no KSP table exists (the quickjs module
-    // supports both paths).
+    // For AnalyzeRule the :app twin's one addition DOES matter: the
+    // refreshTocUrl() override that xiaohan-template sources call from TOC
+    // pre-update JS — the shared core's hook is an empty no-op without it.
+    // LegadoAnalyzeRule mirrors that override and routes through
+    // BookInfoRefreshers, registered just below with the fork's own
+    // delegation (WebBook.getBookInfoAwait). JS dispatch falls back to
+    // reflection when no KSP table exists (the quickjs module supports
+    // both paths).
+    // FIX8: AnalyzeUrl now also goes through a host thin subclass
+    // (LegadoAnalyzeUrl): it percent-encodes header values OkHttp would
+    // reject (拷贝漫画 7789 / G社漫画 put the unencoded request URL in a
+    // referer header and crashed every non-ASCII search), and both thin
+    // subclasses expose the legacy aesBase64DecodeToString /
+    // aesEncodeToBase64String pair the fork dropped (漫画柜 6028 family).
+    // See FIX8-REPORT.md.
     AnalyzeRuleFactories.register { ruleData, source, preUpdateJs ->
         LegadoAnalyzeRule(ruleData, source, preUpdateJs)
     }
@@ -1349,7 +1354,7 @@ fun registerLegadoProviders(context: Context, db: AppDatabase, dataDir: File) {
     AnalyzeUrlFactories.register {
             rawUrl, baseUrl, source, ruleData, chapter, readTimeout, callTimeout,
             coroutineContext, headerMapF, hasLoginHeader, selectedOptions, variables ->
-        AnalyzeUrlCore(
+        LegadoAnalyzeUrl(
             rawUrl, baseUrl, source, ruleData, chapter, readTimeout, callTimeout,
             coroutineContext, headerMapF, hasLoginHeader, selectedOptions, variables
         )
