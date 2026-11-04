@@ -33,6 +33,19 @@
 -keep class org.jsoup.** { *; }
 -keep interface org.jsoup.** { *; }
 
+# --- ksoup library (com.fleeksoft.ksoup, engine's HTML parser) --------
+# FIX10: this family was missing here, and it is the one whose objects
+# rule scripts actually hold: BookList hands each item Element to the
+# field rules as `result`, and scripts call result.select()/attr()/text()
+# BY NAME through the QuickJS bridge. In the 1.0.9 release dex every
+# com.fleeksoft.ksoup.nodes.Element method was renamed (l0/A0/B0...),
+# so 哔哩轻小说 7753 died at ruleSearch.author's result.select with
+# "TypeError: not a function at <input>:1:13" while every JVM gate
+# (no R8) passed. Same conservative treatment as org.jsoup above.
+-keep class com.fleeksoft.** { *; }
+-keep interface com.fleeksoft.** { *; }
+-keep enum com.fleeksoft.** { *; }
+
 # --- JNI entry points anywhere ------------------------------------------
 -keepclasseswithmembernames class * {
     native <methods>;
