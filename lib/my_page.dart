@@ -9,6 +9,7 @@ import 'pages.dart' show SettingsPage, openDetail;
 import 'updates/app_updates.dart';
 import 'updates/update_page.dart';
 import 'book_source_manager_page.dart';
+import 'wenku_features.dart';
 
 class MyPage extends StatelessWidget {
   const MyPage({
@@ -42,6 +43,26 @@ class MyPage extends StatelessWidget {
               context,
             ).copyWith(bottom: MediaQuery.paddingOf(context).bottom + 120),
             children: [
+              if (WenkuFeaturesScope.maybeOf(context) case final features?) ...[
+                FeatureEntry(
+                  key: const ValueKey('my-wenku-account'),
+                  title: '文库账号',
+                  subtitle: features.account.authenticated
+                      ? '已登录 ${features.account.profile?.displayName ?? ''}'
+                      : '登录后可用云书架、出版文库与书评',
+                  icon: CupertinoIcons.person_crop_circle,
+                  onTap: () => pushNovelPage<void>(
+                    context,
+                    WenkuAccountPage(
+                      account: features.account,
+                      state: state,
+                      repository: repository,
+                    ),
+                    reduceMotion: state.reduceMotion,
+                  ),
+                ),
+                const SizedBox(height: 14),
+              ],
               FeatureEntry(
                 key: const ValueKey('my-book-sources'),
                 title: '书源管理',
