@@ -3113,7 +3113,7 @@ class InlineSearchResults extends StatelessWidget {
       context,
       slivers,
       wenkuFeed,
-      '文库8',
+      '轻小说文库',
       index,
       isWenku: true,
     );
