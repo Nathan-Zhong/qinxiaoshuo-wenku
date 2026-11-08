@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:liquid_glass_easy/liquid_glass_easy.dart' as easy;
+import 'app_haptics.dart';
 
 /// App adapters add controlled values, disabled states and accessibility to the
 /// package's own glass controls; the package still owns touch and lens motion.
@@ -17,8 +18,9 @@ class AppGlassSwitch extends StatefulWidget {
     required this.thumbColor,
     required this.style,
     required this.reduceMotion,
+    this.haptics = true,
   });
-  final bool value, reduceMotion;
+  final bool value, reduceMotion, haptics;
   final FutureOr<void> Function(bool)? onChanged;
   final Color activeColor, inactiveColor, thumbColor;
   final easy.LiquidGlassStyle style;
@@ -32,7 +34,8 @@ class _AppGlassSwitchState extends State<AppGlassSwitch> {
   bool get _value => _pending ?? widget.value;
   Future<void> _change(bool value) async {
     final action = widget.onChanged;
-    if (action == null) return;
+    if (action == null || value == _value) return;
+    if (widget.haptics) AppHaptics.play(context, HapticCue.selection);
     final request = ++_request;
     setState(() => _pending = value);
     try {
@@ -78,6 +81,7 @@ class _AppGlassSwitchState extends State<AppGlassSwitch> {
                   constraints: const BoxConstraints(minHeight: 48),
                   child: easy.LiquidGlassSwitch(
                     value: _value,
+                    enableHaptics: false,
                     horizontalDragOnly: true,
                     onChanged: _change,
                     activeColor: enabled
@@ -114,6 +118,8 @@ class AppGlassSlider extends StatefulWidget {
     this.min = 0,
     this.max = 1,
     this.divisions,
+    this.haptics = true,
+    this.compact = false,
     required this.activeColor,
     required this.inactiveColor,
     required this.thumbColor,
@@ -122,6 +128,8 @@ class AppGlassSlider extends StatefulWidget {
   });
   final double value, min, max;
   final int? divisions;
+  final bool haptics;
+  final bool compact;
   final ValueChanged<double>? onChanged, onChangeStart, onChangeEnd;
   final Color activeColor, inactiveColor, thumbColor;
   final easy.LiquidGlassStyle style;
@@ -133,6 +141,7 @@ class AppGlassSlider extends StatefulWidget {
 class _AppGlassSliderState extends State<AppGlassSlider> {
   late double _draft = widget.value;
   bool _dragging = false;
+  bool _changedInGesture = false;
   double _quantize(double value) {
     final span = widget.max - widget.min;
     final steps = widget.divisions;
@@ -147,12 +156,25 @@ class _AppGlassSliderState extends State<AppGlassSlider> {
   void _change(double value) {
     final next = _quantize(value);
     if (next == _draft) return;
+    final span = widget.max - widget.min;
+    final steps = widget.divisions ?? 20;
+    if (widget.haptics && span > 0) {
+      final previousTick = ((_draft - widget.min) / span * steps).round();
+      final nextTick = ((next - widget.min) / span * steps).round();
+      if (next == widget.min || next == widget.max) {
+        AppHaptics.play(context, HapticCue.boundary);
+      } else if (!_changedInGesture || nextTick != previousTick) {
+        AppHaptics.play(context, HapticCue.detent);
+      }
+    }
+    _changedInGesture = true;
     setState(() => _draft = next);
     widget.onChanged?.call(next);
   }
 
   void _start(double _) {
     _dragging = true;
+    _changedInGesture = false;
     widget.onChangeStart?.call(_draft);
   }
 
@@ -216,6 +238,7 @@ class _AppGlassSliderState extends State<AppGlassSlider> {
               child: LayoutBuilder(
                 builder: (context, constraints) => easy.LiquidGlassSlider(
                   value: _draft,
+                  enableHaptics: false,
                   horizontalDragOnly: true,
                   minimumValue: widget.min,
                   maximumValue: widget.max,
@@ -223,8 +246,20 @@ class _AppGlassSliderState extends State<AppGlassSlider> {
                   onChangeStart: _start,
                   onChangeEnd: _end,
                   width: constraints.maxWidth,
-                  height: 52,
+                  height: widget.compact ? 48 : 52,
                   minimumTouchHeight: 48,
+                  layout: widget.compact
+                      ? const easy.LiquidGlassSliderLayout(
+                          thumbWidth: 24,
+                          thumbHeight: 24,
+                          liftedThumbWidth: 36,
+                          liftedThumbHeight: 36,
+                          horizontalInset: 8,
+                        )
+                      : const easy.LiquidGlassSliderLayout(),
+                  motion: widget.compact
+                      ? const easy.LiquidGlassLensMotionSpec(maxDeformation: 0)
+                      : const easy.LiquidGlassLensMotionSpec(),
                   activeColor: enabled
                       ? widget.activeColor
                       : widget.activeColor.withValues(alpha: .4),
@@ -254,8 +289,10 @@ class AppGlassSegments<T extends Object> extends StatelessWidget {
     required this.pillStyle,
     required this.foregroundColor,
     this.disabledChildren = const {},
+    this.haptics = true,
   });
   final T? groupValue;
+  final bool haptics;
   final Map<T, Widget> children;
   final ValueChanged<T?> onValueChanged;
   final Set<T> disabledChildren;
@@ -309,6 +346,9 @@ class AppGlassSegments<T extends Object> extends StatelessWidget {
           },
           onChanged: (index) {
             if (!disabledChildren.contains(keys[index])) {
+              if (haptics && keys[index] != groupValue) {
+                AppHaptics.play(context, HapticCue.selection);
+              }
               onValueChanged(keys[index]);
             }
           },

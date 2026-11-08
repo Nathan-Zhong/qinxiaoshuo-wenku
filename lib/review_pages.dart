@@ -9,9 +9,9 @@ import 'app_interactions.dart';
 import 'app_ui.dart';
 import 'catalog.dart';
 import 'feature_pages.dart';
-import 'legacy_transport.dart';
 import 'library_state.dart';
 import 'local_platform.dart';
+import 'review_content.dart';
 import 'wenku_account.dart';
 import 'wenku_features.dart';
 import 'wenku_reviews.dart';
@@ -28,6 +28,7 @@ class BookCommunityActions extends StatelessWidget {
   final NovelRepository repository;
   Future<bool> _login(BuildContext context, WenkuAccount account) async {
     if (!account.authenticated) {
+      AppHaptics.play(context, HapticCue.action);
       await pushNovelPage<void>(
         context,
         WenkuAccountPage(
@@ -54,24 +55,31 @@ class BookCommunityActions extends StatelessWidget {
         await account.addCloud(novel.id);
       }
       if (context.mounted) {
-        showNovelFeedback(context, recommend ? '推荐已提交' : '已收藏到云书架');
+        showNovelFeedback(
+          context,
+          recommend ? '推荐已提交' : '已收藏到云书架',
+          haptic: HapticCue.success,
+        );
       }
     } catch (error) {
       if (context.mounted) {
-        showNovelFeedback(context, WenkuAccount.describeError(error));
+        showNovelFeedback(
+          context,
+          WenkuAccount.describeError(error),
+          haptic: HapticCue.error,
+        );
       }
     }
   }
 
   Future<void> _share(BuildContext context) async {
-    final text =
-        '${novel.title}\n${novel.author}\nhttps://www.wenku8.net/book/${novel.id}.htm';
+    final text = '${novel.title}\n${novel.author}';
     try {
       if (LocalPlatform.android) {
         await LocalPlatform.shareText(text);
       } else {
         await Clipboard.setData(ClipboardData(text: text));
-        if (context.mounted) showNovelFeedback(context, '图书链接已复制');
+        if (context.mounted) showNovelFeedback(context, '图书信息已复制');
       }
     } catch (_) {
       if (context.mounted) showNovelFeedback(context, '分享未完成，请重试');
@@ -88,6 +96,7 @@ class BookCommunityActions extends StatelessWidget {
         final actions = [
           GlassTextButton(
             key: const ValueKey('detail-cloud-save'),
+            haptic: null,
             compact: true,
             onPressed: features.account.busy
                 ? null
@@ -96,6 +105,7 @@ class BookCommunityActions extends StatelessWidget {
           ),
           GlassTextButton(
             key: const ValueKey('detail-recommend'),
+            haptic: null,
             compact: true,
             onPressed: features.account.busy
                 ? null
@@ -134,9 +144,11 @@ class BookCommunityActions extends StatelessWidget {
             ],
           ],
         );
-        return SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: row,
+        return AppScrollHaptics(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: row,
+          ),
         );
       },
     );
@@ -330,7 +342,10 @@ class _WenkuReviewsPageState extends State<WenkuReviewsPage> {
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    const Icon(CupertinoIcons.pencil, size: 15),
+                                    const ArchiveIcon(
+                                      CupertinoIcons.pencil,
+                                      size: 15,
+                                    ),
                                     const SizedBox(width: 6),
                                     AppText(
                                       widget.thread == null ? '写评论' : '回复',
@@ -442,24 +457,11 @@ class _WenkuReviewsPageState extends State<WenkuReviewsPage> {
                                 ),
                                 const SizedBox(height: 10),
                               ],
-                              if (review.content.isNotEmpty) ...[
-                                AppText(
-                                  review.content,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    height: 1.8,
-                                  ),
-                                ),
-                                const SizedBox(height: 14),
-                              ],
-                              AppText(
-                                '${review.user}  ·  ${review.date}',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
-                                ),
+                              ReviewContent(
+                                content: review.content,
+                                copyFallback: review.title,
+                                byline: '${review.user}  ·  ${review.date}',
+                                reduceMotion: widget.state.reduceMotion,
                               ),
                               if (widget.thread == null) ...[
                                 const SizedBox(height: 8),
@@ -470,7 +472,7 @@ class _WenkuReviewsPageState extends State<WenkuReviewsPage> {
                                         '${review.replies} 条回复 · 查看全文',
                                       ),
                                     ),
-                                    const Icon(
+                                    const ArchiveIcon(
                                       CupertinoIcons.chevron_right,
                                       size: 14,
                                     ),
@@ -599,11 +601,15 @@ class _ReviewComposerPageState extends State<ReviewComposerPage> {
     FocusManager.instance.primaryFocus?.unfocus();
     await _save();
     try {
-      final encodedContent = await LegacyTransport.encodeReview(content);
-      final action = widget.thread != null
-          ? 'action=review&do=reply&rid=${widget.thread!.id}&content=$encodedContent'
-          : 'action=review&do=post&aid=${widget.novel.id}&title=${await LegacyTransport.encodeReview(title)}&content=$encodedContent';
-      await widget.account.submitReview(action);
+      if (widget.thread case final thread?) {
+        await widget.account.replyReview(threadId: thread.id, content: content);
+      } else {
+        await widget.account.postReview(
+          bookId: widget.novel.id,
+          title: title,
+          content: content,
+        );
+      }
       _posted = true;
       await _writes;
       try {
@@ -684,6 +690,11 @@ class _ReviewComposerPageState extends State<ReviewComposerPage> {
                   if (widget.thread == null)
                     TextField(
                       key: const ValueKey('review-title'),
+                      onTap: () =>
+                          AppHaptics.play(context, HapticCue.selection),
+                      onTapAlwaysCalled: true,
+                      onSubmitted: (_) =>
+                          AppHaptics.play(context, HapticCue.action),
                       controller: _title,
                       enabled: !_busy,
                       maxLength: 60,
@@ -703,6 +714,8 @@ class _ReviewComposerPageState extends State<ReviewComposerPage> {
                     ),
                   TextField(
                     key: const ValueKey('review-body'),
+                    onTap: () => AppHaptics.play(context, HapticCue.selection),
+                    onTapAlwaysCalled: true,
                     controller: _body,
                     enabled: !_busy,
                     minLines: 8,

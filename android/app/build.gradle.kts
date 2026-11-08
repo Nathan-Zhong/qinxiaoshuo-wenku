@@ -12,24 +12,11 @@ val releaseKeys = Properties().apply {
     if (releaseKeyFile.isFile) releaseKeyFile.inputStream().use { load(it) }
 }
 val readerPreview = providers.gradleProperty("wenkuReaderPreview").orNull == "true"
-val catalogProbe = providers.gradleProperty("wenkuCatalogProbe").orNull == "true"
-check(!catalogProbe || readerPreview) { "Account read probes are restricted to the reader preview" }
 
 android {
     namespace = "org.mewx.wenku8_flutter"
-    // Legado engine AARs (libs/) were built against compileSdk 37 and AGP's
-    // checkDebugAarMetadata refuses them under 36, so the host compiles
-    // against 37. targetSdk/minSdk stay on the Flutter defaults below —
-    // compileSdk alone changes no runtime behavior.
-    compileSdk = 37
+    compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
-    // The separately authorized API runtime must remain byte-for-byte intact.
-    // AGP otherwise strips its symbols even when jniLibs contains original files.
-    packaging.jniLibs.keepDebugSymbols.add("**/libcpp.so")
-    // hutool-crypto and its transitive hutool-core both ship
-    // META-INF/INDEX.LIST; the file is a desktop JarJar index, unused on
-    // Android. Exclude it so mergeDebugJavaResource can proceed.
-    packaging.resources.excludes.add("META-INF/INDEX.LIST")
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
@@ -42,19 +29,17 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.cassidy.xiaoshuowenku"
+        // Public source previews must not replace an installed distribution.
+        applicationId = "org.mewx.wenku8_flutter.source_preview"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["wenkuAppLabel"] = "小说文库"
-        testInstrumentationRunner = "org.mewx.wenku8_flutter.SessionFixtureInstrumentation"
-        if (catalogProbe) testInstrumentationRunner = "org.mewx.wenku8_flutter.CatalogReadInstrumentation"
+        manifestPlaceholders["wenkuAppLabel"] = "轻小说文库 · 源码预览"
         // AGP otherwise builds upstream desktop utilities too, including the
         // DRM tool whose encryption code is intentionally disabled in this app.
         externalNativeBuild.cmake.targets.addAll(listOf("mobi", "wenku_mobi"))
     }
-    if (catalogProbe) testBuildType = "release"
 
     externalNativeBuild {
         cmake {
@@ -72,30 +57,10 @@ android {
     }
 
     buildTypes {
-        getByName("debug") {
-            // The integration runner uninstalls its package on completion.
-            // Keep rendering probes separate from the user's release data.
-            applicationIdSuffix = ".render_probe"
-        }
-        getByName("profile") {
-            applicationIdSuffix = ".profile_probe"
-        }
         release {
-            // FINAL package slimming: R8 code shrinking + resource shrinking.
-            // Keep rules live in legado-keep.pro — the Legado engine surface
-            // (Gson models, QuickJS-by-name JS bindings, vendored jsoup) is
-            // kept whole on purpose; see that file's header.
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                file("document-import.pro"),
-                file("legado-keep.pro")
-            )
-            if (catalogProbe) proguardFile(file("catalog-probe.pro"))
+            proguardFile(file("document-import.pro"))
             if (readerPreview) {
                 applicationIdSuffix = ".reader_preview"
-                manifestPlaceholders["wenkuAppLabel"] = "文库 · 阅读预览"
             }
             // Local previews remain install-compatible. Public distributions
             // use an owner's untracked key.properties, never an embedded key.
@@ -105,9 +70,7 @@ android {
         }
     }
 
-    // Match the embedded API library to the Flutter code actually compiled for
-    // this APK. Otherwise a one-ABI build advertises extra, unusable ABIs solely
-    // because libcpp.so exists for them. Let Flutter own split-APK filtering.
+    // Match native document import libraries to the selected Flutter targets.
     val targets = project.findProperty("target-platform")?.toString()
     if (targets != null && project.findProperty("split-per-abi")?.toString()?.toBoolean() != true) {
         val targetAbis = targets.split(",").map { platform ->
@@ -130,46 +93,12 @@ flutter {
 }
 
 dependencies {
+    implementation("org.apache.poi:poi-scratchpad:5.5.1")
+    implementation("com.github.albfernandez:juniversalchardet:2.0.4")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
-    // Legado engine (spike2): vendored AARs built in the legado-engine-src
-    // repo with the fork's own toolchain (Gradle 9.6 / Kotlin 2.3.20) and
-    // committed under libs/. Local AARs carry no POM, so the engine's
-    // external dependencies are declared manually below, with versions
-    // aligned to legado's gradle/libs.versions.toml.
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
-    implementation("com.squareup.okhttp3:okhttp:5.4.0")
-    implementation("com.squareup.okio:okio:3.18.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.11.0")
-    implementation("org.jetbrains.kotlinx:atomicfu:0.33.0")
-    implementation("androidx.room3:room3-runtime:3.0.1")
-    implementation("androidx.sqlite:sqlite-framework:2.7.0")
-    implementation("com.fleeksoft.ksoup:ksoup:0.2.6")
-    implementation("org.jetbrains.compose.runtime:runtime:1.11.1")
-    implementation("com.google.code.gson:gson:2.11.0")
-    implementation("cn.hutool:hutool-crypto:5.8.22")
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
-    implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
-    implementation("androidx.collection:collection:1.6.0")
-    implementation("androidx.core:core-ktx:1.18.0")
-    // P5.4 (G5): the Cloudflare solver's WebView UA setter syncs the
-    // Sec-CH-UA client hints via WebSettingsCompat — the fork's :app
-    // declares the same artifact (its catalog pins webkit 1.16.0).
-    implementation("androidx.webkit:webkit:1.16.0")
-    implementation("androidx.documentfile:documentfile:1.1.0")
-    implementation("com.caverock:androidsvg-aar:1.4")
-    implementation("io.coil-kt.coil3:coil-network-okhttp:3.4.0")
-    implementation("com.github.null2264.injekt:injekt-core:4135455a2a")
-    implementation("com.github.liuyueyi.quick-chinese-transfer:quick-transfer-core:0.2.16")
-    // NOTE: no org.jsoup:jsoup Maven dependency on purpose. The engine's
-    // data.aar carries its own vendored org.jsoup.* classes (Kotlin port);
-    // a second copy would collide in dexing (ENGINE-spike2 §3.5-3). The
-    // host's single jsoup consumer (BookMarkupImport.kt) compiles against
-    // the vendored copy instead.
+    implementation("org.jsoup:jsoup:1.23.2")
     implementation("org.commonmark:commonmark:0.30.1")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // Keep the media host classes available to the app's shared-engine wiring.
     implementation("androidx.media:media:1.7.0")
-    testImplementation("junit:junit:4.13.2")
 }

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'book_search.dart';
+import 'book_navigation.dart';
+export 'book_navigation.dart';
 
 /// A source-neutral book model shared by the Android legacy API and local tests.
 class Novel {
@@ -15,6 +17,7 @@ class Novel {
     this.coverUrl,
     this.lastUpdate,
     this.chapterCount = 0,
+    this.navigation,
   });
 
   final int id;
@@ -28,6 +31,106 @@ class Novel {
   final String? coverUrl;
   final String? lastUpdate;
   final int chapterCount;
+  final BookNavigation? navigation;
+
+  /// Public directory rows can target any preserved reading section. A resource
+  /// missing from the authored TOC remains reachable by normal page turns.
+  static final _directoryCache = Expando<List<NovelDirectoryEntry>>();
+  List<NovelDirectoryEntry> get directory =>
+      _directoryCache[this] ??= _directory();
+  List<NovelDirectoryEntry> _directory() {
+    final indices = {
+      for (final (i, chapter) in chapters.indexed) chapter.id: i,
+    };
+    final authored = [
+      for (final entry in navigation?.entries ?? const <BookNavigationEntry>[])
+        if (indices.containsKey(entry.target.chapterId))
+          NovelDirectoryEntry(
+            entry.title,
+            indices[entry.target.chapterId]!,
+            entry.target,
+            depth: entry.depth,
+          ),
+    ];
+    return authored.isNotEmpty
+        ? authored
+        : [
+            for (final (i, c) in chapters.indexed)
+              NovelDirectoryEntry(c.title, i, BookReadingTarget(c.id)),
+          ];
+  }
+
+  List<NovelChapter> get directoryChapters {
+    final result = <NovelChapter>[];
+    final authored = navigation?.entries.isNotEmpty == true;
+    var volumeId = 0;
+    var volumeTitle = '';
+    for (final entry in directory) {
+      final chapter = chapters[entry.chapter];
+      // Some EPUBs put their ending chapters at the TOC root, after a named
+      // group. Keep those contiguous rows in the preceding folding group.
+      // This display projection also repairs already-imported books without
+      // rewriting their authored hierarchy, chapter IDs or saved positions.
+      if (!authored || chapter.volumeTitle.isNotEmpty || volumeTitle.isEmpty) {
+        volumeId = chapter.volumeId;
+        volumeTitle = chapter.volumeTitle;
+      }
+      result.add(
+        NovelChapter(
+          entry.title,
+          '',
+          id: entry.target.chapterId,
+          volumeId: volumeId,
+          volumeTitle: volumeTitle,
+        ),
+      );
+    }
+    return result;
+  }
+
+  int directoryIndexFor(int chapter, {int paragraph = 0, int offset = 0}) {
+    var best = 0;
+    final rows = directory;
+    var bestPosition = -1;
+    for (var i = 0; i < rows.length; i++) {
+      final e = rows[i];
+      if (e.chapter < chapter ||
+          e.chapter == chapter &&
+              (e.target.paragraph < paragraph ||
+                  e.target.paragraph == paragraph &&
+                      e.target.offset <= offset)) {
+        if (e.chapter >= bestPosition) {
+          best = i;
+          bestPosition = e.chapter;
+        }
+      }
+    }
+    return best;
+  }
+
+  /// A page title belongs to its reading resource and source position. The
+  /// directory's nearest-row selection may point into a different resource;
+  /// that is useful for navigation, but must not name this page after it.
+  String readingTitleFor(int chapter, {int paragraph = 0, int offset = 0}) {
+    if (chapters.isEmpty) return '目录为空';
+    NovelDirectoryEntry? best;
+    for (final entry in directory) {
+      if (entry.chapter != chapter) continue;
+      final target = entry.target;
+      if (target.paragraph > paragraph ||
+          target.paragraph == paragraph && target.offset > offset) {
+        continue;
+      }
+      final before = best?.target;
+      if (before == null ||
+          target.paragraph > before.paragraph ||
+          target.paragraph == before.paragraph &&
+              target.offset >= before.offset) {
+        best = entry;
+      }
+    }
+    return best?.title ?? chapters[chapter].title;
+  }
 
   List<String> get tags => List.unmodifiable(
     genre
@@ -51,6 +154,7 @@ class Novel {
     coverUrl: coverUrl,
     lastUpdate: lastUpdate,
     chapterCount: chapterCount,
+    navigation: navigation,
   );
 
   Novel withChapters(List<NovelChapter> items) => Novel(
@@ -65,6 +169,7 @@ class Novel {
     coverUrl: coverUrl,
     lastUpdate: lastUpdate,
     chapterCount: items.length,
+    navigation: navigation,
   );
 
   Map<String, Object?> toSnapshot() => {
@@ -78,6 +183,7 @@ class Novel {
     'coverUrl': coverUrl,
     'lastUpdate': lastUpdate,
     'chapterCount': chapters.isNotEmpty ? chapters.length : chapterCount,
+    if (navigation != null) 'navigation': navigation!.toJson(),
   };
 
   factory Novel.fromSnapshot(Map<String, dynamic> value) {
@@ -103,8 +209,23 @@ class Novel {
       chapterCount: value['chapterCount'] is int
           ? (value['chapterCount'] as int).clamp(0, 100000)
           : 0,
+      navigation: value['navigation'] == null
+          ? null
+          : BookNavigation.fromJson(value['navigation']),
     );
   }
+}
+
+class NovelDirectoryEntry {
+  const NovelDirectoryEntry(
+    this.title,
+    this.chapter,
+    this.target, {
+    this.depth = 0,
+  });
+  final String title;
+  final int chapter, depth;
+  final BookReadingTarget target;
 }
 
 class NovelChapter {
@@ -253,11 +374,17 @@ class NovelPage {
     required this.page,
     this.totalPages,
     this.totalItems,
+    this.searchFailures = const {},
   });
   final List<Novel> items;
   final int page;
   final int? totalPages;
   final int? totalItems;
+
+  /// Successful fields remain usable when an independent search field fails.
+  /// Callers may complete these fields through another source; presentation
+  /// exposes the missing scope, never the underlying response or exception.
+  final Map<BookSearchField, Object> searchFailures;
   bool get hasMore =>
       totalPages == null ? items.isNotEmpty : page < totalPages!;
 

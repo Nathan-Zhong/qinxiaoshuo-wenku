@@ -170,7 +170,9 @@ class _LocalImportReviewState extends State<LocalImportReview> {
                                   ),
                                   const SizedBox(width: 12),
                                   if (_done.contains(group.seed))
-                                    const Icon(CupertinoIcons.checkmark_circle)
+                                    const ArchiveIcon(
+                                      CupertinoIcons.checkmark_circle,
+                                    )
                                   else
                                     Semantics(
                                       label: '合并 ${group.title}',
@@ -237,6 +239,44 @@ class _LocalImportReviewState extends State<LocalImportReview> {
                         ),
                       ),
                   ],
+                  if (widget.report.notices.isNotEmpty) ...[
+                    const SizedBox(height: 28),
+                    const ArchiveSection(
+                      title: '已导入 · 需要了解',
+                      code: 'IMPORT / NOTICE',
+                    ),
+                    for (final (index, notice) in widget.report.notices.indexed)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: ContentPanel(
+                          key: ValueKey('import-notice-$index'),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              AppText(
+                                notice.name,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  height: 1.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              AppText(
+                                notice.message,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  height: 1.6,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
                   if (widget.report.failures.isNotEmpty) ...[
                     const SizedBox(height: 28),
                     const ArchiveSection(
@@ -255,7 +295,10 @@ class _LocalImportReviewState extends State<LocalImportReview> {
                               Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Icon(CupertinoIcons.doc_text, size: 20),
+                                  const ArchiveIcon(
+                                    CupertinoIcons.doc_text,
+                                    size: 20,
+                                  ),
                                   const SizedBox(width: 12),
                                   Expanded(
                                     child: AppText(

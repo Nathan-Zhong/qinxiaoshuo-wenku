@@ -8,7 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../legacy_transport.dart';
-import 'app_changelog.dart';
+
+export 'current_release_content.dart'
+    show currentReleaseNotes, publicReleaseNotes;
 
 const officialUpdateRepository = 'mikufoxxx/Wenku8_Flutter';
 const updateMirrorOrigin = 'https://git.3952039.xyz';
@@ -16,18 +18,8 @@ const updateRepository = String.fromEnvironment(
   'UPDATE_REPOSITORY',
   defaultValue: officialUpdateRepository,
 );
-// 小说文库's own versioning (fix2, 2026-11-03): kept in step with
-// pubspec.yaml and app_changelog.dart. The original build's 0.4.1/88
-// fallback values were retired together with its release notes.
-const currentAppVersion = '1.0.10';
-const currentAppBuild = 10010;
-
-/// Plain-text form of the current version's changelog entry
-/// (derived from app_changelog.dart, our own update log).
-final currentReleaseNotes =
-    '${appChangelog.first.version} 更新\n'
-    '${appChangelog.first.items.join('\n')}\n'
-    '完整说明见「我的 → 关于 → 本版更新」。';
+const currentAppVersion = '0.5.6';
+const currentAppBuild = 2277;
 
 class ReleaseVersion implements Comparable<ReleaseVersion> {
   const ReleaseVersion(this.major, this.minor, this.patch, [this.build = 0]);
@@ -125,7 +117,7 @@ class AppRelease {
       final size = raw['size'];
       if (name is! String ||
           !name.startsWith('wenku8-${version.name}-') ||
-          !name.endsWith('.apk') ||
+          !const ['.apk', '.ipa', '.hap'].any(name.endsWith) ||
           url == null ||
           url.scheme != 'https' ||
           url.host != 'github.com' ||
@@ -292,9 +284,11 @@ class GithubUpdateSource implements UpdateSource {
   GithubUpdateSource({
     this.repository = updateRepository,
     this.gateway,
+    this.assetExtension,
     HttpClient Function()? clientFactory,
   }) : _clientFactory = clientFactory ?? HttpClient.new;
   final String repository;
+  final String? assetExtension;
 
   /// Canonical release identity stays on GitHub; only transport is mirrored.
   final Uri? gateway;
@@ -355,9 +349,18 @@ class GithubUpdateSource implements UpdateSource {
             gateway == null
                 ? Uri.https(
                     'api.github.com',
-                    '/repos/$repository/releases/$suffix',
+                    assetExtension != null && suffix == 'latest'
+                        ? '/repos/$repository/releases'
+                        : '/repos/$repository/releases/$suffix',
+                    assetExtension != null && suffix == 'latest'
+                        ? {'per_page': '100'}
+                        : null,
                   )
-                : _gateway().resolve('/api/releases/latest'),
+                : _gateway().resolve(
+                    assetExtension == null
+                        ? '/api/releases/latest'
+                        : '/api/releases/${assetExtension == '.ipa' ? 'ios' : 'harmony'}',
+                  ),
           )
           .timeout(Duration(seconds: gateway == null ? 12 : 4));
       if (gateway != null) request.followRedirects = false;
@@ -380,11 +383,29 @@ class GithubUpdateSource implements UpdateSource {
         Duration(seconds: gateway == null ? 20 : 6),
       )) {
         data.addAll(chunk);
-        if (data.length > 1024 * 1024) throw const FormatException('版本说明过大');
+        if (data.length > (assetExtension == null ? 1 : 4) * 1024 * 1024) {
+          throw const FormatException('版本说明过大');
+        }
       }
       Map<String, dynamic> metadata;
       try {
         final value = jsonDecode(utf8.decode(data));
+        if (assetExtension != null && gateway == null && suffix == 'latest') {
+          if (value is! List) throw const FormatException('版本列表格式错误');
+          final candidates =
+              value
+                  .whereType<Map<String, dynamic>>()
+                  .map((item) => AppRelease.fromGithub(item, repository))
+                  .whereType<AppRelease>()
+                  .where(
+                    (item) => item.assets.any(
+                      (asset) => asset.name.endsWith(assetExtension!),
+                    ),
+                  )
+                  .toList()
+                ..sort((a, b) => b.version.compareTo(a.version));
+          return candidates.isEmpty ? null : candidates.first;
+        }
         if (value is! Map<String, dynamic>) {
           throw const FormatException('版本说明格式错误');
         }
@@ -571,6 +592,8 @@ class _ReadyUpdate {
 class AppUpdates extends ChangeNotifier {
   AppUpdates({
     required this.preferences,
+    this.packageUpdates = true,
+    this.notificationAssetExtension,
     UpdateSource? source,
     UpdatePlatform? platform,
     Future<Directory> Function()? directory,
@@ -586,10 +609,19 @@ class AppUpdates extends ChangeNotifier {
                ? LegacyTransport.setUpdatePriority
                : (_) async {});
   final SharedPreferences preferences;
+  final bool packageUpdates;
+
+  /// Non-Android releases announce a matching artifact but never download/install it.
+  final String? notificationAssetExtension;
+  bool get checksEnabled =>
+      packageUpdates || notificationAssetExtension != null;
   final UpdateSource? _source;
-  late final _githubSource = GithubUpdateSource();
+  late final _githubSource = GithubUpdateSource(
+    assetExtension: notificationAssetExtension,
+  );
   late final _mirrorSource = GithubUpdateSource(
     gateway: Uri.parse(updateMirrorOrigin),
+    assetExtension: notificationAssetExtension,
   );
   late final _mirrorFirstSource = MirrorFirstUpdateSource(
     mirror: _mirrorSource,
@@ -610,16 +642,14 @@ class AppUpdates extends ChangeNotifier {
     var page = showRelease ? releasePage : projectPage;
     if (_usesMirror) {
       final client = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 4);
+        ..connectionTimeout = const Duration(seconds: 2);
       try {
-        final request = await client
-            .headUrl(Uri.parse(updateMirrorOrigin))
-            .timeout(const Duration(seconds: 4));
-        request.followRedirects = false;
-        final response = await request.close().timeout(
-          const Duration(seconds: 5),
-        );
-        if (response.statusCode != 200) throw const HttpException('项目入口暂不可用');
+        await (() async {
+          final request = await client.headUrl(Uri.parse(updateMirrorOrigin));
+          request.followRedirects = false;
+          final response = await request.close();
+          if (response.statusCode != 200) throw const HttpException('项目入口暂不可用');
+        })().timeout(const Duration(seconds: 2));
       } catch (_) {
         page = showRelease
             ? release?.page ??
@@ -652,12 +682,7 @@ class AppUpdates extends ChangeNotifier {
   UpdateDownload? _download;
   Future<InstalledApp>? _loadingInfo;
   bool get busy => checking || downloading || installing;
-  // Update checking is permanently off in this self-use build
-  // (fix2, 2026-11-03, on Cassidy's order): the checker pointed at
-  // the original Wenku8 repository and could prompt an "update" to
-  // the original app. Hard-false rather than preference-driven so a
-  // restored backup carrying the old default cannot revive it.
-  bool get autoCheck => false;
+  bool get autoCheck => preferences.getBool('checkAppUpdates') ?? true;
   String? get installedReleaseKey =>
       installed == null ? null : '${installed!.version}+${installed!.build}';
   bool get shouldShowReleaseNotes =>
@@ -675,9 +700,17 @@ class AppUpdates extends ChangeNotifier {
   }
 
   bool get available =>
-      release != null && installed != null && release!.isNewerThan(installed!);
-  UpdateAsset? get asset =>
-      installed == null ? null : release?.assetFor(installed!.abis);
+      checksEnabled &&
+      release != null &&
+      installed != null &&
+      (packageUpdates ||
+          release!.assets.any(
+            (asset) => asset.name.endsWith(notificationAssetExtension!),
+          )) &&
+      release!.isNewerThan(installed!);
+  UpdateAsset? get asset => !packageUpdates || installed == null
+      ? null
+      : release?.assetFor(installed!.abis);
 
   /// Snooze only this release, including across process restarts. A different
   /// release can still be announced immediately; manual updating stays usable.
@@ -733,15 +766,11 @@ class AppUpdates extends ChangeNotifier {
   }
 
   Future<void> check({bool automatic = false}) async {
-    // Disabled in this self-use build (fix2, 2026-11-03): no network
-    // update check ever runs — new versions are delivered as direct
-    // APK links instead. autoCheck is hard-false (see its getter), so
-    // every check, automatic or manual, returns at this guard. The
-    // service still loads the installed version and tracks
-    // release-notes state for the About page; the original
-    // source/download/install machinery below is inert and kept only
-    // to bound this change's regression surface.
-    if (_disposed || busy || !autoCheck) return;
+    if (_disposed || busy) return;
+    if (!checksEnabled) {
+      await loadInstalled();
+      return;
+    }
     final now = _clock();
     if (automatic && !autoCheck) return;
     checking = true;
@@ -763,7 +792,7 @@ class AppUpdates extends ChangeNotifier {
         'lastAppUpdateCheck',
         now.millisecondsSinceEpoch,
       );
-    } catch (_) {
+    } catch (failure) {
       if (!_disposed) {
         error = '无法检查更新，请检查网络后重试';
       }

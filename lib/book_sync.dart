@@ -1,10 +1,13 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'book_documents.dart';
+import 'cloud_sources.dart';
+import 's3_book_documents.dart';
 import 'book_import_limits.dart';
 import 'catalog.dart' show Novel;
 import 'library_backup.dart';
@@ -13,6 +16,8 @@ import 'local_books.dart';
 import 'local_book_series.dart';
 import 'local_series_actions.dart';
 import 'local_library_preferences.dart';
+import 'local_import_options.dart';
+import 'local_coordinate_upgrade.dart';
 
 class BookSyncBundle {
   const BookSyncBundle(
@@ -21,15 +26,40 @@ class BookSyncBundle {
     this.organization,
     this.bookMetadata,
     this.series,
+    this.importOptions = const {},
   });
   final String backup;
   final List<LocalBookInput> books;
   final Map<String, dynamic>? organization;
   final Map<String, dynamic>? bookMetadata;
   final Map<String, dynamic>? series;
+  final Map<int, LocalImportOptions> importOptions;
+}
+
+Map<int, LocalImportOptions> _importOptions(Object? raw) {
+  if (raw is! Map || raw.length > 10000) {
+    throw const FormatException('同步目录设置格式有误');
+  }
+  final result = <int, LocalImportOptions>{};
+  for (final entry in raw.entries) {
+    final id = entry.key is String ? int.tryParse(entry.key) : null;
+    if (id == null ||
+        id < localBookIdStart ||
+        id > 0x7fffffff ||
+        entry.key != '$id') {
+      throw const FormatException('同步目录设置的书籍标识有误');
+    }
+    result[id] = LocalImportOptions.fromJson(entry.value).effective;
+  }
+  return Map.unmodifiable(result);
 }
 
 Uint8List encodeBookSync(BookSyncBundle bundle) {
+  final settings = _importOptions({
+    for (final entry in bundle.importOptions.entries)
+      if (!entry.value.isDefault)
+        '${entry.key}': entry.value.effective.toJson(),
+  });
   final zip = Archive();
   final books = <Map<String, Object>>[];
   for (final (i, book) in bundle.books.indexed) {
@@ -48,7 +78,14 @@ Uint8List encodeBookSync(BookSyncBundle bundle) {
   final metadata = utf8.encode(
     jsonEncode({
       'format': 'wenku8-book-sync',
-      'version': 1,
+      // Only new per-original parsing settings require version 2. Ordinary
+      // sync manifests keep their existing version-1 structure.
+      'version': settings.isEmpty ? 1 : 2,
+      if (settings.isNotEmpty)
+        'importOptions': {
+          for (final entry in settings.entries)
+            '${entry.key}': entry.value.toJson(),
+        },
       'books': books,
       if (bundle.organization != null)
         'organization': LocalLibraryPreferences.validateOrganization(
@@ -100,7 +137,7 @@ BookSyncBundle decodeBookSync(Uint8List bytes) {
   final manifest = jsonDecode(text('manifest.json', LibraryBackup.maxBytes));
   if (manifest is! Map ||
       manifest['format'] != 'wenku8-book-sync' ||
-      manifest['version'] != 1 ||
+      ![1, 2].contains(manifest['version']) ||
       manifest['books'] is! List ||
       manifest['books'].length > 200) {
     throw const FormatException('请选择文库生成的 .wenku8sync 同步文件');
@@ -132,6 +169,9 @@ BookSyncBundle decodeBookSync(Uint8List bytes) {
   return BookSyncBundle(
     text('library.json', LibraryBackup.maxBytes),
     books,
+    importOptions: manifest['version'] == 2
+        ? _importOptions(manifest['importOptions'])
+        : const {},
     organization: manifest['organization'] == null
         ? null
         : LocalLibraryPreferences.validateOrganization(
@@ -157,19 +197,29 @@ class BookSync extends ChangeNotifier {
     required this.preferences,
     BookDocuments? documents,
     LocalLibraryPreferences? organization,
+    this.cloudSources,
+    this.s3ClientFactory,
   }) : documents = documents ?? BookDocuments(),
-       organization = organization ?? state.organization;
+       organization = organization ?? state.organization {
+    cloudSources?.addListener(_notify);
+  }
   final LocalBookStore books;
   final LibraryState state;
   final SharedPreferences preferences;
   final BookDocuments documents;
   final LocalLibraryPreferences organization;
+  final CloudSourceSettings? cloudSources;
+  final S3SyncObjectClient Function(S3SyncConnection)? s3ClientFactory;
+  bool get usingS3 => preferredProvider == 'S3';
+  S3SyncConnection? get s3Connection => cloudSources?.s3Sync;
+  bool get connected => usingS3 ? s3Connection != null : connection != null;
   bool get syncOriginals => preferences.getBool('bookSyncOriginals') ?? true;
   bool get syncReading => preferences.getBool('bookSyncReading') ?? true;
   bool get syncCategories => preferences.getBool('bookSyncCategories') ?? true;
   String get preferredProvider =>
       preferences.getString('bookSyncProvider') ?? 'OneDrive';
   String get providerLabel {
+    if (usingS3) return 'S3';
     final authority = '${connection?['authority'] ?? ''}'.toLowerCase();
     if (authority.contains('microsoft') ||
         authority.contains('skydrive') ||
@@ -201,6 +251,10 @@ class BookSync extends ChangeNotifier {
         !await preferences.setString('bookSyncProvider', provider)) {
       throw const FormatException('同步设置保存失败');
     }
+    if (provider != null) {
+      error = null;
+      status = null;
+    }
     _notify();
   }
 
@@ -211,7 +265,34 @@ class BookSync extends ChangeNotifier {
   bool busy = false;
   String? error, status;
   bool _disposed = false;
-  int? get lastSync => preferences.getInt('bookSyncAt');
+  int? get lastSync => usingS3
+      ? preferences.getString('bookSyncS3Target') == _s3Identity
+            ? preferences.getInt('bookSyncS3At')
+            : null
+      : preferences.getInt('bookSyncAt');
+  String? get _s3Identity {
+    final value = s3Connection;
+    return value == null
+        ? null
+        : jsonEncode([
+            value.config.address,
+            value.config.bucket,
+            value.config.pathStyle,
+            value.objectKey,
+          ]);
+  }
+
+  BookDocuments _adapter() {
+    if (!usingS3) return documents;
+    final value = s3Connection;
+    if (value == null) throw const FormatException('请先保存 S3 同步连接');
+    return S3BookDocuments(
+      connection: value,
+      directory: Directory('${books.directory.path}/sync-s3'),
+      client: s3ClientFactory?.call(value),
+    );
+  }
+
   void _notify() {
     if (!_disposed) notifyListeners();
   }
@@ -220,7 +301,7 @@ class BookSync extends ChangeNotifier {
     if (_disposed || busy) return false;
     if (_activeOperation != null) {
       error = null;
-      status = '正在完成上一次云文档操作，请稍后重试';
+      status = '正在完成上一次云端同步，请稍后重试';
       _notify();
       return false;
     }
@@ -241,12 +322,13 @@ class BookSync extends ChangeNotifier {
     try {
       connection = await documents.info();
     } catch (failure) {
-      error = _describe(failure);
+      if (!usingS3) error = _describe(failure);
     }
     _notify();
   }
 
   Future<void> connect({required bool create}) async {
+    if (usingS3) return;
     if (!_begin()) return;
     _notify();
     try {
@@ -266,8 +348,12 @@ class BookSync extends ChangeNotifier {
     if (!_begin()) return;
     _notify();
     try {
-      await documents.disconnect();
-      connection = null;
+      if (usingS3) {
+        await cloudSources?.saveS3Sync(null);
+      } else {
+        await documents.disconnect();
+        connection = null;
+      }
       status = null;
       error = null;
     } catch (failure) {
@@ -283,7 +369,46 @@ class BookSync extends ChangeNotifier {
     // until all referenced local books have been imported successfully.
     for (final input
         in syncOriginals ? bundle.books : const <LocalBookInput>[]) {
-      await books.import(input);
+      await books.import(
+        input,
+        optionsById: bundle.importOptions,
+        requireMatchingOptions: true,
+      );
+    }
+    if (syncReading) {
+      final referenced = <int>{
+        for (final key in backup.records.keys)
+          if (key.startsWith('reading_position_') ||
+              key.startsWith('reader_bookmarks_') ||
+              key.startsWith('chapter_'))
+            int.parse(key.substring(key.lastIndexOf('_') + 1)),
+      };
+      for (final series
+          in bundle.series == null
+              ? const <LocalBookSeries>[]
+              : decodeLocalSeries(bundle.series)) {
+        if (referenced.contains(series.id)) {
+          referenced.addAll(series.volumes.map((volume) => volume.bookId));
+        }
+      }
+      final originals = books.originals.map((book) => book.id).toSet();
+      for (final id in referenced) {
+        final expected = bundle.importOptions[id] ?? const LocalImportOptions();
+        if (!originals.contains(id)) {
+          if (expected.customToc) {
+            throw const FormatException('有自定义目录的原书尚未导入，请先开启原书同步，再恢复对应的阅读记录');
+          }
+        } else if (books.importOptionsFor(id).directoryIdentity !=
+            expected.directoryIdentity) {
+          throw const FormatException('两端使用的目录规则不同，阅读记录未覆盖；请先统一该书的目录规则');
+        }
+      }
+      await books.rememberEpubLayouts({
+        for (final id in referenced)
+          if (!originals.contains(id))
+            id: (bundle.importOptions[id] ?? const LocalImportOptions())
+                .inlineEpubImages,
+      });
     }
     if (syncOriginals && bundle.bookMetadata != null) {
       await books.mergeMetadata(bundle.bookMetadata);
@@ -316,11 +441,16 @@ class BookSync extends ChangeNotifier {
   }
 
   Future<void> sync() async {
-    if (connection == null || !_begin()) return;
+    if (!connected || !_begin()) return;
     status = '正在读取云端';
     _notify();
+    BookDocuments? adapter;
     try {
-      final files = await documents.read();
+      adapter = _adapter();
+      final selectedConnection = adapter is S3BookDocuments
+          ? await adapter.info()
+          : connection!;
+      final files = await adapter.read();
       final size = await files.before.length();
       BookSyncBundle? remote;
       if (size > 0) {
@@ -330,13 +460,14 @@ class BookSync extends ChangeNotifier {
         );
         remote = incoming;
         await _merge(incoming);
-      } else if (connection!['created'] != true) {
+      } else if (selectedConnection['created'] != true) {
         throw const FormatException('所选文件为空，请新建文库同步文件');
       }
       status = '正在合并书籍与阅读记录';
       _notify();
+      if (syncReading) await normalizeLocalReadingRecords(books, state);
       final backup = syncReading
-          ? await state.createBackup()
+          ? await state.createBackup(includeReadingActivity: false)
           : remote != null
           ? await LibraryBackup.parse(remote.backup)
           : await LibraryBackup.fromRecords(const {});
@@ -344,6 +475,9 @@ class BookSync extends ChangeNotifier {
       var total = 0;
       if (!syncOriginals) originals.addAll(remote?.books ?? const []);
       for (final book in syncOriginals ? books.originals : const <Novel>[]) {
+        if (books.isIncompleteBook(book.id)) {
+          throw const FormatException('有书籍只导入了可读部分，不能作为完整原书同步；请先获取完整原件');
+        }
         final input = await books.original(book.id);
         total += input.bytes.length + (input.text?.length ?? 0) * 3;
         if (originals.length >= 200 || total > 512 * 1024 * 1024) {
@@ -363,22 +497,35 @@ class BookSync extends ChangeNotifier {
               ? books.exportMetadata()
               : remote?.bookMetadata,
           series: syncOriginals ? books.exportSeries() : remote?.series,
+          importOptions: syncOriginals || syncReading
+              ? {
+                  ...?remote?.importOptions,
+                  ...books.retainedImportOptions,
+                  for (final book in books.originals)
+                    book.id: books.importOptionsFor(book.id),
+                }
+              : remote?.importOptions ?? const {},
         ),
       );
       await files.output.writeAsBytes(bytes, flush: true);
       status = '正在写入并确认云端';
       _notify();
-      await documents.write(files.before, files.output);
+      await adapter.write(files.before, files.output);
       await preferences.setInt(
-        'bookSyncAt',
+        adapter is S3BookDocuments ? 'bookSyncS3At' : 'bookSyncAt',
         DateTime.now().millisecondsSinceEpoch,
       );
-      connection = {...connection!, 'created': false};
+      if (adapter is S3BookDocuments) {
+        await preferences.setString('bookSyncS3Target', adapter.identity);
+      } else {
+        connection = {...connection!, 'created': false};
+      }
       status = '同步完成 · ${books.books.length} 本本地书籍';
     } catch (failure) {
       error = _describe(failure);
       status = null;
     } finally {
+      if (adapter is S3BookDocuments) adapter.close();
       _end();
     }
   }
@@ -387,22 +534,27 @@ class BookSync extends ChangeNotifier {
     if (!_begin()) return;
     status = '正在恢复同步副本';
     _notify();
+    BookDocuments? adapter;
     try {
-      final file = await documents.recovery(which);
+      adapter = _adapter();
+      final file = await adapter.recovery(which);
       if (file == null || await file.length() == 0) {
         throw const FormatException('暂无可恢复的同步副本');
       }
       await _merge(await compute(decodeBookSync, await file.readAsBytes()));
-      status = '已合并恢复副本到本机，可新建同步文件后重新上传';
+      status = '已合并恢复副本到本机，再次同步会先读取云端最新内容';
     } catch (failure) {
       error = _describe(failure);
       status = null;
     } finally {
+      if (adapter is S3BookDocuments) adapter.close();
       _end();
     }
   }
 
   static String _describe(Object error) => error is FormatException
+      ? error.message
+      : error is CloudSourceFailure
       ? error.message
       : error is PlatformException
       ? error.message ?? '云文档操作失败，请重新选择文件'
@@ -410,6 +562,7 @@ class BookSync extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    cloudSources?.removeListener(_notify);
     super.dispose();
   }
 }

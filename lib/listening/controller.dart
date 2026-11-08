@@ -4,12 +4,16 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../catalog.dart';
+import '../book_identity.dart' show isLocalBook;
 import '../offline_repository.dart';
 import '../reader_content.dart';
+import '../reader_languages.dart';
 import 'cache.dart';
+import 'languages.dart';
 import 'models.dart';
 import 'store.dart';
 import 'custom_tts.dart';
+import 'enhancement.dart';
 
 abstract interface class ListeningAudioOutput {
   Stream<Duration> get positions;
@@ -58,7 +62,14 @@ class ListeningSnapshot {
     this.segments = const [],
     this.phase = ListeningPhase.stopped,
     this.voice = defaultEdgeVoice,
+    this.currentVoice,
+    this.voiceOverrides = const {},
+    this.spokenLanguage,
+    this.languages = const {},
+    this.missingLanguages = const {},
+    this.skippedLanguageSegments = 0,
     this.speed = 1,
+    this.paragraphGapMs = 0,
     this.follow = true,
     this.playRequested = false,
     this.sleepUntil,
@@ -72,12 +83,19 @@ class ListeningSnapshot {
   final List<SpeechSegment> segments;
   final ListeningPhase phase;
   final SpeechVoice voice;
+  final SpeechVoice? currentVoice;
+  final Map<String, SpeechVoice> voiceOverrides;
+  SpeechVoice get outputVoice => currentVoice ?? voice;
+  final String? spokenLanguage;
+  final Set<String> languages, missingLanguages;
+  final int skippedLanguageSegments;
   final double speed;
+  final int paragraphGapMs;
   final bool follow, sleepAfterChapter, playRequested;
   final DateTime? sleepUntil;
   final String? error;
   SpeechSegment? get current =>
-      segment < segments.length ? segments[segment] : null;
+      segment >= 0 && segment < segments.length ? segments[segment] : null;
   bool get playing => phase == ListeningPhase.playing;
   bool get requestingPlayback =>
       playRequested && (playing || phase == ListeningPhase.preparing);
@@ -115,16 +133,22 @@ class ListeningController {
     this.customSpeech,
     this.preparationTimeout = const Duration(seconds: 35),
     this.decoderTimeout = const Duration(seconds: 10),
-  }) {
+    ListeningEnhancement? enhancement,
+  }) : enhancement = enhancement ?? ListeningEnhancement() {
+    _voiceOverrides = store.languageVoices(store.voice);
     snapshot.value = ListeningSnapshot(
       voice: store.voice,
+      voiceOverrides: _voiceOverrides,
       speed: store.speed,
+      paragraphGapMs: store.paragraphGapMs,
       follow: store.follow,
     );
+    unawaited(this.enhancement.configure(store.enhancement));
   }
   final NovelRepository repository;
   final SpeechAudioSource audio;
   final ListeningStore store;
+  final ListeningEnhancement enhancement;
   final CustomSpeechSettings? customSpeech;
   final Duration preparationTimeout, decoderTimeout;
   final Future<ListeningAudioOutput> Function(ListeningController controller)
@@ -140,10 +164,21 @@ class ListeningController {
   StreamSubscription<Duration>? _positions;
   StreamSubscription<void>? _completions;
   Timer? _sleep;
+  Timer? _paragraphGapTimer;
+  Completer<void>? _paragraphGap;
   Future<void>? _voiceRefresh;
   Future<void>? _disposing;
-  File? _currentFile, _nextFile;
-  (SpeechSegment, ListeningSource, String?, String)? _nextIdentity;
+  File? _currentFile;
+  final _preparedAhead =
+      <(SpeechSegment, ListeningSource, String?, String, String), File>{};
+  Object? _prefetchRun;
+  static const _lookAhead = 3;
+  ReaderContent _chapterContent = const ReaderContent([]);
+  List<SpeechSegment> _rawSegments = const [];
+  Map<String, SpeechVoice> _languageVoices = const {};
+  Map<String, SpeechVoice> _voiceOverrides = const {};
+  (ListeningSource, String?, String, String)? _inventoryKey;
+  Future<List<SpeechVoice>>? _inventory;
   final _loadingFiles = <String, int>{};
   int _generation = 0;
   int _consecutiveFailures = 0;
@@ -156,15 +191,28 @@ class ListeningController {
   List<int> _textOffsets = const [0];
   List<Duration> _timeOffsets = const [Duration.zero];
   Object? _timelineKey;
-  (SpeechSegment, ListeningSource, String?, String) _audioIdentity(
+  int? _relativeSeekGeneration;
+  bool get seeking => _loading && _relativeSeekGeneration == _generation;
+  bool get canSeek {
+    final state = snapshot.value;
+    return !_disposed &&
+        !_loading &&
+        _output != null &&
+        _currentFile != null &&
+        state.current != null &&
+        (state.phase == ListeningPhase.playing ||
+            state.phase == ListeningPhase.paused);
+  }
+
+  (SpeechSegment, ListeningSource, String?, String, String) _audioIdentity(
     SpeechSegment segment,
     SpeechVoice voice,
-  ) => (segment, voice.source, voice.engine, voice.id);
+  ) => (segment, voice.source, voice.engine, voice.id, voice.locale);
 
   void _releaseFile(File? file) {
     if (file != null &&
         file.path != _currentFile?.path &&
-        file.path != _nextFile?.path &&
+        !_preparedAhead.values.any((ready) => ready.path == file.path) &&
         !_loadingFiles.containsKey(file.path)) {
       audio.unprotect(file);
     }
@@ -187,10 +235,32 @@ class ListeningController {
   }
 
   void _dropPrefetch() {
-    final file = _nextFile;
-    _nextFile = null;
-    _nextIdentity = null;
-    _releaseFile(file);
+    _prefetchRun = null;
+    final previous = _preparedAhead.values.toList();
+    _preparedAhead.clear();
+    for (final file in previous) {
+      _releaseFile(file);
+    }
+  }
+
+  void _prunePrefetch() {
+    final state = snapshot.value;
+    final wanted =
+        <(SpeechSegment, ListeningSource, String?, String, String)>{};
+    for (
+      var i = state.segment + 1;
+      i < state.segments.length && i <= state.segment + _lookAhead;
+      i++
+    ) {
+      final segment = state.segments[i];
+      final voice = _languageVoices[segment.language];
+      if (voice != null) wanted.add(_audioIdentity(segment, voice));
+    }
+    for (final key
+        in _preparedAhead.keys.where((key) => !wanted.contains(key)).toList()) {
+      final file = _preparedAhead.remove(key);
+      _releaseFile(file);
+    }
   }
 
   void _updateTimeline() {
@@ -200,6 +270,8 @@ class ListeningController {
       state.chapter,
       state.voice.engine,
       state.voice.id,
+      state.spokenLanguage,
+      state.voiceOverrides,
     );
     if (_timelineKey != key) {
       _timelineKey = key;
@@ -255,7 +327,13 @@ class ListeningController {
     List<SpeechSegment>? segments,
     ListeningPhase? phase,
     SpeechVoice? voice,
+    SpeechVoice? currentVoice,
+    bool clearCurrentVoice = false,
+    Set<String>? languages,
+    Set<String>? missingLanguages,
+    int? skippedLanguageSegments,
     double? speed,
+    int? paragraphGapMs,
     bool? follow,
     String? error,
     bool clearSleep = false,
@@ -272,7 +350,16 @@ class ListeningController {
       segments: segments ?? old.segments,
       phase: phase ?? old.phase,
       voice: voice ?? old.voice,
+      currentVoice:
+          currentVoice ?? (clearCurrentVoice ? null : old.currentVoice),
+      voiceOverrides: _voiceOverrides,
+      spokenLanguage: store.spokenLanguage((novel ?? old.novel)?.id ?? 0),
+      languages: languages ?? old.languages,
+      missingLanguages: missingLanguages ?? old.missingLanguages,
+      skippedLanguageSegments:
+          skippedLanguageSegments ?? old.skippedLanguageSegments,
       speed: speed ?? old.speed,
+      paragraphGapMs: paragraphGapMs ?? old.paragraphGapMs,
       follow: follow ?? old.follow,
       playRequested: _desiredPlaying,
       skippedSegments: skippedSegments ?? old.skippedSegments,
@@ -340,6 +427,7 @@ class ListeningController {
 
   void _fail(Object error, int generation) {
     if (!_valid(generation) || error is SpeechCancelled) return;
+    _cancelParagraphGap();
     _desiredPlaying = false;
     _loading = false;
     _emit(
@@ -367,6 +455,7 @@ class ListeningController {
   }) async {
     if (_disposed) return;
     final saving = saveCursor();
+    _cancelParagraphGap();
     _cancel.cancel();
     _cancel = SpeechCancellation();
     _dropPrefetch();
@@ -374,6 +463,11 @@ class ListeningController {
     _desiredPlaying = autoplay;
     _consecutiveFailures = 0;
     _loading = true;
+    _chapterContent = const ReaderContent([]);
+    _rawSegments = const [];
+    _languageVoices = const {};
+    _inventory = null;
+    _inventoryKey = null;
     final cursor = resume ? savedCursor(novel.id) : null;
     _emit(
       novel: novel,
@@ -382,6 +476,10 @@ class ListeningController {
       segment: 0,
       phase: ListeningPhase.preparing,
       skippedSegments: 0,
+      clearCurrentVoice: true,
+      languages: const {},
+      missingLanguages: const {},
+      skippedLanguageSegments: 0,
     );
     progress.value = const ListeningProgress();
     try {
@@ -391,6 +489,24 @@ class ListeningController {
         await _output?.suspend();
       });
       if (!_valid(generation)) return;
+      if (repository is OfflineNovelRepository && isLocalBook(novel.id)) {
+        final requestedChapterId =
+            chapter >= 0 && chapter < novel.chapters.length
+            ? novel.chapters[chapter].id
+            : null;
+        // Listening can open directly, without visiting the reader/detail page.
+        // Reuse its local enrichment path so old inherited language tags are
+        // repaired too; the repository retains readable copies if the original
+        // is unavailable. Stable chapter IDs survive inserted front matter.
+        novel = await repository.detail(novel);
+        if (!_valid(generation)) return;
+        if (cursor == null && requestedChapterId != null) {
+          final restored = novel.chapters.indexWhere(
+            (item) => item.id == requestedChapterId,
+          );
+          if (restored >= 0) chapter = restored;
+        }
+      }
       if (novel.chapters.isEmpty) {
         novel = novel.withChapters(await repository.chapters(novel.id));
         if (!_valid(generation)) return;
@@ -430,11 +546,16 @@ class ListeningController {
     for (var index = chapter; index < novel.chapters.length; index++) {
       if (!_valid(generation)) return;
       _loading = true;
+      _rawSegments = const [];
+      _chapterContent = const ReaderContent([]);
       _emit(
         chapter: index,
         segments: const [],
         segment: 0,
         phase: ListeningPhase.preparing,
+        clearCurrentVoice: true,
+        missingLanguages: const {},
+        skippedLanguageSegments: 0,
       );
       final source = await repository.chapterContent(
         novel.id,
@@ -445,7 +566,7 @@ class ListeningController {
           ? const ReaderContent([])
           : await ReaderContent.parse(source);
       if (!_valid(generation)) return;
-      var segments = source.length > 64 * 1024
+      final segments = source.length > 64 * 1024
           ? await compute(speechSegments, content.paragraphs)
           : speechSegments(content.paragraphs);
       if (!_valid(generation)) return;
@@ -454,41 +575,211 @@ class ListeningController {
         cursor = null;
         continue;
       }
-      var selected = segments.indexWhere(
-        (s) =>
-            s.paragraph >= paragraph &&
-            (cursor == null ||
-                s.paragraph != cursor.paragraph ||
-                s.end > cursor.start),
-      );
-      if (selected < 0) selected = segments.length - 1;
-      if (cursor != null &&
-          segments[selected].key(snapshot.value.voice) != cursor.segmentHash) {
-        final parts = speechRecoverySegments(segments[selected]);
-        final recovered = parts.indexWhere(
-          (part) =>
-              part.start == cursor!.start &&
-              part.key(snapshot.value.voice) == cursor.segmentHash,
-        );
-        if (parts.length > 1 && recovered >= 0) {
-          segments = List.unmodifiable([
-            ...segments.take(selected),
-            ...parts,
-            ...segments.skip(selected + 1),
-          ]);
-          selected += recovered;
-        }
+      _chapterContent = content;
+      _rawSegments = segments;
+      if (!await _planChapter(generation)) {
+        if (!_valid(generation)) return;
+        paragraph = 0;
+        cursor = null;
+        continue;
       }
-      _emit(segments: segments, segment: selected);
-      final restore =
-          cursor != null &&
-              segments[selected].key(snapshot.value.voice) == cursor.segmentHash
-          ? Duration(milliseconds: cursor.positionMs)
-          : Duration.zero;
-      await _loadSegment(selected, generation, restore: restore);
+      await _loadPlannedSegment(
+        generation,
+        paragraph: paragraph,
+        cursor: cursor,
+      );
       return;
     }
+    if (spokenLanguage(novel.id) case final language?) {
+      throw SpeechFailure('没有找到可朗读的${readerLanguageLabel(language)}段落');
+    }
     _finish();
+  }
+
+  String? spokenLanguage(int novelId) => store.spokenLanguage(novelId);
+
+  Future<List<SpeechVoice>> _availableLanguageVoices(
+    SpeechVoice preferred,
+    Set<String> needed,
+    int generation,
+  ) async {
+    if (preferred.source == ListeningSource.custom) return [preferred];
+    // Keep ordinary single-language online playback independent of catalogue
+    // availability. Cross-language matching only uses advertised voices.
+    if (preferred.source == ListeningSource.edge &&
+        needed.every(
+          (code) =>
+              code == speechLanguageCode(preferred.locale) &&
+              (_voiceOverrides[code] == null ||
+                  _voiceOverrides[code]!.id == preferred.id ||
+                  [
+                    defaultEdgeVoice.id,
+                    alternateEdgeVoice.id,
+                  ].contains(_voiceOverrides[code]!.id)),
+        )) {
+      return [preferred, defaultEdgeVoice, alternateEdgeVoice];
+    }
+    try {
+      final found = await _cancel
+          .wait(_voiceInventory(preferred))
+          .timeout(preparationTimeout);
+      if (!_valid(generation)) throw const SpeechCancelled();
+      return found;
+    } on SpeechCancelled {
+      rethrow;
+    } catch (_) {
+      if (!_valid(generation)) throw const SpeechCancelled();
+      _inventory = null;
+      throw const SpeechFailure('暂时无法检测对应语言的语音模型，请重新检测音色后重试');
+    }
+  }
+
+  Future<List<SpeechVoice>> _voiceInventory(SpeechVoice preferred) {
+    final key = (
+      preferred.source,
+      preferred.engine,
+      preferred.id,
+      preferred.locale,
+    );
+    if (_inventoryKey != key || _inventory == null) {
+      _inventoryKey = key;
+      _inventory = switch (audio) {
+        SpeechLanguageVoiceSource source => source.languageVoices(preferred),
+        _ =>
+          preferred.source == ListeningSource.edge
+              ? audio.onlineVoices()
+              : audio.offlineVoices(),
+      };
+    }
+    return _inventory!;
+  }
+
+  Future<List<SpeechVoice>> voicesForLanguage(String language) async {
+    final preferred = snapshot.value.voice;
+    final code = speechLanguageCode(language);
+    try {
+      final found = preferred.source == ListeningSource.custom
+          ? [preferred]
+          : await _voiceInventory(preferred).timeout(preparationTimeout);
+      return List.unmodifiable(
+        found.where(
+          (voice) =>
+              voice.availableForListening &&
+              voice.id != '@default' &&
+              voice.source == preferred.source &&
+              voice.engine == preferred.engine &&
+              speechLanguageCode(voice.locale) == code,
+        ),
+      );
+    } catch (_) {
+      _inventory = null;
+      if (preferred.source == ListeningSource.edge && code == 'zh') {
+        return const [defaultEdgeVoice, alternateEdgeVoice];
+      }
+      throw const SpeechFailure('音色列表暂时不可用，请重试');
+    }
+  }
+
+  Future<bool> _planChapter(int generation) async {
+    final state = snapshot.value;
+    final all = speechWithLanguages(_rawSegments, _chapterContent, state.voice);
+    final selection = spokenLanguage(state.novel!.id);
+    final candidates = all
+        .where((part) => selection == null || part.language == selection)
+        .toList();
+    final languages = Set<String>.unmodifiable(
+      all.map((part) => part.language),
+    );
+    if (candidates.isEmpty) {
+      _emit(segments: const [], segment: 0, languages: languages);
+      return false;
+    }
+    final needed = candidates.map((part) => part.language).toSet();
+    final available = await _availableLanguageVoices(
+      state.voice,
+      needed,
+      generation,
+    );
+    if (!_valid(generation)) return false;
+    final matched = <String, SpeechVoice>{};
+    for (final language in needed) {
+      final voice = speechVoiceForLanguage(
+        language,
+        state.voice,
+        available,
+        selected: _voiceOverrides[language],
+      );
+      if (voice != null) matched[language] = voice;
+    }
+    _languageVoices = matched;
+    final missing = Set<String>.unmodifiable(
+      needed.difference(_languageVoices.keys.toSet()),
+    );
+    final segments = List<SpeechSegment>.unmodifiable(
+      candidates.where((part) => _languageVoices.containsKey(part.language)),
+    );
+    _emit(
+      segments: segments,
+      segment: 0,
+      languages: languages,
+      missingLanguages: missing,
+      skippedLanguageSegments: candidates.length - segments.length,
+      clearCurrentVoice: true,
+    );
+    if (segments.isEmpty) throw SpeechFailure(_missingModelMessage(missing));
+    return true;
+  }
+
+  String _missingModelMessage(Set<String> missing) {
+    final configured = missing.where(_voiceOverrides.containsKey).toList();
+    if (configured.isNotEmpty) {
+      return '所选${configured.map(readerLanguageLabel).join('、')}音色不可用，已停止朗读';
+    }
+    return '未找到可用的${missing.map(readerLanguageLabel).join('、')}语音模型，已停止朗读';
+  }
+
+  Future<void> _loadPlannedSegment(
+    int generation, {
+    int paragraph = 0,
+    ListeningCursor? cursor,
+  }) async {
+    var segments = snapshot.value.segments;
+    var selected = segments.indexWhere(
+      (s) =>
+          s.paragraph >= paragraph &&
+          (cursor == null ||
+              s.paragraph != cursor.paragraph ||
+              s.end > cursor.start),
+    );
+    if (selected < 0) selected = segments.length - 1;
+    if (cursor != null &&
+        segments[selected].key(_languageVoices[segments[selected].language]!) !=
+            cursor.segmentHash) {
+      final parts = speechRecoverySegments(segments[selected]);
+      final recovered = parts.indexWhere(
+        (part) =>
+            part.start == cursor.start &&
+            part.key(_languageVoices[part.language]!) == cursor.segmentHash,
+      );
+      if (parts.length > 1 && recovered >= 0) {
+        segments = List.unmodifiable([
+          ...segments.take(selected),
+          ...parts,
+          ...segments.skip(selected + 1),
+        ]);
+        selected += recovered;
+      }
+    }
+    _emit(segments: segments, segment: selected);
+    final restore =
+        cursor != null &&
+            segments[selected].key(
+                  _languageVoices[segments[selected].language]!,
+                ) ==
+                cursor.segmentHash
+        ? Duration(milliseconds: cursor.positionMs)
+        : Duration.zero;
+    await _loadSegment(selected, generation, restore: restore);
   }
 
   Future<void> _loadSegment(
@@ -507,25 +798,31 @@ class ListeningController {
         return;
       }
       final segment = state.segments[index];
+      final voice = _languageVoices[segment.language];
+      if (voice == null) {
+        index++;
+        restore = Duration.zero;
+        seekFraction = null;
+        continue;
+      }
       final token = _cancel;
       _loading = true;
       _atSegmentEnd = false;
       _playEpoch++;
-      _emit(segment: index, phase: ListeningPhase.preparing);
+      _emit(
+        segment: index,
+        phase: ListeningPhase.preparing,
+        currentVoice: voice,
+      );
       progress.value = const ListeningProgress();
-      final prefetched = _nextIdentity == _audioIdentity(segment, state.voice)
-          ? _nextFile
-          : null;
+      final prefetched = _preparedAhead.remove(_audioIdentity(segment, voice));
       if (prefetched != null) {
-        _nextFile = null;
-        _nextIdentity = null;
         _retainLoad(prefetched);
       }
       File? protectedFile = prefetched;
       var decodeFailed = false;
       try {
-        final file =
-            prefetched ?? await _prepareAudio(segment, state.voice, token);
+        final file = prefetched ?? await _prepareAudio(segment, voice, token);
         if (!_valid(generation)) return;
         if (protectedFile == null) {
           _retainLoad(file);
@@ -574,12 +871,10 @@ class ListeningController {
           await output.setSpeed(snapshot.value.speed);
         });
         if (!_valid(generation)) return;
-        final previous = _currentFile, previousNext = _nextFile;
+        final previous = _currentFile;
         _currentFile = file;
-        _nextFile = null;
-        _nextIdentity = null;
         _releaseFile(previous);
-        _releaseFile(previousNext);
+        _prunePrefetch();
         _consecutiveFailures = 0;
         if (duration != null) {
           _clipDurations[segment] = duration!;
@@ -589,6 +884,11 @@ class ListeningController {
           position: restore <= (duration ?? restore) ? restore : duration!,
           duration: duration ?? Duration.zero,
         );
+        // Preparation runs during the silence, rather than adding its latency
+        // after it. This wait never holds the audio command queue.
+        final gap = _paragraphGap;
+        if (gap != null) await gap.future;
+        if (!_valid(generation)) return;
         _loading = false;
         _atSegmentEnd = duration != null && restore >= duration!;
         _emit(
@@ -604,12 +904,44 @@ class ListeningController {
           }
         }
         unawaited(saveCursor());
-        unawaited(_prefetch(index + 1, generation, token));
+        unawaited(_prefetch(generation, token));
         return;
       } catch (error) {
         if (!_valid(generation) || error is SpeechCancelled) return;
+        if (error is SpeechFailure &&
+            error.kind == SpeechFailureKind.missingLanguage) {
+          _dropPrefetch();
+          _languageVoices = Map.of(_languageVoices)..remove(segment.language);
+          final remaining = List<SpeechSegment>.unmodifiable([
+            ...state.segments.take(index),
+            ...state.segments
+                .skip(index)
+                .where((part) => part.language != segment.language),
+          ]);
+          final missing = Set<String>.unmodifiable({
+            ...state.missingLanguages,
+            segment.language,
+          });
+          _emit(
+            segments: remaining,
+            missingLanguages: missing,
+            skippedLanguageSegments:
+                state.skippedLanguageSegments +
+                state.segments.length -
+                remaining.length,
+            clearCurrentVoice: true,
+          );
+          if (remaining.isEmpty) {
+            _fail(SpeechFailure(_missingModelMessage(missing)), generation);
+            return;
+          }
+          restore = Duration.zero;
+          seekFraction = null;
+          continue;
+        }
         if (decodeFailed && protectedFile != null) {
           final broken = protectedFile;
+          _dropPrefetch();
           if (_currentFile?.path == broken.path) _currentFile = null;
           _releaseLoad(broken);
           protectedFile = null;
@@ -689,35 +1021,60 @@ class ListeningController {
     );
   }
 
-  Future<void> _prefetch(
-    int index,
-    int generation,
-    SpeechCancellation token,
-  ) async {
-    final state = snapshot.value;
-    if (index >= state.segments.length || !_valid(generation)) return;
+  Future<void> _prefetch(int generation, SpeechCancellation token) async {
+    if (!_valid(generation) || !_desiredPlaying || _prefetchRun != null) return;
+    final run = Object();
+    _prefetchRun = run;
+    bool current() => _valid(generation) && identical(_prefetchRun, run);
     try {
-      final file = await _prepareAudio(
-        state.segments[index],
-        state.voice,
-        token,
-      );
-      if (!_valid(generation) || index != snapshot.value.segment + 1) return;
-      final previous = _nextFile;
-      _nextFile = file;
-      _nextIdentity = _audioIdentity(state.segments[index], state.voice);
-      audio.protect(file);
-      _releaseFile(previous);
-      await audio.trimForPlayback();
+      while (current() && _desiredPlaying) {
+        _prunePrefetch();
+        final state = snapshot.value;
+        SpeechSegment? segment;
+        SpeechVoice? voice;
+        for (
+          var i = state.segment + 1;
+          i < state.segments.length && i <= state.segment + _lookAhead;
+          i++
+        ) {
+          final candidate = state.segments[i];
+          final matched = _languageVoices[candidate.language];
+          if (matched != null &&
+              !_preparedAhead.containsKey(_audioIdentity(candidate, matched))) {
+            segment = candidate;
+            voice = matched;
+            break;
+          }
+        }
+        if (segment == null || voice == null) return;
+        // One background synthesis at a time, without holding audible playback.
+        final key = _audioIdentity(segment, voice);
+        final file = await _prepareAudio(segment, voice, token);
+        if (!current()) return;
+        final live = snapshot.value;
+        final index = live.segments.indexOf(segment);
+        if (index <= live.segment || index > live.segment + _lookAhead) {
+          continue;
+        }
+        _preparedAhead[key] = file;
+        audio.protect(file);
+        await audio.trimForPlayback();
+      }
     } catch (_) {
       /* Playback reports a failure only if this segment is actually requested. */
+    } finally {
+      if (identical(_prefetchRun, run)) _prefetchRun = null;
     }
   }
 
   void _completed() {
-    if (_disposed || _loading || !_desiredPlaying || !snapshot.value.playing) {
+    final state = snapshot.value;
+    if (_disposed || _loading || !state.active || state.current == null) {
       return;
     }
+    // Native completion can reach Dart just after a pause, especially for a
+    // one-second phrase. Retain the end marker without auto-playing: otherwise
+    // resume asks an already-completed decoder to play, with no new end event.
     _atSegmentEnd = true;
     final last = progress.value;
     if (last.duration > Duration.zero) {
@@ -727,18 +1084,44 @@ class ListeningController {
       );
       _updateTimeline();
     }
+    if (!_desiredPlaying || !state.playing) return;
     final generation = _generation;
     unawaited(
       _advance(
         generation,
+        natural: true,
       ).catchError((Object error) => _fail(error, generation)),
     );
   }
 
-  Future<void> _advance(int generation) async {
+  void _cancelParagraphGap() {
+    _paragraphGapTimer?.cancel();
+    _paragraphGapTimer = null;
+    final gap = _paragraphGap;
+    _paragraphGap = null;
+    if (gap != null && !gap.isCompleted) gap.complete();
+  }
+
+  void _beginParagraphGap() {
+    _cancelParagraphGap();
+    final milliseconds = snapshot.value.paragraphGapMs;
+    if (milliseconds == 0) return;
+    _paragraphGap = Completer<void>();
+    _paragraphGapTimer = Timer(
+      Duration(milliseconds: milliseconds),
+      _cancelParagraphGap,
+    );
+  }
+
+  Future<void> _advance(int generation, {bool natural = false}) async {
     if (!_valid(generation)) return;
     final state = snapshot.value;
     if (state.segment + 1 < state.segments.length) {
+      if (natural &&
+          state.segments[state.segment + 1].paragraph !=
+              state.current!.paragraph) {
+        _beginParagraphGap();
+      }
       await _loadSegment(state.segment + 1, generation);
     } else if (state.sleepAfterChapter ||
         state.chapter + 1 >= state.novel!.chapters.length) {
@@ -749,11 +1132,13 @@ class ListeningController {
         _finish();
       }
     } else {
+      if (natural) _beginParagraphGap();
       await _loadChapter(state.chapter + 1, generation);
     }
   }
 
   void _finish() {
+    _cancelParagraphGap();
     _desiredPlaying = false;
     _loading = false;
     _emit(phase: ListeningPhase.completed);
@@ -768,6 +1153,7 @@ class ListeningController {
 
   Future<void> pause() async {
     if (_disposed) return;
+    _cancelParagraphGap();
     _playEpoch++;
     _desiredPlaying = false;
     if (snapshot.value.active) _emit(phase: ListeningPhase.paused);
@@ -802,6 +1188,7 @@ class ListeningController {
       await _command(() async {
         if (_valid(generation) && _desiredPlaying) _play(output, generation);
       });
+      unawaited(_prefetch(generation, _cancel));
     }
   }
 
@@ -810,6 +1197,7 @@ class ListeningController {
     _playEpoch++;
     final saving = saveCursor();
     _desiredPlaying = false;
+    _cancelParagraphGap();
     _cancel.cancel();
     _generation++;
     _loading = false;
@@ -819,11 +1207,10 @@ class ListeningController {
     await _command(() async {
       await _output?.stop();
     });
-    final previous = _currentFile, previousNext = _nextFile;
-    _currentFile = _nextFile = null;
-    _nextIdentity = null;
+    final previous = _currentFile;
+    _currentFile = null;
+    _dropPrefetch();
     _releaseFile(previous);
-    _releaseFile(previousNext);
   }
 
   Future<void> seek(Duration position) async {
@@ -879,6 +1266,185 @@ class ListeningController {
     }
   }
 
+  /// Move by real audio time, measuring only the adjacent clips needed to
+  /// reach the target. The shared output stays suspended while probing, so
+  /// intermediate clips never play and Harmony needs no second player.
+  Future<void> seekBy(Duration offset) async {
+    if (!canSeek || offset == Duration.zero) return;
+    final state = snapshot.value, before = progress.value;
+    final original = _currentFile!, output = _output!;
+    final requested = before.position + offset;
+    final duration = before.duration;
+    final within =
+        duration > Duration.zero &&
+        ((requested >= Duration.zero && requested < duration) ||
+            (state.segment == 0 && requested < Duration.zero) ||
+            (state.segment == state.segments.length - 1 &&
+                requested >= duration));
+    if (within) {
+      final generation = _generation;
+      try {
+        await seek(requested);
+      } catch (error) {
+        if (!_valid(generation)) return;
+        try {
+          await seek(before.position);
+          if (_valid(generation)) {
+            _emit(error: _seekFailureMessage(error));
+          }
+        } catch (restoreError) {
+          _fail(restoreError, generation);
+        }
+      }
+      return;
+    }
+
+    final saving = saveCursor();
+    _cancelParagraphGap();
+    _cancel.cancel();
+    _cancel = SpeechCancellation();
+    final token = _cancel, generation = ++_generation;
+    _relativeSeekGeneration = generation;
+    _dropPrefetch();
+    _playEpoch++;
+    _loading = true;
+    _emit(phase: ListeningPhase.preparing);
+    final files = <int, File>{state.segment: original};
+    final retained = <File>[];
+    var loadedIndex = state.segment;
+
+    Future<File> fileFor(int index) async {
+      if (files[index] case final ready?) return ready;
+      final segment = state.segments[index];
+      final voice = _languageVoices[segment.language];
+      if (voice == null) {
+        throw const SpeechFailure('跳转位置没有对应语言的可用音色');
+      }
+      final file = await _prepareAudio(segment, voice, token);
+      if (!_valid(generation)) throw const SpeechCancelled();
+      _retainLoad(file);
+      retained.add(file);
+      files[index] = file;
+      return file;
+    }
+
+    Future<Duration> loadClip(int index) async {
+      final file = await fileFor(index);
+      Duration? measured;
+      await _command(() async {
+        if (!_valid(generation)) throw const SpeechCancelled();
+        measured = await output
+            .load(file, Duration.zero)
+            .timeout(decoderTimeout);
+      });
+      if (!_valid(generation)) throw const SpeechCancelled();
+      if (measured == null || measured! <= Duration.zero) {
+        throw const SpeechFailure('这一段音频没有可定位的有效时长');
+      }
+      loadedIndex = index;
+      _clipDurations[state.segments[index]] = measured!;
+      _updateTimeOffsets();
+      return measured!;
+    }
+
+    try {
+      await saving;
+      await _command(() async {
+        if (_valid(generation)) await output.suspend();
+      });
+      if (!_valid(generation)) return;
+      var index = state.segment;
+      var target = requested.inMicroseconds;
+      var measured = duration > Duration.zero
+          ? duration
+          : await loadClip(index);
+      while (target < 0 && index > 0) {
+        measured = await loadClip(--index);
+        target += measured.inMicroseconds;
+      }
+      while (target >= measured.inMicroseconds &&
+          index + 1 < state.segments.length) {
+        target -= measured.inMicroseconds;
+        measured = await loadClip(++index);
+      }
+      if (loadedIndex != index) measured = await loadClip(index);
+      final position = Duration(
+        microseconds: target.clamp(0, measured.inMicroseconds),
+      );
+      await _command(() async {
+        if (!_valid(generation)) throw const SpeechCancelled();
+        await output.seek(position);
+        if (_valid(generation)) await output.setSpeed(snapshot.value.speed);
+      });
+      if (!_valid(generation)) return;
+      _currentFile = files[index]!;
+      progress.value = ListeningProgress(
+        position: position,
+        duration: measured,
+      );
+      _atSegmentEnd = position >= measured;
+      _loading = false;
+      _relativeSeekGeneration = null;
+      _emit(
+        segment: index,
+        currentVoice: _languageVoices[state.segments[index].language],
+        phase: _desiredPlaying ? ListeningPhase.playing : ListeningPhase.paused,
+      );
+      _releaseFile(original);
+      if (_desiredPlaying) _play(output, generation);
+      unawaited(saveCursor());
+      unawaited(_prefetch(generation, token));
+    } catch (error) {
+      if (!_valid(generation) || error is SpeechCancelled) return;
+      try {
+        Duration? restored;
+        await _command(() async {
+          if (!_valid(generation)) throw const SpeechCancelled();
+          restored = await output
+              .load(original, before.position)
+              .timeout(decoderTimeout);
+          if (restored != null && restored! <= Duration.zero) {
+            throw const SpeechFailure('原音频暂未恢复，请重试听书');
+          }
+          if (_valid(generation)) await output.setSpeed(snapshot.value.speed);
+        });
+        if (!_valid(generation)) return;
+        final interrupted = _currentFile;
+        _currentFile = original;
+        _releaseFile(interrupted);
+        progress.value = ListeningProgress(
+          position: before.position,
+          duration: restored ?? before.duration,
+        );
+        _atSegmentEnd =
+            before.duration > Duration.zero &&
+            before.position >= before.duration;
+        _loading = false;
+        _relativeSeekGeneration = null;
+        _emit(
+          segment: state.segment,
+          currentVoice: state.outputVoice,
+          phase: _desiredPlaying
+              ? ListeningPhase.playing
+              : ListeningPhase.paused,
+          error: _seekFailureMessage(error),
+        );
+        if (_desiredPlaying) _play(output, generation);
+        unawaited(saveCursor());
+        unawaited(_prefetch(generation, token));
+      } catch (restoreError) {
+        _fail(restoreError, generation);
+      }
+    } finally {
+      for (final file in retained) {
+        _releaseLoad(file);
+      }
+    }
+  }
+
+  String _seekFailureMessage(Object error) =>
+      '跳转未完成，已回到原位置：${error is SpeechFailure ? error.message : '音频位置未加载成功，请重试'}';
+
   Future<void> moveParagraph(int direction) async {
     final state = snapshot.value;
     if (state.current == null || state.novel == null) return;
@@ -916,29 +1482,41 @@ class ListeningController {
     required int novelId,
     required int chapter,
     required int paragraph,
+    Novel? source,
   }) async {
     final state = snapshot.value;
+    final book = source ?? state.novel;
     if (_disposed ||
         !state.active ||
         state.novel?.id != novelId ||
+        book == null ||
+        book.id != novelId ||
         paragraph < 0 ||
         chapter < 0 ||
-        chapter >= state.novel!.chapters.length) {
+        chapter >= book.chapters.length) {
       return;
     }
-    if (state.chapter == chapter && state.current?.paragraph == paragraph) {
+    final currentId =
+        state.chapter >= 0 && state.chapter < state.novel!.chapters.length
+        ? state.novel!.chapters[state.chapter].id
+        : 0;
+    final targetId = book.chapters[chapter].id;
+    final sameChapter = source != null && currentId > 0 && targetId > 0
+        ? currentId == targetId
+        : state.chapter == chapter;
+    if (sameChapter && state.current?.paragraph == paragraph) {
       if (_desiredPlaying) {
         await pause();
       } else {
         await resume();
       }
-    } else if (state.chapter == chapter) {
+    } else if (sameChapter) {
       final index = state.segments.indexWhere(
         (part) => part.paragraph == paragraph,
       );
       if (index >= 0) await _jumpToSegment(index, autoplay: true);
     } else {
-      await start(state.novel!, chapter: chapter, paragraph: paragraph);
+      await start(book, chapter: chapter, paragraph: paragraph);
     }
   }
 
@@ -963,6 +1541,7 @@ class ListeningController {
   }) async {
     if (_disposed) return;
     final saving = saveCursor();
+    _cancelParagraphGap();
     _cancel.cancel();
     _cancel = SpeechCancellation();
     _dropPrefetch();
@@ -991,13 +1570,14 @@ class ListeningController {
 
   Future<void> setVoice(SpeechVoice voice) async {
     if (!voice.availableForListening) {
-      throw const SpeechFailure('系统离线语音待开发，请使用自然在线音色');
+      throw const SpeechFailure('请选择可用的朗读引擎');
     }
     await store.saveVoice(voice);
     if (_disposed) return;
     if (snapshot.value.voice.id == voice.id &&
         snapshot.value.voice.engine == voice.engine &&
-        snapshot.value.voice.source == voice.source) {
+        snapshot.value.voice.source == voice.source &&
+        snapshot.value.voice.locale == voice.locale) {
       return;
     }
     await saveCursor();
@@ -1005,10 +1585,69 @@ class ListeningController {
     final state = snapshot.value;
     // Directory/content loading has not selected an audio segment yet. Let it
     // finish under the new voice; cancelling its generation would strand it.
-    if (!state.active || state.current == null) {
-      _emit(voice: voice);
+    _inventory = null;
+    _inventoryKey = null;
+    _voiceOverrides = store.languageVoices(voice);
+    if (!state.active || _rawSegments.isEmpty) {
+      _emit(voice: voice, clearCurrentVoice: true);
       return;
     }
+    _emit(voice: voice, clearCurrentVoice: true);
+    await _replanCurrent(state);
+  }
+
+  Future<void> setSpokenLanguage(int novelId, String? language) async {
+    final previous = spokenLanguage(novelId);
+    await saveCursor();
+    await store.saveSpokenLanguage(novelId, language);
+    if (_disposed) return;
+    final state = snapshot.value;
+    _emit();
+    if (previous == spokenLanguage(novelId) ||
+        state.novel?.id != novelId ||
+        !state.active ||
+        _rawSegments.isEmpty) {
+      return;
+    }
+    await _replanCurrent(state);
+  }
+
+  Future<void> setLanguageVoice(String language, SpeechVoice? voice) async {
+    final code = speechLanguageCode(language);
+    final state = snapshot.value;
+    if (code.isEmpty ||
+        (voice != null &&
+            (!voice.availableForListening ||
+                voice.id == '@default' ||
+                voice.source != state.voice.source ||
+                voice.engine != state.voice.engine ||
+                speechLanguageCode(voice.locale) != code))) {
+      throw const SpeechFailure('请选择当前音源中对应语言的音色');
+    }
+    await saveCursor();
+    await store.saveLanguageVoice(state.voice, code, voice);
+    if (_disposed) return;
+    final current = snapshot.value;
+    _voiceOverrides = store.languageVoices(snapshot.value.voice);
+    _emit();
+    if (current.active && _rawSegments.isNotEmpty) {
+      await _replanCurrent(current);
+    }
+  }
+
+  Future<void> _replanCurrent(ListeningSnapshot previous) async {
+    final cursor = previous.current == null
+        ? null
+        : ListeningCursor(
+            novelId: previous.novel!.id,
+            chapterId: previous.novel!.chapters[previous.chapter].id,
+            chapter: previous.chapter,
+            paragraph: previous.current!.paragraph,
+            start: previous.current!.start,
+            positionMs: progress.value.position.inMilliseconds,
+            segmentHash: previous.current!.key(previous.outputVoice),
+          );
+    _cancelParagraphGap();
     _cancel.cancel();
     _cancel = SpeechCancellation();
     _dropPrefetch();
@@ -1016,25 +1655,53 @@ class ListeningController {
     _playEpoch++;
     _loading = true;
     _consecutiveFailures = 0;
-    _emit(voice: voice, phase: ListeningPhase.preparing);
+    _emit(phase: ListeningPhase.preparing, clearCurrentVoice: true);
     await _command(() async {
       if (_valid(generation)) await _output?.suspend();
     });
-    if (_valid(generation)) await _loadSegment(state.segment, generation);
+    if (!_valid(generation)) return;
+    try {
+      if (await _planChapter(generation)) {
+        await _loadPlannedSegment(
+          generation,
+          paragraph: cursor?.paragraph ?? 0,
+          cursor: cursor,
+        );
+      } else if (_valid(generation)) {
+        await _loadChapter(previous.chapter + 1, generation);
+      }
+    } catch (error) {
+      _fail(error, generation);
+    }
   }
 
   Future<void> setSpeed(double speed) async {
     speed = speed.clamp(listeningMinimumSpeed, listeningMaximumSpeed);
-    await store.saveSpeed(speed);
-    _emit(speed: speed);
     await _command(() async {
       await _output?.setSpeed(speed);
+      await store.saveSpeed(speed);
+      _emit(speed: speed);
     });
   }
 
   Future<void> setFollow(bool follow) async {
     await store.saveFollow(follow);
     _emit(follow: follow);
+  }
+
+  Future<void> setParagraphGap(int milliseconds) async {
+    final value = normalizeListeningParagraphGap(milliseconds);
+    await store.saveParagraphGap(value);
+    if (_disposed) return;
+    _emit(paragraphGapMs: value);
+    if (value == 0) _cancelParagraphGap();
+  }
+
+  /// Save optional gain separately; it never enters the playback command queue.
+  Future<void> setEnhancement(ListeningEnhancementPreference value) async {
+    if (_disposed) return;
+    await store.saveEnhancement(value);
+    if (!_disposed) await enhancement.setPreference(value);
   }
 
   void setSleep({Duration? duration, bool afterChapter = false}) {
@@ -1057,17 +1724,8 @@ class ListeningController {
 
   Future<void> refreshVoices({bool online = true}) async {
     if (_disposed) return;
-    if (!online) {
-      voices.value = ListeningVoiceCatalog(
-        online: voices.value.online,
-        checked: true,
-        message: '系统离线语音待开发',
-        messageSource: ListeningSource.system,
-      );
-      return;
-    }
     if (_voiceRefresh case final pending?) return pending;
-    final future = _fetchVoices();
+    final future = _fetchVoices(online: online);
     _voiceRefresh = future;
     try {
       await future;
@@ -1076,7 +1734,7 @@ class ListeningController {
     }
   }
 
-  Future<void> _fetchVoices() async {
+  Future<void> _fetchVoices({required bool online}) async {
     final old = voices.value;
     voices.value = ListeningVoiceCatalog(
       online: old.online,
@@ -1085,13 +1743,20 @@ class ListeningController {
       loading: true,
     );
     try {
-      final found = await audio.onlineVoices();
+      final found = await (online
+          ? audio.onlineVoices()
+          : audio.offlineVoices());
       if (_disposed) return;
+      _inventory = null;
+      _inventoryKey = null;
       voices.value = ListeningVoiceCatalog(
-        online: found.isEmpty ? old.online : found,
+        online: online && found.isNotEmpty ? found : old.online,
+        offline: online ? old.offline : found,
         checked: true,
-        message: found.isEmpty ? '暂未获取到更多在线音色，可继续使用已有音色' : null,
-        messageSource: ListeningSource.edge,
+        message: found.isEmpty
+            ? (online ? '暂未获取到更多在线音色，可继续使用已有音色' : '没有检测到可用音色，请在系统语音设置中检查引擎')
+            : null,
+        messageSource: online ? ListeningSource.edge : ListeningSource.system,
       );
     } catch (error) {
       if (!_disposed) {
@@ -1100,7 +1765,7 @@ class ListeningController {
           offline: old.offline,
           checked: old.checked,
           message: error is SpeechFailure ? error.message : '在线音色列表暂时不可用，请稍后重试',
-          messageSource: ListeningSource.edge,
+          messageSource: online ? ListeningSource.edge : ListeningSource.system,
         );
       }
     }
@@ -1120,7 +1785,7 @@ class ListeningController {
           paragraph: current.paragraph,
           start: current.start,
           positionMs: progress.value.position.inMilliseconds,
-          segmentHash: current.key(state.voice),
+          segmentHash: current.key(state.outputVoice),
         ),
       );
     } catch (_) {
@@ -1135,6 +1800,7 @@ class ListeningController {
     await _positions?.cancel();
     await _completions?.cancel();
     await _output?.dispose();
+    await enhancement.dispose();
     snapshot.dispose();
     progress.dispose();
     chapterProgress.dispose();

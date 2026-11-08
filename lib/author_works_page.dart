@@ -4,6 +4,7 @@ import 'app_ui.dart';
 import 'book_collection_layout.dart';
 import 'catalog.dart';
 import 'book_search.dart';
+import 'blocked_tags_controls.dart';
 import 'feature_pages.dart' show ArchiveFeaturePage;
 import 'library_state.dart';
 import 'novel_feed_controller.dart';
@@ -92,23 +93,37 @@ class AuthorWorksPage extends StatefulWidget {
 
 class _AuthorWorksPageState extends State<AuthorWorksPage> {
   late final _feed = NovelFeedController(
-    AuthorWorksRepository(
-      widget.repository,
-      widget.author,
-      localOnly: widget.localOnly,
-      tagSearch: widget.tagSearch,
-      current: () => mounted,
-    ),
+    widget.tagSearch
+        ? widget.repository
+        : AuthorWorksRepository(
+            widget.repository,
+            widget.author,
+            localOnly: widget.localOnly,
+          ),
+    search: widget.tagSearch,
     initialItems: 20,
   );
   @override
   void initState() {
     super.initState();
+    if (widget.tagSearch) {
+      _feed.query = widget.author;
+      _feed.searchField = BookSearchField.tags;
+    }
+    if (!widget.localOnly) {
+      widget.state.blockedTagsChanges.addListener(_blockedTagsChanged);
+      _blockedTagsChanged();
+    }
     unawaited(_feed.loadInitial());
   }
 
+  void _blockedTagsChanged() => _feed.setBlockedTags(widget.state.blockedTags);
+
   @override
   void dispose() {
+    if (!widget.localOnly) {
+      widget.state.blockedTagsChanges.removeListener(_blockedTagsChanged);
+    }
     _feed.dispose();
     super.dispose();
   }
@@ -128,18 +143,28 @@ class _AuthorWorksPageState extends State<AuthorWorksPage> {
           return ContentNotice(
             icon: CupertinoIcons.wifi_exclamationmark,
             title: '作品加载失败',
-            message: '请检查网络后重试',
+            message: _feed.failureMessage,
             onRetry: _feed.retry,
+            secondaryAction: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (!widget.localOnly)
+                  BlockedTagsButton(state: widget.state, feed: _feed),
+              ],
+            ),
           );
         }
         return LoadedContentSequence(
-          generation: _feed.resultRevision,
+          generation: _feed.resultReplacesRetained
+              ? null
+              : _feed.resultRevision,
           firstIndex: _feed.resultStartIndex == 0
               ? 0
               : _feed.resultStartIndex + 1,
           child: NotificationListener<ScrollNotification>(
             onNotification: (notice) {
               if (notice.depth == 0 &&
+                  _feed.items.isNotEmpty &&
                   notice.metrics.extentAfter < 400 &&
                   !_feed.loading &&
                   _feed.hasMore &&
@@ -168,12 +193,28 @@ class _AuthorWorksPageState extends State<AuthorWorksPage> {
                       18,
                     ),
                     sliver: SliverToBoxAdapter(
-                      child: sectionHeader(
-                        context,
-                        widget.author,
-                        _feed.totalItems == null
-                            ? '已显示 ${_feed.items.length} 部作品'
-                            : '${_feed.totalItems} 部作品',
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          sectionHeader(
+                            context,
+                            widget.author,
+                            _feed.tagProgressLabel ??
+                                (_feed.hasBlockedTags ||
+                                        _feed.totalItems == null
+                                    ? '已显示 ${_feed.items.length} 部作品'
+                                    : '${_feed.totalItems} 部作品'),
+                          ),
+                          if (!widget.localOnly)
+                            BlockedTagsButton(
+                              key: const ValueKey(
+                                'related-blocked-tags-manage',
+                              ),
+                              state: widget.state,
+                              feed: _feed,
+                              compact: true,
+                            ),
+                        ],
                       ),
                     ),
                   ),
@@ -189,7 +230,31 @@ class _AuthorWorksPageState extends State<AuthorWorksPage> {
                       hasScrollBody: false,
                       child: ContentNotice(
                         icon: CupertinoIcons.book,
-                        title: widget.tagSearch ? '暂未找到这个标签的书籍' : '暂未找到此作者的作品',
+                        title: _feed.blockedItemCount > 0
+                            ? '当前作品已被标签屏蔽'
+                            : widget.tagSearch
+                            ? '暂未找到这个标签的书籍'
+                            : '暂未找到此作者的作品',
+                        secondaryAction: _feed.blockedItemCount == 0
+                            ? null
+                            : Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  BlockedTagsButton(
+                                    state: widget.state,
+                                    feed: _feed,
+                                    label: '管理屏蔽标签',
+                                  ),
+                                  if (_feed.hasMore)
+                                    GlassTextButton(
+                                      key: const ValueKey(
+                                        'related-blocked-tags-more',
+                                      ),
+                                      onPressed: _feed.loadMore,
+                                      child: const AppText('继续加载'),
+                                    ),
+                                ],
+                              ),
                       ),
                     ),
                   SliverPadding(
@@ -222,7 +287,11 @@ class _AuthorWorksPageState extends State<AuthorWorksPage> {
                     padding: EdgeInsets.only(
                       bottom: MediaQuery.paddingOf(context).bottom + 24,
                     ),
-                    sliver: SliverToBoxAdapter(child: FeedFooter(feed: _feed)),
+                    sliver: SliverToBoxAdapter(
+                      child: _feed.items.isEmpty && _feed.blockedItemCount > 0
+                          ? const SizedBox.shrink()
+                          : FeedFooter(feed: _feed),
+                    ),
                   ),
                 ],
               ),

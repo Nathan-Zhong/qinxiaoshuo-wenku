@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:math' as math;
 
 enum AppLanguage {
   system('跟随系统', null),
@@ -31,6 +32,23 @@ abstract final class ChineseText {
   static Map<String, _Lexicon> _lexicons = {};
   static final _cache = <(String, bool, String), String>{};
   static int _cacheUnits = 0;
+  static Future<_Lexicon>? _searchLexicon;
+
+  /// Normalize queries for the simplified catalogue, not the user's stored
+  /// book text or display preference. Dictionaries load only on first search.
+  static Future<String> searchQuery(String source) async {
+    if (!RegExp(r'[\u3400-\u9fff]').hasMatch(source)) return source;
+    final lexicon = await (_searchLexicon ??= () async {
+      const names = ['TSPhrases', 'TSCharacters'];
+      final sources = await Future.wait([
+        for (final name in names)
+          rootBundle.loadString('assets/opencc/$name.txt'),
+      ]);
+      return compute(_readSearchLexicon, sources);
+    }());
+    return lexicon.convert(source);
+  }
+
   static Future<List<String>> readerParagraphs(
     List<String> paragraphs,
     Locale locale,
@@ -137,6 +155,20 @@ class _Lexicon {
   }
 }
 
+_Lexicon _readSearchLexicon(List<String> sources) {
+  final words = <String, String>{};
+  for (final source in sources) {
+    for (final line in source.split('\n')) {
+      if (line.isEmpty || line.startsWith('#')) continue;
+      final fields = line.trim().split('\t');
+      if (fields.length == 2) {
+        words.putIfAbsent(fields[0], () => fields[1].split(' ').first);
+      }
+    }
+  }
+  return _Lexicon(words);
+}
+
 Map<String, _Lexicon> _readLexicons(Map<String, String> sources) {
   Map<String, String> read(List<String> names) {
     final words = <String, String>{};
@@ -168,7 +200,7 @@ String appText(BuildContext context, String value) => ChineseText.convert(
 );
 
 /// All ordinary app labels share the locale; book source data stays unchanged.
-class AppText extends StatelessWidget {
+class AppText extends StatefulWidget {
   const AppText(
     this.data, {
     super.key,
@@ -201,22 +233,138 @@ class AppText extends StatelessWidget {
   final TextHeightBehavior? textHeightBehavior;
   final Color? selectionColor;
   @override
-  Widget build(BuildContext context) => Text(
-    appText(context, data),
-    style: style,
-    strutStyle: strutStyle,
-    textAlign: textAlign,
-    textDirection: textDirection,
-    locale: locale,
-    softWrap: softWrap,
-    overflow: overflow,
-    textScaler: textScaler,
-    maxLines: maxLines,
-    semanticsLabel: semanticsLabel == null
+  State<AppText> createState() => _AppTextState();
+}
+
+class _AppTextState extends State<AppText> with SingleTickerProviderStateMixin {
+  AnimationController? _motion;
+  String? _region, _value;
+  List<String> _from = const [], _to = const [];
+  List<double> _delays = const [];
+  int _generation = 0;
+  void _sync() {
+    final region = chineseLocale(
+      Localizations.maybeLocaleOf(context),
+    ).countryCode;
+    final next = appText(context, widget.data);
+    if (_region != null &&
+        _region != region &&
+        widget.data.length <= 512 &&
+        !MediaQuery.disableAnimationsOf(context) &&
+        TickerMode.valuesOf(context).enabled) {
+      _from = (_value ?? next).characters.toList();
+      _to = next.characters.toList();
+      final random = math.Random(widget.data.hashCode ^ ++_generation);
+      _delays = List.generate(
+        math.max(_from.length, _to.length),
+        (_) => random.nextDouble() * .52,
+      );
+      (_motion ??= AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 780),
+      )).forward(from: 0);
+    } else if (_value != next ||
+        _region != region ||
+        MediaQuery.disableAnimationsOf(context)) {
+      _motion?.stop();
+      _motion?.value = 1;
+    }
+    _region = region;
+    _value = next;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(AppText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _sync();
+  }
+
+  @override
+  void dispose() {
+    _motion?.dispose();
+    super.dispose();
+  }
+
+  Widget _text({InlineSpan? span}) {
+    final label = widget.semanticsLabel == null
         ? null
-        : appText(context, semanticsLabel!),
-    textWidthBasis: textWidthBasis,
-    textHeightBehavior: textHeightBehavior,
-    selectionColor: selectionColor,
-  );
+        : appText(context, widget.semanticsLabel!);
+    if (span == null) {
+      return Text(
+        _value ?? appText(context, widget.data),
+        style: widget.style,
+        strutStyle: widget.strutStyle,
+        textAlign: widget.textAlign,
+        textDirection: widget.textDirection,
+        locale: widget.locale,
+        softWrap: widget.softWrap,
+        overflow: widget.overflow,
+        textScaler: widget.textScaler,
+        maxLines: widget.maxLines,
+        semanticsLabel: label,
+        textWidthBasis: widget.textWidthBasis,
+        textHeightBehavior: widget.textHeightBehavior,
+        selectionColor: widget.selectionColor,
+      );
+    }
+    return Text.rich(
+      span,
+      style: widget.style,
+      strutStyle: widget.strutStyle,
+      textAlign: widget.textAlign,
+      textDirection: widget.textDirection,
+      locale: widget.locale,
+      softWrap: widget.softWrap,
+      overflow: widget.overflow,
+      textScaler: widget.textScaler,
+      maxLines: widget.maxLines,
+      semanticsLabel: label ?? _value,
+      textWidthBasis: widget.textWidthBasis,
+      textHeightBehavior: widget.textHeightBehavior,
+      selectionColor: widget.selectionColor,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final motion = _motion;
+    if (motion == null || motion.value == 1) return _text();
+    return AnimatedBuilder(
+      animation: motion,
+      builder: (context, _) {
+        if (motion.value == 1) return _text();
+        final color =
+            widget.style?.color ??
+            DefaultTextStyle.of(context).style.color ??
+            Theme.of(context).colorScheme.onSurface;
+        return _text(
+          span: TextSpan(
+            children: [
+              for (var i = 0; i < _delays.length; i++)
+                _character(i, motion.value, color),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  InlineSpan _character(int i, double clock, Color color) {
+    final t = ((clock - _delays[i]) / .48).clamp(0.0, 1.0);
+    final alpha = (t < .5 ? 1 - t * 1.84 : .08 + (t - .5) * 1.84).clamp(
+      .08,
+      1.0,
+    );
+    final chars = t < .5 ? _from : _to;
+    return TextSpan(
+      text: i < chars.length ? chars[i] : '',
+      style: TextStyle(color: color.withValues(alpha: color.a * alpha)),
+    );
+  }
 }

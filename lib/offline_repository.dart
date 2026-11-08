@@ -5,14 +5,12 @@ import 'package:flutter/foundation.dart';
 
 import 'catalog.dart';
 import 'book_search.dart';
-import 'legado/legado_book_registry.dart' show isLegadoBookId;
-import 'legado/legado_engine_client.dart' show CacheProgressEvent;
-import 'legado/legado_novel_repository.dart';
 import 'offline_cache.dart';
 import 'local_books.dart';
 import 'network_status.dart';
+import 'legacy_transport.dart';
 import 'reader_content.dart'
-    show readerHasMissingIllustrations, readerIllustrationUrl;
+    show ReaderContent, readerHasMissingIllustrations, readerIllustrationUrl;
 import 'ui_notifiers.dart';
 import 'tag_catalogue.dart';
 
@@ -33,6 +31,8 @@ class ChapterDownload {
   DownloadPhase phase = DownloadPhase.queued;
   int completed = 0;
   int total = 0;
+  int illustrations = 0;
+  bool cachingIllustrations = false;
   String? failedChapter;
   Object? error;
 
@@ -45,11 +45,19 @@ class ChapterDownload {
   String get label => switch (phase) {
     DownloadPhase.queued => '等待缓存',
     DownloadPhase.preparing => '正在获取目录',
-    DownloadPhase.downloading => '已缓存 $completed / $total 章',
-    DownloadPhase.completed => '缓存完成 · $completed 章',
+    DownloadPhase.downloading =>
+      cachingIllustrations
+          ? '已缓存 $completed / $total 章 · 正在缓存插图'
+          : '已缓存 $completed / $total 章',
+    DownloadPhase.completed =>
+      '缓存完成 · $completed 章${illustrations > 0 ? ' · $illustrations 张插图' : ''}',
     DownloadPhase.cancelled => '已取消 · 保留已缓存章节',
     DownloadPhase.failed =>
-      failedChapter == null ? '获取目录失败，可重试' : '「$failedChapter」缓存失败，可重试',
+      failedChapter == null
+          ? '获取目录失败，可重试'
+          : cachingIllustrations
+          ? '「$failedChapter」插图未缓存完成，可继续缓存'
+          : '「$failedChapter」缓存失败，可重试',
   };
 }
 
@@ -69,7 +77,11 @@ class OfflineNovelRepository extends FrameChangeNotifier
     required this.cache,
     this.local,
     this.network,
-  }) {
+    Future<Uint8List> Function(String url)? illustrationRequest,
+  }) : _illustrationRequest =
+           illustrationRequest ??
+           ((url) =>
+               LegacyTransport.illustration(url, cacheForViewing: false)) {
     cache.addListener(_cacheChanged);
     local?.addListener(_cacheChanged);
   }
@@ -78,23 +90,16 @@ class OfflineNovelRepository extends FrameChangeNotifier
   final OfflineCacheStore cache;
   final LocalBookStore? local;
   final NetworkStatus? network;
+  final Future<Uint8List> Function(String url) _illustrationRequest;
   bool get offline => network?.offline ?? false;
   bool availableOffline(int id) =>
-      local?.book(id) != null ||
-      (cache.book(id)?.cachedCount ?? 0) > 0 ||
-      (_legadoCachedIndexes[id]?.isNotEmpty ?? false);
+      local?.book(id) != null || (cache.book(id)?.cachedCount ?? 0) > 0;
   final Map<int, Novel> _known = {};
   final Set<int> _offlineDirectories = {};
   final Map<(int, int, CacheEpoch), _ChapterRequest> _requests = {};
   final Set<(int, int, CacheEpoch)> _illustrationRepairs = {};
   final Map<int, ChapterDownload> _jobs = {};
   final Queue<ChapterDownload> _queue = Queue();
-  // Engine-side (Legado) cache downloads (P5.7): chapter bodies and
-  // images live in the engine's own cache folder, not the Flutter
-  // chapter cache, so progress and the offline-available set are
-  // tracked in these side tables keyed by novel id / bridge task id.
-  final Map<int, int> _legadoCacheTasks = {};
-  final Map<int, Set<int>> _legadoCachedIndexes = {};
   final Map<int, FrameChangeNotifier> _bookChanges = {};
   final Map<int, Listenable> _bookObservers = {};
   bool _draining = false;
@@ -201,6 +206,7 @@ class OfflineNovelRepository extends FrameChangeNotifier
     int page = 1,
     bool refresh = false,
     bool Function()? current,
+    void Function(TagSearchProgress)? onProgress,
   }) {
     if (!offline && remote is ProgressiveTagCatalogue) {
       return (remote as ProgressiveTagCatalogue).tagPage(
@@ -208,6 +214,7 @@ class OfflineNovelRepository extends FrameChangeNotifier
         page: page,
         refresh: refresh,
         current: current,
+        onProgress: onProgress,
       );
     }
     return searchFilteredPage(
@@ -333,8 +340,16 @@ class OfflineNovelRepository extends FrameChangeNotifier
   @override
   Future<Novel> detail(Novel novel) async {
     if (isLocalBook(novel.id)) {
-      return local?.book(novel.id) ??
-          (throw const FormatException('本地原书不存在，请重新导入'));
+      if (local == null || !local!.contains(novel.id)) {
+        throw const FormatException('本地原书不存在，请重新导入');
+      }
+      try {
+        return await local!.ensureNavigation(novel.id);
+      } catch (error) {
+        // Failure to enrich an old TOC does not revoke access to its existing
+        // readable chapters, especially when its original was moved/deleted.
+        return local!.book(novel.id)!;
+      }
     }
     if (offline) return await cachedBook(novel.id) ?? novel;
     try {
@@ -452,22 +467,6 @@ class OfflineNovelRepository extends FrameChangeNotifier
     return text;
   }();
 
-  /// Structured image-chapter payloads for the reader's manga mode.
-  /// Only the Legado dispatch remote can answer; the offline text
-  /// cache is deliberately bypassed — it stores chapter PROSE (for
-  /// image chapters that would be the placeholder notice), while the
-  /// image list must come from the engine fetch itself.
-  Future<ChapterImageList?> chapterImages(
-    int novelId,
-    NovelChapter chapter,
-  ) {
-    final target = remote;
-    if (target is LegadoDispatchRepository) {
-      return target.chapterImages(novelId, chapter);
-    }
-    return Future<ChapterImageList?>.value(null);
-  }
-
   @override
   Future<String> chapterContent(int novelId, NovelChapter chapter) async {
     if (isLocalBook(novelId)) return _localContent(novelId, chapter);
@@ -480,6 +479,9 @@ class OfflineNovelRepository extends FrameChangeNotifier
     try {
       final saved = await cache.readChapter(novelId, chapter.id);
       if (saved != null) return saved;
+      if (saved != null && offline) {
+        throw const FormatException('本章旧缓存被插图标记截断，请联网刷新本章；原缓存仍保留');
+      }
       final text = await _fetch(novelId, chapter, request);
       await _saveBody(novelId, chapter.id, text, epoch);
       return text;
@@ -497,18 +499,6 @@ class OfflineNovelRepository extends FrameChangeNotifier
       cache.epochFor(novel.id),
     );
     _jobs[novel.id] = job;
-    // Legado books download through the engine's own cache
-    // orchestrator (P5.7): their chapter bodies must land in the
-    // engine cache folder the bridge reads cache-first — the Flutter
-    // chapter cache below would store the image-chapter placeholder
-    // notice as prose for manga and could never serve the reader's
-    // offline path. Everything else keeps the queued Flutter flow.
-    final target = remote;
-    if (target is LegadoDispatchRepository && isLegadoBookId(novel.id)) {
-      _changed(novel.id);
-      unawaited(_runLegadoCache(job, target));
-      return;
-    }
     _queue.add(job);
     _changed(novel.id);
     if (!_draining) unawaited(_drain());
@@ -518,11 +508,6 @@ class OfflineNovelRepository extends FrameChangeNotifier
     final job = _jobs[id];
     if (job?.active != true) return;
     job!.phase = DownloadPhase.cancelled;
-    final taskId = _legadoCacheTasks.remove(id);
-    final target = remote;
-    if (taskId != null && target is LegadoDispatchRepository) {
-      unawaited(target.cancelCacheTask(taskId).catchError((Object _) {}));
-    }
     _changed(id);
   }
 
@@ -579,15 +564,22 @@ class OfflineNovelRepository extends FrameChangeNotifier
       job.total = selected.length;
       job.phase = DownloadPhase.downloading;
       _changed(job.novel.id);
+      final cachedIllustrations = <String>{};
       for (final chapter in selected) {
         if (!_current(job)) return;
         job.failedChapter = chapter.title;
+        job.cachingIllustrations = false;
         final request = _retainRequest(meta.id, chapter.id, job.epoch);
         try {
           final saved = await cache.readChapter(meta.id, chapter.id);
           if (!_current(job)) return;
-          if (saved == null) {
-            final text = await _fetch(meta.id, chapter, request);
+          var text = saved;
+          if (text == null || readerHasMissingIllustrations(text)) {
+            text = await _fetch(meta.id, chapter, request);
+            if (saved != null && readerHasMissingIllustrations(text)) {
+              job.cachingIllustrations = true;
+              throw const FormatException('本章插图地址暂未完整返回，原有正文已保留，请稍后继续缓存');
+            }
             // Cancelling stops further calls and suppresses a late body commit.
             if (!_current(job)) return;
             final stored = await cache.saveChapter(
@@ -599,7 +591,44 @@ class OfflineNovelRepository extends FrameChangeNotifier
             if (!_current(job)) return;
             if (!stored) throw StateError('章节已不在本地目录中');
           }
+          if (readerHasMissingIllustrations(text)) {
+            job.cachingIllustrations = true;
+            throw const FormatException('本章插图地址暂未完整返回，正文已保留，请稍后继续缓存');
+          }
+          final images = text.contains('<!--image-->')
+              ? (await ReaderContent.parse(text)).illustrations.toSet()
+              : const <String>{};
+          for (final url in images) {
+            if (!_current(job)) return;
+            if (url.startsWith('wenku-local:') ||
+                cachedIllustrations.contains(url)) {
+              continue;
+            }
+            job.cachingIllustrations = true;
+            _changed(job.novel.id);
+            if (!await cache.hasIllustration(meta.id, url)) {
+              if (!_current(job)) return;
+              final retained = await cache.readIllustration(url);
+              if (!_current(job)) return;
+              if (retained == null && offline) {
+                throw const FormatException('当前无网络连接，联网后可继续缓存插图');
+              }
+              final bytes = retained ?? await _illustrationRequest(url);
+              if (!_current(job)) return;
+              final stored = await cache.saveIllustration(
+                meta.id,
+                url,
+                bytes,
+                epoch: job.epoch,
+              );
+              if (!_current(job)) return;
+              if (!stored) throw StateError('书籍缓存已移除');
+            }
+            cachedIllustrations.add(url);
+            job.illustrations++;
+          }
           if (!_current(job)) return;
+          job.cachingIllustrations = false;
           job.completed++;
           _changed(job.novel.id);
         } finally {
@@ -612,158 +641,12 @@ class OfflineNovelRepository extends FrameChangeNotifier
       _changed(job.novel.id);
     } catch (error) {
       if (!_current(job)) return;
-      // Stop at the first failure; retry skips all previously committed bodies.
+
+      // Retry skips committed bodies and images, but still examines cached
+      // bodies so older text-only downloads can fill their missing media.
       job.error = error;
       job.phase = DownloadPhase.failed;
       _changed(job.novel.id);
-    }
-  }
-
-  /// The Legado branch of [download]: drives the engine's cache
-  /// orchestrator through the dispatch repository and mirrors its
-  /// progress events onto the same [ChapterDownload] job the existing
-  /// UI renders (label / counts / phases unchanged).
-  Future<void> _runLegadoCache(
-    ChapterDownload job,
-    LegadoDispatchRepository dispatch,
-  ) async {
-    final id = job.novel.id;
-    StreamSubscription<CacheProgressEvent>? subscription;
-    try {
-      job.phase = DownloadPhase.preparing;
-      _changed(id);
-      if (offline) throw const FormatException('当前无网络连接，联网后可继续缓存');
-      var chapters = job.novel.chapters;
-      if (chapters.isEmpty) {
-        chapters = await dispatch.chapters(id);
-        if (!_current(job)) return;
-      }
-      // Keep the book listed on the offline-cache page, exactly like
-      // the Flutter flow's saveBook before chapter bodies land.
-      final meta = _known[id] ?? job.novel;
-      final full = meta.withChapters(chapters);
-      final stored = await cache.saveBook(full, epoch: job.epoch);
-      if (!_current(job)) return;
-      if (!stored) throw StateError('目录缓存未完成');
-      _known[id] = full;
-      job.novel = full;
-      final selected = chapters
-          .where((c) => job.chapterIds?.contains(c.id) ?? true)
-          .toList();
-      if (selected.isEmpty) throw const FormatException('选择的章节已不在目录中');
-      job.total = selected.length;
-      // NovelChapter.id is the engine chapter index + 1 (see
-      // legadoNovelChapters); menu selections are contiguous, so one
-      // inclusive engine range covers the job (a volume chapter inside
-      // the span is skipped gracefully by the engine).
-      var fromIndex = selected.first.id - 1;
-      var toIndex = selected.first.id - 1;
-      for (final chapter in selected) {
-        final index = chapter.id - 1;
-        if (index < fromIndex) fromIndex = index;
-        if (index > toIndex) toIndex = index;
-      }
-      final taskId = await dispatch.startCacheDownload(
-        id,
-        fromIndex: fromIndex,
-        toIndex: toIndex,
-      );
-      if (!_current(job)) {
-        unawaited(dispatch.cancelCacheTask(taskId).catchError((Object _) {}));
-        return;
-      }
-      _legadoCacheTasks[id] = taskId;
-      job.phase = DownloadPhase.downloading;
-      _changed(id);
-      final titlesByIndex = <int, String>{
-        for (final chapter in chapters) chapter.id - 1: chapter.title,
-      };
-      final done = Completer<void>();
-      subscription = dispatch.cacheTaskEvents(taskId).listen(
-        (event) {
-          if (!_current(job)) {
-            if (!done.isCompleted) done.complete();
-            return;
-          }
-          job.completed = event.done;
-          if (event.total > 0) job.total = event.total;
-          final failed = event.failed;
-          job.failedChapter = failed.isEmpty
-              ? null
-              : titlesByIndex[failed.first];
-          final terminal =
-              event.total > 0 && event.done + failed.length >= event.total;
-          if (!terminal) {
-            _changed(id);
-            return;
-          }
-          _legadoCachedIndexes[id] = <int>{
-            ...?_legadoCachedIndexes[id],
-            for (var i = fromIndex; i <= toIndex; i++)
-              if (!failed.contains(i)) i,
-          };
-          job.phase = failed.isEmpty || event.done > 0
-              ? DownloadPhase.completed
-              : DownloadPhase.failed;
-          if (job.phase == DownloadPhase.failed) {
-            job.error = const FormatException('缓存下载失败');
-          }
-          _legadoCacheTasks.remove(id);
-          _changed(id);
-          if (!done.isCompleted) done.complete();
-        },
-        onError: (Object error) {
-          if (!done.isCompleted) done.completeError(error);
-        },
-        onDone: () {
-          if (!done.isCompleted) done.complete();
-        },
-      );
-      await done.future;
-      if (_current(job) && job.phase == DownloadPhase.downloading) {
-        // The event stream ended without a terminal event.
-        job.phase = DownloadPhase.failed;
-        job.error = StateError('缓存任务意外结束');
-        _changed(id);
-      }
-    } catch (error) {
-      if (!_current(job)) return;
-      job.error = error;
-      job.phase = DownloadPhase.failed;
-      _changed(id);
-    } finally {
-      await subscription?.cancel();
-      if (identical(_jobs[id], job)) _legadoCacheTasks.remove(id);
-    }
-  }
-
-  /// Chapters of [novel] known to sit in the engine-side cache
-  /// (P5.7), counted against the book's own chapter list; null for
-  /// non-Legado books, where the Flutter chapter cache is the count.
-  int? legadoCachedCount(Novel novel) {
-    if (!isLegadoBookId(novel.id)) return null;
-    final indexes = _legadoCachedIndexes[novel.id];
-    if (indexes == null) return 0;
-    var count = 0;
-    for (final chapter in novel.chapters) {
-      if (indexes.contains(chapter.id - 1)) count++;
-    }
-    return count;
-  }
-
-  /// Re-reads the engine-side cached set for a Legado book (e.g. when
-  /// its detail page opens) so offline counts survive restarts.
-  Future<void> refreshLegadoCacheState(Novel novel) async {
-    final target = remote;
-    if (target is! LegadoDispatchRepository) return;
-    if (!isLegadoBookId(novel.id)) return;
-    try {
-      final indexes = await target.cachedChapterIndexes(novel.id);
-      _legadoCachedIndexes[novel.id] = indexes.toSet();
-      _changed(novel.id);
-    } catch (_) {
-      // Offline counts are advisory; a failed probe keeps the last
-      // known set.
     }
   }
 
@@ -771,11 +654,6 @@ class OfflineNovelRepository extends FrameChangeNotifier
     final previousJob = _jobs[id];
     cancel(id);
     await cache.removeBook(id);
-    final target = remote;
-    if (target is LegadoDispatchRepository && isLegadoBookId(id)) {
-      unawaited(target.clearBookCache(id).catchError((Object _) {}));
-      _legadoCachedIndexes.remove(id);
-    }
     // A newer download may already own the new cache generation. Deletion
     // completion must not remove that later user action's progress entry.
     if (identical(_jobs[id], previousJob)) _jobs.remove(id);
@@ -790,17 +668,6 @@ class OfflineNovelRepository extends FrameChangeNotifier
       if (job.active) job.phase = DownloadPhase.cancelled;
     }
     _changed();
-    final target = remote;
-    if (target is LegadoDispatchRepository) {
-      for (final taskId in _legadoCacheTasks.values.toList()) {
-        unawaited(target.cancelCacheTask(taskId).catchError((Object _) {}));
-      }
-      for (final id in _legadoCachedIndexes.keys.toList()) {
-        unawaited(target.clearBookCache(id).catchError((Object _) {}));
-      }
-    }
-    _legadoCacheTasks.clear();
-    _legadoCachedIndexes.clear();
     await cache.clear();
     _jobs.removeWhere((_, job) => !cache.isCurrent(job.novel.id, job.epoch));
     _offlineDirectories.clear();
@@ -815,13 +682,6 @@ class OfflineNovelRepository extends FrameChangeNotifier
     for (final job in _jobs.values) {
       if (job.active) job.phase = DownloadPhase.cancelled;
     }
-    final target = remote;
-    if (target is LegadoDispatchRepository) {
-      for (final taskId in _legadoCacheTasks.values) {
-        unawaited(target.cancelCacheTask(taskId).catchError((Object _) {}));
-      }
-    }
-    _legadoCacheTasks.clear();
     cache.removeListener(_cacheChanged);
     local?.removeListener(_cacheChanged);
     for (final observer in _bookChanges.values) {

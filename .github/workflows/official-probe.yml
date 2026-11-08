@@ -1,0 +1,46 @@
+name: official-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['official-base']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.5'
+          channel: stable
+          cache: true
+      - name: flutter version
+        run: flutter --version
+      - name: pub get
+        run: flutter pub get
+      - name: analyze
+        run: |
+          set +e
+          flutter analyze --no-fatal-infos --no-fatal-warnings > analyze.txt 2>&1
+          code=$?
+          echo "ANALYZE_EXIT=$code"
+          echo "ERROR_COUNT=$(grep -c 'error •' analyze.txt)"
+          echo "----- first 150 errors -----"
+          grep 'error •' analyze.txt | head -150
+          echo "----- tail -----"
+          tail -40 analyze.txt
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: analyze-report
+          path: analyze.txt
+          if-no-files-found: ignore

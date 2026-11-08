@@ -8,10 +8,16 @@ import '../app_ui.dart';
 import '../catalog.dart';
 import '../reader_tools.dart' show ReaderValueSlider;
 import '../reader_speech_highlight.dart';
+import '../reader_languages.dart';
 import '../ui_notifiers.dart';
 import 'controller.dart';
 import 'models.dart';
+import 'languages.dart';
 import 'custom_tts_page.dart';
+import 'system_tts_page.dart';
+import 'listening_speed_control.dart';
+import 'reader_target.dart';
+import 'enhancement_controls.dart';
 
 class ListeningScope extends InheritedWidget {
   const ListeningScope({
@@ -33,18 +39,29 @@ Future<void> showListeningPanel(
   required Novel novel,
   required int chapter,
   int paragraph = 0,
+  Set<String> languages = const {},
   bool reduceMotion = false,
   Widget Function(Widget)? surfaceWrapper,
+  Future<void> Function(ListeningReaderTarget target)? onOpenReader,
 }) => showJellySheet<void>(
   context: context,
   reduceMotion: reduceMotion,
   heightFactor: .86,
   surfaceWrapper: surfaceWrapper,
-  builder: (_) => ListeningPanel(
+  builder: (sheetContext) => ListeningPanel(
     controller: controller,
     novel: novel,
     chapter: chapter,
     paragraph: paragraph,
+    languages: languages,
+    onOpenReader: onOpenReader == null
+        ? null
+        : (target) async {
+            final route = ModalRoute.of(sheetContext);
+            Navigator.pop(sheetContext);
+            if (route != null) await route.completed;
+            if (context.mounted) await onOpenReader(target);
+          },
   ),
 );
 
@@ -56,16 +73,44 @@ class ListeningPanel extends StatefulWidget {
     required this.chapter,
     this.paragraph = 0,
     this.embedded = false,
+    this.languages = const {},
+    this.onOpenReader,
   });
   final ListeningController controller;
   final Novel novel;
   final int chapter, paragraph;
   final bool embedded;
+  final Set<String> languages;
+  final Future<void> Function(ListeningReaderTarget target)? onOpenReader;
   @override
   State<ListeningPanel> createState() => _ListeningPanelState();
 }
 
+const listeningGestureHint = '双击其他段落可快速跳转朗读；双击当前段落可暂停，再次双击继续播放。';
+
 class _ListeningPanelState extends State<ListeningPanel> {
+  bool _routeCurrent = true;
+  int _routeActivation = 0;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final current = ModalRoute.isCurrentOf(context) != false;
+    if (current && !_routeCurrent) _routeActivation++;
+    _routeCurrent = current;
+  }
+
+  Future<void> _systemEngine() async {
+    final voice = await showJellySheet<SpeechVoice>(
+      context: context,
+      reduceMotion: MediaQuery.disableAnimationsOf(context),
+      builder: (_) => SystemSpeechEnginesPanel(
+        selected: widget.controller.snapshot.value.voice,
+      ),
+    );
+    if (voice != null && mounted) await _voice(voice);
+  }
+
   Future<void> _configureCustom() async {
     final settings = widget.controller.customSpeech;
     if (settings == null) return;
@@ -93,15 +138,129 @@ class _ListeningPanelState extends State<ListeningPanel> {
     await _act(() => widget.controller.setVoice(voice));
   }
 
+  Future<void> _languageVoice(String language) async {
+    final choice = await showJellySheet<({SpeechVoice? voice})>(
+      context: context,
+      reduceMotion: MediaQuery.disableAnimationsOf(context),
+      builder: (_) => _LanguageVoicePicker(
+        controller: widget.controller,
+        language: language,
+        selected: widget.controller.snapshot.value.voiceOverrides[language],
+      ),
+    );
+    if (choice != null && mounted) {
+      await _act(
+        () => widget.controller.setLanguageVoice(language, choice.voice),
+      );
+    }
+  }
+
   Future<void> _playUsingSource(Future<void> Function() action) => _act(action);
+
+  Future<void> _playFromSettings(Future<void> Function() action) async {
+    await _act(action);
+    if (!mounted || !widget.embedded) return;
+    final state = widget.controller.snapshot.value;
+    if (state.novel?.id != widget.novel.id || !state.requestingPlayback) return;
+    showNovelFeedback(
+      context,
+      listeningGestureHint,
+      duration: const Duration(seconds: 4),
+    );
+  }
+
+  Widget _bookEntry(ListeningSnapshot state) {
+    final live = state.active && state.novel != null;
+    final book = live ? state.novel! : widget.novel;
+    final canOpen =
+        widget.onOpenReader != null && live && state.current != null;
+    final secondary = Theme.of(context).colorScheme.onSurfaceVariant;
+    return Semantics(
+      button: canOpen,
+      label: canOpen ? '打开正在听的小说' : null,
+      child: JellyTapSurface(
+        key: const ValueKey('listening-open-reader'),
+        onTap: canOpen
+            ? () => _act(() async {
+                final target = currentListeningReaderTarget(widget.controller);
+                if (target != null) await widget.onOpenReader!(target);
+              })
+            : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            children: [
+              ExcludeSemantics(
+                child: NovelCover(
+                  book,
+                  key: ValueKey((
+                    'listening-book-cover',
+                    book.id,
+                    book.coverUrl,
+                  )),
+                  width: 44,
+                  height: 60,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    AppText(
+                      book.title,
+                      key: const ValueKey('listening-book-title'),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    AppText(
+                      live
+                          ? state.chapterTitle.isEmpty
+                                ? '第 ${state.chapter + 1} 章'
+                                : state.chapterTitle
+                          : '从第 ${widget.chapter + 1} 章当前段落开始',
+                      key: const ValueKey('listening-book-chapter'),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.4,
+                        color: secondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (canOpen) ...[
+                const SizedBox(width: 10),
+                ArchiveIcon(
+                  CupertinoIcons.chevron_right,
+                  size: 16,
+                  color: secondary,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) => SingleChildScrollView(
     key: const ValueKey('listening-panel-scroll'),
     primary: false,
     padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-    child: ValueListenableBuilder<ListeningSnapshot>(
-      valueListenable: widget.controller.snapshot,
+    child: SelectedValueBuilder<ListeningSnapshot, ListeningSnapshot>(
+      listenable: widget.controller.snapshot,
+      select: (value) => value,
+      pauseWhenCovered: true,
       child: _preferences(),
       builder: (context, state, preferences) {
         final own = state.novel?.id == widget.novel.id;
@@ -128,31 +287,34 @@ class _ListeningPanelState extends State<ListeningPanel> {
               ),
               const SizedBox(height: 16),
             ],
-            AppText(
-              own && state.active ? state.novel!.title : widget.novel.title,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 6),
+            _bookEntry(state),
+            const SizedBox(height: 12),
             AppText(
               '当前音源 · ${switch (state.voice.source) {
-                ListeningSource.system => '系统离线',
+                ListeningSource.system => '系统引擎',
                 ListeningSource.custom => '自定义接口',
                 _ => '自然在线',
-              }} · ${state.voice.label}',
+              }} · ${own ? state.outputVoice.label : state.voice.label}',
               style: TextStyle(
                 fontSize: 12,
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
-            const SizedBox(height: 6),
-            AppText(
-              own && state.current != null
-                  ? '第 ${state.chapter + 1} 章 · ${state.chapterTitle}'
-                  : '从第 ${widget.chapter + 1} 章当前段落开始',
-              style: const TextStyle(fontSize: 13),
-            ),
+            if (!own && state.active)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: AppText(
+                  '从《${widget.novel.title}》第 ${widget.chapter + 1} 章当前段落开始',
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
             if (own && state.active)
-              _ListeningTransportStatus(phase: state.phase),
+              _ListeningTransportStatus(
+                phase: widget.controller.seeking
+                    ? ListeningPhase.preparing
+                    : state.phase,
+                seeking: widget.controller.seeking,
+              ),
             if (own && state.error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
@@ -165,6 +327,20 @@ class _ListeningPanelState extends State<ListeningPanel> {
                   '已跳过 ${state.skippedSegments} 个未生成语音的语段',
                   style: TextStyle(
                     fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            if (own && state.missingLanguages.isNotEmpty && state.error == null)
+              Padding(
+                key: const ValueKey('listening-missing-languages'),
+                padding: const EdgeInsets.only(top: 10),
+                child: AppText(
+                  '${state.missingLanguages.map(readerLanguageLabel).join('、')}暂无可用的匹配音色'
+                  '，已跳过 ${state.skippedLanguageSegments} 个语段',
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.5,
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -210,6 +386,18 @@ class _ListeningPanelState extends State<ListeningPanel> {
                       : null,
                 ),
                 GlassIconButton(
+                  key: const ValueKey('listening-rewind-15'),
+                  icon: CupertinoIcons.gobackward_15,
+                  label: '后退15秒',
+                  onPressed: own && widget.controller.canSeek
+                      ? () => _act(
+                          () => widget.controller.seekBy(
+                            const Duration(seconds: -15),
+                          ),
+                        )
+                      : null,
+                ),
+                GlassIconButton(
                   key: const ValueKey('listening-play-pause'),
                   icon: own && (state.requestingPlayback)
                       ? CupertinoIcons.pause_fill
@@ -217,7 +405,7 @@ class _ListeningPanelState extends State<ListeningPanel> {
                   label: own && (state.requestingPlayback) ? '暂停听书' : '开始听书',
                   onPressed: () => own && state.requestingPlayback
                       ? _act(widget.controller.pause)
-                      : _playUsingSource(
+                      : _playFromSettings(
                           () => own && state.active
                               ? widget.controller.resume()
                               : widget.controller.start(
@@ -229,6 +417,18 @@ class _ListeningPanelState extends State<ListeningPanel> {
                         ),
                 ),
                 GlassIconButton(
+                  key: const ValueKey('listening-forward-15'),
+                  icon: CupertinoIcons.goforward_15,
+                  label: '前进15秒',
+                  onPressed: own && widget.controller.canSeek
+                      ? () => _act(
+                          () => widget.controller.seekBy(
+                            const Duration(seconds: 15),
+                          ),
+                        )
+                      : null,
+                ),
+                GlassIconButton(
                   icon: CupertinoIcons.forward_end,
                   label: '听下一段',
                   onPressed:
@@ -238,21 +438,21 @@ class _ListeningPanelState extends State<ListeningPanel> {
                       ? () => _act(() => widget.controller.moveParagraph(1))
                       : null,
                 ),
-                GlassIconButton(
-                  key: const ValueKey('listening-stop'),
-                  icon: CupertinoIcons.stop_fill,
-                  label: '停止听书',
-                  onPressed: state.active
-                      ? () => _act(widget.controller.stop)
-                      : null,
-                ),
               ],
             ),
             if (own && state.current != null)
-              ValueListenableBuilder<ListeningChapterProgress>(
-                valueListenable: widget.controller.chapterProgress,
+              SelectedValueBuilder<
+                ListeningChapterProgress,
+                ListeningChapterProgress
+              >(
+                listenable: widget.controller.chapterProgress,
+                select: (value) => value,
+                pauseWhenCovered: true,
                 builder: (context, progress, _) =>
                     TweenAnimationBuilder<double>(
+                      // Return at the current position instead of animating
+                      // through progress accumulated behind another page.
+                      key: ValueKey(('listening-progress', _routeActivation)),
                       tween: Tween(end: progress.fraction),
                       duration: MediaQuery.disableAnimationsOf(context)
                           ? Duration.zero
@@ -278,6 +478,7 @@ class _ListeningPanelState extends State<ListeningPanel> {
                 ({int position, int duration})
               >(
                 listenable: widget.controller.progress,
+                pauseWhenCovered: true,
                 select: (progress) => (
                   position: progress.position.inSeconds,
                   duration: progress.duration.inSeconds,
@@ -297,6 +498,13 @@ class _ListeningPanelState extends State<ListeningPanel> {
               alignment: WrapAlignment.spaceBetween,
               spacing: 8,
               children: [
+                GlassTextButton(
+                  key: const ValueKey('listening-stop'),
+                  onPressed: state.active
+                      ? () => _act(widget.controller.stop)
+                      : null,
+                  child: const AppText('停止听书'),
+                ),
                 GlassTextButton(
                   key: const ValueKey('listening-from-here'),
                   onPressed: () => _playUsingSource(
@@ -346,36 +554,116 @@ class _ListeningPanelState extends State<ListeningPanel> {
         ({
           SpeechVoice voice,
           double speed,
+          int paragraphGapMs,
           bool follow,
           DateTime? sleepUntil,
           bool sleepAfterChapter,
+          String? spokenLanguage,
+          Set<String> languages,
+          Map<String, SpeechVoice> voiceOverrides,
         })
       >(
         listenable: widget.controller.snapshot,
+        pauseWhenCovered: true,
         select: (state) => (
           voice: state.voice,
           speed: state.speed,
+          paragraphGapMs: state.paragraphGapMs,
           follow: state.follow,
           sleepUntil: state.sleepUntil,
           sleepAfterChapter: state.sleepAfterChapter,
+          spokenLanguage: widget.controller.spokenLanguage(widget.novel.id),
+          languages: state.novel?.id == widget.novel.id
+              ? state.languages
+              : const {},
+          voiceOverrides: state.voiceOverrides,
         ),
         builder: (context, state, _) {
           final source = state.voice.source;
+          final languages = <String>{
+            ...widget.languages
+                .map(speechLanguageCode)
+                .where((code) => code.isNotEmpty),
+            ...state.languages,
+            speechLanguageCode(state.voice.locale),
+            ...state.voiceOverrides.keys,
+            if (state.spokenLanguage != null) state.spokenLanguage!,
+          }.toList()..sort();
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
-              ReaderValueSlider(
-                sliderKey: const ValueKey('listening-speed'),
-                label: '语速',
+              const AppText(
+                '本书朗读语言',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  GlassTextButton(
+                    key: const ValueKey('listening-language-auto'),
+                    selected: state.spokenLanguage == null,
+                    onPressed: () => _act(
+                      () => widget.controller.setSpokenLanguage(
+                        widget.novel.id,
+                        null,
+                      ),
+                    ),
+                    child: const AppText('自动匹配'),
+                  ),
+                  for (final language in languages)
+                    GlassTextButton(
+                      key: ValueKey('listening-language-only-$language'),
+                      selected: state.spokenLanguage == language,
+                      onPressed: () => _act(
+                        () => widget.controller.setSpokenLanguage(
+                          widget.novel.id,
+                          language,
+                        ),
+                      ),
+                      child: AppText('仅朗读${readerLanguageLabel(language)}'),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              AppText(
+                '按段落语言匹配音色，不改变正文显示。没有对应语言的语音模型就跳过，不使用其他语言代读。',
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.5,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 18),
+              ListeningSpeedControl(
                 value: state.speed,
-                min: listeningMinimumSpeed,
-                max: listeningMaximumSpeed,
-                divisions: 50,
-                format: (value) => '${value.toStringAsFixed(2)}×',
                 onCommitted: (value) =>
                     _act(() => widget.controller.setSpeed(value)),
               ),
+              const SizedBox(height: 12),
+              ReaderValueSlider(
+                sliderKey: const ValueKey('listening-paragraph-gap'),
+                label: '段落间隔',
+                value: state.paragraphGapMs / 1000,
+                min: 0,
+                max: listeningMaximumParagraphGapMs / 1000,
+                divisions: listeningMaximumParagraphGapMs ~/ 100,
+                format: (value) =>
+                    value == 0 ? '不额外停顿' : '${value.toStringAsFixed(1)} 秒',
+                onCommitted: (value) => _act(
+                  () =>
+                      widget.controller.setParagraphGap((value * 1000).round()),
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListeningEnhancementSettings(
+                enhancement: widget.controller.enhancement,
+                onChanged: (value) =>
+                    _act(() => widget.controller.setEnhancement(value)),
+              ),
+              const SizedBox(height: 12),
               Row(
                 children: [
                   const Expanded(child: AppText('跟随朗读段落')),
@@ -442,7 +730,6 @@ class _ListeningPanelState extends State<ListeningPanel> {
               AppControls.segments<ListeningSource>(
                 context,
                 groupValue: source,
-                disabledChildren: const {ListeningSource.system},
                 children: {
                   ListeningSource.edge: const AppText(
                     '自然在线',
@@ -454,7 +741,7 @@ class _ListeningPanelState extends State<ListeningPanel> {
                       textAlign: TextAlign.center,
                     ),
                   ListeningSource.system: const AppText(
-                    '系统离线 · 待开发',
+                    '系统引擎',
                     textAlign: TextAlign.center,
                   ),
                 },
@@ -462,6 +749,7 @@ class _ListeningPanelState extends State<ListeningPanel> {
                   if (source == ListeningSource.edge) {
                     await _voice(defaultEdgeVoice);
                   }
+                  if (source == ListeningSource.system) await _systemEngine();
                   if (source == ListeningSource.custom) {
                     final config = widget.controller.customSpeech?.config;
                     if (config == null) {
@@ -474,7 +762,9 @@ class _ListeningPanelState extends State<ListeningPanel> {
               ),
               const SizedBox(height: 12),
               AppText(
-                source == ListeningSource.custom
+                source == ListeningSource.system
+                    ? '使用手机安装的 TTS 引擎，语音数据与联网方式由引擎管理。'
+                    : source == ListeningSource.custom
                     ? '使用你配置的 Microsoft SSML 兼容接口。'
                     : 'Edge 神经网络音色 · 免费，无需登录。未缓存语段需联网生成；已生成语音可直接复用。',
                 style: TextStyle(
@@ -484,84 +774,51 @@ class _ListeningPanelState extends State<ListeningPanel> {
                 ),
               ),
               const SizedBox(height: 8),
+              GlassTextButton(
+                key: const ValueKey('listening-system-engines'),
+                onPressed: _systemEngine,
+                child: const AppText('选择系统朗读引擎'),
+              ),
               if (widget.controller.customSpeech != null)
                 GlassTextButton(
                   key: const ValueKey('listening-custom-endpoint'),
                   onPressed: _configureCustom,
                   child: const AppText('配置自定义语音接口'),
                 ),
-              AnimatedOptionSection(
-                expanded: source == ListeningSource.edge,
-                child: ValueListenableBuilder<ListeningVoiceCatalog>(
-                  valueListenable: widget.controller.voices,
-                  builder: (context, catalog, _) {
-                    final available = catalog.online;
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
+              const SizedBox(height: 12),
+              const AppText(
+                '分语言音色',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              for (final language in languages)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: GlassTextButton(
+                    key: ValueKey('listening-language-voice-$language'),
+                    onPressed: () => _languageVoice(language),
+                    child: Row(
                       children: [
-                        if (catalog.loading)
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 12),
-                            child: InlineSkeleton(
-                              width: double.infinity,
-                              height: 36,
-                            ),
+                        AppText(readerLanguageLabel(language)),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: AppText(
+                            state.voiceOverrides[language]?.label ?? '自动匹配',
+                            textAlign: TextAlign.end,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 13),
                           ),
-                        if (catalog.message != null &&
-                            catalog.messageSource == source)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
-                            child: AppText(
-                              catalog.message!,
-                              style: const TextStyle(fontSize: 12, height: 1.6),
-                            ),
-                          ),
-                        for (final voice in available)
-                          Semantics(
-                            selected:
-                                state.voice.id == voice.id &&
-                                state.voice.engine == voice.engine,
-                            child: GlassTextButton(
-                              key: ValueKey(
-                                'listening-voice-${voice.engine}-${voice.id}',
-                              ),
-                              onPressed: () => _voice(voice),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: AppText(
-                                      voice.label,
-                                      style: const TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                  SizedBox(
-                                    width: 20,
-                                    child:
-                                        state.voice.id == voice.id &&
-                                            state.voice.engine == voice.engine
-                                        ? const Icon(
-                                            CupertinoIcons.checkmark,
-                                            size: 16,
-                                          )
-                                        : null,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        GlassTextButton(
-                          onPressed: catalog.loading
-                              ? null
-                              : () => _act(
-                                  () => widget.controller.refreshVoices(),
-                                ),
-                          child: const AppText('获取更多在线音色'),
+                        ),
+                        const SizedBox(width: 8),
+                        const ArchiveIcon(
+                          CupertinoIcons.chevron_forward,
+                          size: 14,
                         ),
                       ],
-                    );
-                  },
+                    ),
+                  ),
                 ),
-              ),
               const SizedBox(height: 8),
               AppText(
                 '双击正在朗读的段落可暂停／继续，双击其他文字段落从那里听起。自动跳过插图和纯符号；个别语段合成失败后继续，连续失败时暂停提示。支持锁屏、耳机按键与后台听书。',
@@ -579,11 +836,135 @@ class _ListeningPanelState extends State<ListeningPanel> {
       '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}';
 }
 
+class _LanguageVoicePicker extends StatefulWidget {
+  const _LanguageVoicePicker({
+    required this.controller,
+    required this.language,
+    this.selected,
+  });
+  final ListeningController controller;
+  final String language;
+  final SpeechVoice? selected;
+  @override
+  State<_LanguageVoicePicker> createState() => _LanguageVoicePickerState();
+}
+
+class _LanguageVoicePickerState extends State<_LanguageVoicePicker> {
+  late Future<List<SpeechVoice>> _voices;
+  @override
+  void initState() {
+    super.initState();
+    _voices = widget.controller.voicesForLanguage(widget.language);
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: MediaQuery.sizeOf(context).height * .64,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 8, 14, 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: ArchiveSection(
+                  title: '${readerLanguageLabel(widget.language)}音色',
+                  code: 'AUDIO / LANGUAGE VOICE',
+                ),
+              ),
+              GlassIconButton(
+                icon: CupertinoIcons.xmark,
+                label: '关闭音色选择',
+                onPressed: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: FutureBuilder<List<SpeechVoice>>(
+            future: _voices,
+            builder: (context, snapshot) {
+              final voices = snapshot.data;
+              final selectedAvailable =
+                  voices?.any((voice) => voice.id == widget.selected?.id) ??
+                  true;
+              return ListView(
+                key: const ValueKey('listening-language-voice-options'),
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                children: [
+                  GlassTextButton(
+                    key: const ValueKey('listening-language-voice-default'),
+                    selected: widget.selected == null,
+                    onPressed: () => Navigator.pop(context, (voice: null)),
+                    child: const AppText('自动匹配'),
+                  ),
+                  const SizedBox(height: 12),
+                  if (snapshot.connectionState != ConnectionState.done)
+                    const InlineSkeleton(width: double.infinity, height: 48),
+                  if (snapshot.hasError) ...[
+                    AppText(
+                      snapshot.error is SpeechFailure
+                          ? (snapshot.error as SpeechFailure).message
+                          : '音色列表暂时不可用',
+                    ),
+                    GlassTextButton(
+                      onPressed: () => setState(() {
+                        _voices = widget.controller.voicesForLanguage(
+                          widget.language,
+                        );
+                      }),
+                      child: const AppText('重新检测'),
+                    ),
+                  ],
+                  if (voices != null && voices.isEmpty)
+                    AppText(
+                      '没有可用的${readerLanguageLabel(widget.language)}音色，该语言将跳过。',
+                    ),
+                  if (!selectedAvailable && widget.selected != null)
+                    const AppText(
+                      '原选音色暂不可用，请重新选择或恢复自动匹配。',
+                      style: TextStyle(fontSize: 12, height: 1.5),
+                    ),
+                  for (final voice in voices ?? const <SpeechVoice>[])
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: GlassTextButton(
+                        key: ValueKey('listening-language-option-${voice.id}'),
+                        selected: widget.selected?.id == voice.id,
+                        onPressed: () => Navigator.pop(context, (voice: voice)),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            AppText(
+                              voice.label,
+                              style: const TextStyle(fontSize: 14),
+                            ),
+                            if (voice.source == ListeningSource.system)
+                              AppText(
+                                '${voice.locale} · ${voice.offline ? '可离线' : '需要网络'}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 /// Short decoder handoffs keep the same line and height. Only a sustained wait
 /// changes the status, so changing paragraphs never inserts/removes a skeleton.
 class _ListeningTransportStatus extends StatefulWidget {
-  const _ListeningTransportStatus({required this.phase});
+  const _ListeningTransportStatus({required this.phase, this.seeking = false});
   final ListeningPhase phase;
+  final bool seeking;
   @override
   State<_ListeningTransportStatus> createState() =>
       _ListeningTransportStatusState();
@@ -601,7 +982,10 @@ class _ListeningTransportStatusState extends State<_ListeningTransportStatus> {
   @override
   void didUpdateWidget(_ListeningTransportStatus oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.phase != widget.phase) _update();
+    if (oldWidget.phase != widget.phase ||
+        oldWidget.seeking != widget.seeking) {
+      _update();
+    }
   }
 
   void _update() {
@@ -625,7 +1009,7 @@ class _ListeningTransportStatusState extends State<_ListeningTransportStatus> {
     padding: const EdgeInsets.only(top: 10),
     child: AppText(
       _waiting
-          ? '正在缓冲语音…'
+          ? (widget.seeking ? '正在加载跳转位置…' : '正在缓冲语音…')
           : widget.phase == ListeningPhase.paused
           ? '已暂停'
           : widget.phase == ListeningPhase.failed
@@ -650,9 +1034,11 @@ class ListeningParagraphHighlight extends StatelessWidget {
     required this.child,
     this.interactive = true,
     this.onDoubleTap,
+    this.chapterId,
   });
   final ListeningController controller;
   final int novelId, chapter, paragraph;
+  final int? chapterId;
   final Widget child;
   final bool interactive;
   final Future<void> Function()? onDoubleTap;
@@ -663,12 +1049,18 @@ class ListeningParagraphHighlight extends StatelessWidget {
         ({bool own, bool current, bool playing})
       >(
         listenable: controller.snapshot,
+        pauseWhenCovered: true,
         select: (state) {
           final own = state.active && state.novel?.id == novelId;
+          final source = state.novel;
+          final sameChapter = chapterId != null && chapterId! > 0
+              ? source != null &&
+                    state.chapter >= 0 &&
+                    state.chapter < source.chapters.length &&
+                    source.chapters[state.chapter].id == chapterId
+              : state.chapter == chapter;
           final current =
-              own &&
-              state.chapter == chapter &&
-              state.current?.paragraph == paragraph;
+              own && sameChapter && state.current?.paragraph == paragraph;
           return (
             own: own,
             current: current,
@@ -687,6 +1079,7 @@ class ListeningParagraphHighlight extends StatelessWidget {
           );
           if (!state.own || !interactive) return plane;
           void activate() {
+            AppHaptics.play(context, HapticCue.action);
             unawaited(
               (onDoubleTap?.call() ??
                       controller.paragraphDoubleTap(

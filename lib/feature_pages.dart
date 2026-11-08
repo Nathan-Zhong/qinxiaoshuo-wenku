@@ -13,6 +13,7 @@ import 'novel_feed_controller.dart';
 import 'pages.dart' show DiscoverPage, openDetail;
 import 'publication_catalog.dart';
 import 'wenku_account.dart';
+import 'online_component.dart';
 import 'wenku_features.dart';
 import 'web_publication_catalog.dart';
 
@@ -41,6 +42,7 @@ Future<bool> confirmNovelAction(
             const SizedBox(height: 24),
             GlassTextButton(
               onPressed: () => Navigator.pop(sheet, true),
+              haptic: HapticCue.warning,
               child: AppText(confirmLabel),
             ),
             const SizedBox(height: 8),
@@ -110,34 +112,39 @@ class FeatureEntry extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ContentPanel(
     onTap: onTap,
-    child: Row(
-      children: [
-        Icon(icon, size: 21),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              AppText(
-                title,
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              if (subtitle != null) ...[
-                const SizedBox(height: 5),
+    child: ArchivePart(
+      start: .18,
+      end: .84,
+      travel: const Offset(0, 6),
+      child: Row(
+        children: [
+          ArchiveIcon(icon, size: 21),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 AppText(
-                  subtitle!,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 5),
+                  AppText(
+                    subtitle!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
-        ),
-        const SizedBox(width: 8),
-        const Icon(CupertinoIcons.chevron_right, size: 14),
-      ],
+          const SizedBox(width: 8),
+          const ArchiveIcon(CupertinoIcons.chevron_right, size: 14),
+        ],
+      ),
     ),
   );
 }
@@ -282,6 +289,9 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                       children: [
                         TextField(
                           key: const ValueKey('account-username'),
+                          onTap: () =>
+                              AppHaptics.play(context, HapticCue.selection),
+                          onTapAlwaysCalled: true,
                           controller: _username,
                           enabled: !account.busy,
                           autocorrect: false,
@@ -298,6 +308,9 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                         const SizedBox(height: 12),
                         TextField(
                           key: const ValueKey('account-password'),
+                          onTap: () =>
+                              AppHaptics.play(context, HapticCue.selection),
+                          onTapAlwaysCalled: true,
                           controller: _password,
                           enabled: !account.busy,
                           obscureText: _obscure,
@@ -316,7 +329,7 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                             counterText: '',
                             suffixIcon: IconButton(
                               tooltip: _obscure ? '显示密码' : '隐藏密码',
-                              icon: Icon(
+                              icon: ArchiveIcon(
                                 _obscure
                                     ? CupertinoIcons.eye
                                     : CupertinoIcons.eye_slash,
@@ -547,8 +560,6 @@ class _CloudBookshelfPageState extends State<CloudBookshelfPage> {
           summary: '',
           colors: const [Color(0xFF202020), Color(0xFF333333)],
           lastUpdate: book.updated,
-          coverUrl:
-              'https://img.wenku8.com/image/${book.id ~/ 1000}/${book.id}/${book.id}s.jpg',
         );
     openDetail(context, novel, widget.state, widget.repository);
   }
@@ -867,9 +878,7 @@ class _PublicationLibraryPageState extends State<PublicationLibraryPage> {
         onRetry: _feed!.retry,
       );
     }
-    if (failure is WenkuApiError &&
-        failure.code == 4 &&
-        widget.account != null) {
+    if (failure is OnlineAuthenticationRequired && widget.account != null) {
       return ContentNotice(
         icon: widget.account!.authenticated
             ? CupertinoIcons.arrow_clockwise
