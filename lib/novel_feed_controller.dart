@@ -31,6 +31,16 @@ class NovelFeedController extends ChangeNotifier {
   int? totalItems;
   bool hasMore = true;
   bool loading = false;
+  TagSearchProgress? _tagProgress;
+  String? get tagProgressLabel {
+    final progress = _tagProgress;
+    if (!loading || progress == null) return null;
+    final total = progress.totalPages;
+    return total == null
+        ? '正在筛选标签 · 已检查 ${progress.scannedPages} 页'
+        : '正在筛选标签 · 已检查 ${progress.scannedPages} / $total 页';
+  }
+
   Object? error;
   bool refreshFailed = false;
   int _generation = 0;
@@ -178,6 +188,7 @@ class NovelFeedController extends ChangeNotifier {
     refreshFailed = false;
     loading = false;
     refreshing = false;
+    _tagProgress = null;
   }
 
   Future<void> _load({required bool replace, bool force = false}) async {
@@ -191,13 +202,34 @@ class NovelFeedController extends ChangeNotifier {
     final requestedQuery = filteringTags ? tags.join(' ') : query;
     final requestedField = filteringTags ? BookSearchField.tags : searchField;
     final hadItems = _items.isNotEmpty;
+    final retaining = replace && hadItems;
     loading = true;
+    _tagProgress = null;
     refreshing = replace && _items.isNotEmpty;
     error = null;
     refreshFailed = false;
     notifyListeners();
     try {
       while (true) {
+        void acceptTagProgress(TagSearchProgress progress) {
+          if (_disposed || generation != _generation) return;
+          _tagProgress = progress;
+          if (!retaining && progress.items.isNotEmpty) {
+            final oldCount = _items.length;
+            final merged = <int, Novel>{
+              if (!replacing)
+                for (final item in _items) item.id: item,
+              for (final item in progress.items) item.id: item,
+            };
+            _items = List.unmodifiable(merged.values);
+            _resultStartIndex = replacing ? 0 : oldCount;
+            replacing = false;
+            _tagSuggestions.addAll(_items.expand((book) => book.tags));
+            if (_resultStartIndex < _items.length) _resultRevision++;
+          }
+          notifyListeners();
+        }
+
         final tagOnly =
             requestedField == BookSearchField.tags ||
             requestedField == BookSearchField.all &&
@@ -211,6 +243,7 @@ class NovelFeedController extends ChangeNotifier {
                 page: requestedPage,
                 refresh: force,
                 current: () => !_disposed && generation == _generation,
+                onProgress: acceptTagProgress,
               )
             : search || filteringTags
             ? await repository.searchFilteredPage(
