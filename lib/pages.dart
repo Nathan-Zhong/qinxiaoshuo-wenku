@@ -138,6 +138,10 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   late final _searchFeed = LegadoSearchFeedController(
     engineRepository: _legadoRepository,
   );
+  // Global search (scope 0) is two zones: Wenku8 first, Legado second.
+  // The Wenku8 zone is a plain NovelFeedController over the repository,
+  // which reads the Wenku8 remote when online (same path as discovery).
+  late final _wenkuSearch = NovelFeedController(widget.repository, search: true);
   LocalBookStore? get _localBooks => widget.repository is OfflineNovelRepository
       ? (widget.repository as OfflineNovelRepository).local
       : null;
@@ -305,6 +309,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   void _blockedTagsChanged() {
     _catalog.setBlockedTags(widget.state.blockedTags);
     _searchFeed.setBlockedTags(widget.state.blockedTags);
+    _wenkuSearch.setBlockedTags(widget.state.blockedTags);
   }
 
   void _navigationChanged() {
@@ -357,6 +362,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     _searchFocus.dispose();
     _catalog.dispose();
     _searchFeed.dispose();
+    _wenkuSearch.dispose();
     _shelfSearch.dispose();
     _localSearch.dispose();
     _localLibrary.dispose();
@@ -382,6 +388,9 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
         (_searchFeed.page == 0 && !_searchFeed.loading)) {
       _searchStarted = true;
       _searchFeed.loadInitial();
+      // Wenku8 zone: an empty query loads the browse first page as the
+      // "you may like" recommendations; a query searches Wenku8.
+      _wenkuSearch.loadInitial();
     }
     setState(() {
       _searchOpen = true;
@@ -417,6 +426,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     _dismissSearchKeyboard();
     _searchFocus.canRequestFocus = false;
     _activeSearch.cancelScheduledSearch();
+    if (_searchScope == 0) _wenkuSearch.cancelScheduledSearch();
     setState(() {
       _searchOpen = false;
       _searchCovered = false;
@@ -432,6 +442,12 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     if (!_searchOpen) return;
     if (!_searchText.value.composing.isCollapsed) {
       _activeSearch.cancelScheduledSearch();
+      if (_searchScope == 0) _wenkuSearch.cancelScheduledSearch();
+      return;
+    }
+    if (_searchScope == 0) {
+      _searchFeed.scheduleSearch(_searchText.text);
+      _wenkuSearch.scheduleSearch(_searchText.text);
       return;
     }
     _activeSearch.scheduleSearch(_searchText.text);
@@ -461,6 +477,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
       selection: TextSelection.collapsed(offset: query.length),
     );
     _searchFeed.searchFor(query);
+    if (_searchScope == 0) _wenkuSearch.searchFor(query);
     _dismissSearchKeyboard();
   }
 
@@ -569,6 +586,9 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
                             child: Atmosphere(
                               child: InlineSearchResults(
                                 feed: _activeSearch,
+                                wenkuFeed: _searchScope == 0
+                                    ? _wenkuSearch
+                                    : null,
                                 state: widget.state,
                                 repository: widget.repository,
                                 onOpenBook: _dismissSearchKeyboard,
@@ -804,7 +824,12 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
           controller: _searchText,
           focusNode: _searchFocus,
           onSubmitted: (query) {
-            _activeSearch.searchFor(query);
+            if (_searchScope == 0) {
+              _searchFeed.searchFor(query);
+              _wenkuSearch.searchFor(query);
+            } else {
+              _activeSearch.searchFor(query);
+            }
             _dismissSearchKeyboard();
           },
         ),
@@ -861,7 +886,12 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
       ),
     );
     if (field == null || !mounted) return;
-    final pending = _activeSearch.selectSearchField(field);
+    final pending = _searchScope == 0
+        ? Future.wait([
+            _searchFeed.selectSearchField(field),
+            _wenkuSearch.selectSearchField(field),
+          ])
+        : _activeSearch.selectSearchField(field);
     setState(() {});
     await pending;
   }
@@ -2964,6 +2994,7 @@ class InlineSearchResults extends StatelessWidget {
     required this.repository,
     required this.feed,
     required this.onOpenBook,
+    this.wenkuFeed,
     this.onRecall,
     this.emptyQueryTitle = '你可能会喜欢',
     this.showSources = false,
@@ -2973,20 +3004,343 @@ class InlineSearchResults extends StatelessWidget {
   final LibraryState state;
   final NovelRepository repository;
   final NovelFeedController feed;
+  // Non-null only for the global search (scope 0): the Wenku8 zone shown
+  // above the Legado zone. Shelf/local scopes keep the single feed.
+  final NovelFeedController? wenkuFeed;
   final VoidCallback onOpenBook;
   final ValueChanged<String>? onRecall;
   final String emptyQueryTitle;
   final bool showSources, fromCache, allowBlockedTags;
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: feed,
-    builder: (context, _) => LoadedContentSequence(
-      generation: feed.resultRevision,
-      firstIndex: feed.resultStartIndex == 0 ? 0 : feed.resultStartIndex + 1,
-      child: _buildResults(context),
-    ),
-  );
+  Widget build(BuildContext context) {
+    final wenkuFeed = this.wenkuFeed;
+    if (wenkuFeed == null) {
+      return AnimatedBuilder(
+        animation: feed,
+        builder: (context, _) => LoadedContentSequence(
+          generation: feed.resultRevision,
+          firstIndex: feed.resultStartIndex == 0
+              ? 0
+              : feed.resultStartIndex + 1,
+          child: _buildResults(context),
+        ),
+      );
+    }
+    return AnimatedBuilder(
+      animation: Listenable.merge([feed, wenkuFeed]),
+      builder: (context, _) => LoadedContentSequence(
+        generation: (wenkuFeed.resultRevision, feed.resultRevision),
+        firstIndex: _twoZoneFirstIndex(wenkuFeed),
+        child: _buildTwoZoneResults(context, wenkuFeed),
+      ),
+    );
+  }
+
+  /// First newly arrived row in the combined two-zone list, so the
+  /// entrance sequence only animates fresh rows. Layout: 0 top block,
+  /// 1 Wenku8 header, then Wenku8 rows + footer (or one state entry when
+  /// the zone is empty), then the Legado header, rows and footer.
+  int _twoZoneFirstIndex(NovelFeedController wenkuFeed) {
+    var first = 0;
+    var found = false;
+    if (wenkuFeed.items.isNotEmpty && wenkuFeed.resultStartIndex > 0) {
+      first = 2 + wenkuFeed.resultStartIndex;
+      found = true;
+    }
+    // Index just past the Wenku8 zone.
+    final afterWenku = wenkuFeed.items.isEmpty
+        ? 3
+        : 2 + wenkuFeed.items.length + 1;
+    if (feed.items.isNotEmpty && feed.resultStartIndex > 0) {
+      final start = afterWenku + 1 + feed.resultStartIndex;
+      first = found ? math.min(first, start) : start;
+      found = true;
+    }
+    return found ? first : 0;
+  }
+
+  Widget _buildTwoZoneResults(
+    BuildContext context,
+    NovelFeedController wenkuFeed,
+  ) {
+    final legado = feed;
+    final query = legado.query;
+    final showRecent =
+        query.isEmpty && onRecall != null && state.recentSearches.isNotEmpty;
+    final bothEmpty = wenkuFeed.items.isEmpty && legado.items.isEmpty;
+    if (bothEmpty &&
+        (wenkuFeed.loading || legado.loading) &&
+        !(query.isEmpty && showRecent)) {
+      return SearchSkeleton(status: wenkuFeed.tagProgressLabel);
+    }
+    if (bothEmpty &&
+        wenkuFeed.error != null &&
+        legado.error != null &&
+        !(query.isEmpty && showRecent)) {
+      return ContentNotice(
+        icon: CupertinoIcons.wifi_exclamationmark,
+        title: '搜索失败，请稍后重试',
+        onRetry: () {
+          wenkuFeed.retry();
+          legado.retry();
+        },
+      );
+    }
+    var index = 0;
+    final topIndex = index;
+    final slivers = <Widget>[];
+    // Top block: recent searches when the query is empty.
+    slivers.add(
+      SliverList.builder(
+        itemCount: 1,
+        itemBuilder: (context, _) => LoadedContentItem(
+          index: topIndex,
+          placeholder: const LoadingSkeleton(
+            layout: SkeletonLayout.actions,
+          ),
+          child: showRecent
+              ? Padding(
+                  padding: const EdgeInsets.only(left: 6, bottom: 7),
+                  child: RecentSearches(state: state, onRecall: onRecall!),
+                )
+              : const SizedBox.shrink(),
+        ),
+      ),
+    );
+    index++;
+    index = _addZoneSlivers(
+      context,
+      slivers,
+      wenkuFeed,
+      '文库8',
+      index,
+      isWenku: true,
+    );
+    _addZoneSlivers(context, slivers, legado, '书源', index, isWenku: false);
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        if (notification.depth == 0 &&
+            notification.metrics.extentAfter < 400) {
+          for (final zone in [wenkuFeed, legado]) {
+            if (!zone.loading && zone.hasMore && zone.error == null) {
+              WidgetsBinding.instance.addPostFrameCallback(
+                (_) => zone.loadMore(),
+              );
+            }
+          }
+        }
+        return false;
+      },
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: RefreshIndicator.noSpinner(
+              onRefresh: () async {
+                await Future.wait([wenkuFeed.refresh(), legado.refresh()]);
+              },
+              child: CustomScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                clipBehavior: LibraryReflowScope.clipOf(context),
+                slivers: [
+                  SliverPadding(
+                    padding: EdgeInsets.fromLTRB(
+                      22,
+                      MediaQuery.paddingOf(context).top +
+                          FrostedHeader.toolbarHeight +
+                          20,
+                      22,
+                      MediaQuery.paddingOf(context).bottom + 24,
+                    ),
+                    sliver: SliverMainAxisGroup(slivers: slivers),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (wenkuFeed.refreshing || legado.refreshing)
+            Positioned(
+              top:
+                  MediaQuery.paddingOf(context).top +
+                  FrostedHeader.toolbarHeight,
+              left: 24,
+              right: 24,
+              height: 64,
+              child: IgnorePointer(
+                child: ColoredBox(
+                  color: Theme.of(context).colorScheme.surface,
+                  child: const LoadingSkeleton(
+                    key: ValueKey('feed-refresh-skeleton'),
+                    layout: SkeletonLayout.actions,
+                    label: '正在刷新书籍',
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Appends one zone (header + rows + footer, or a single state entry
+  /// when it has no rows) and returns the next free entrance index.
+  int _addZoneSlivers(
+    BuildContext context,
+    List<Widget> slivers,
+    NovelFeedController zone,
+    String title,
+    int startIndex, {
+    required bool isWenku,
+  }) {
+    slivers.add(
+      SliverList.builder(
+        itemCount: 1,
+        itemBuilder: (context, _) => LoadedContentItem(
+          index: startIndex,
+          placeholder: const LoadingSkeleton(
+            layout: SkeletonLayout.actions,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.only(left: 6, bottom: 7),
+            child: AppText(
+              zone.query.isEmpty
+                  ? (isWenku ? emptyQueryTitle : title)
+                  : '$title · 找到 ${zone.totalItems ?? zone.items.length} 个结果',
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 18,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    var next = startIndex + 1;
+    final books = zone.items;
+    if (books.isNotEmpty) {
+      final base = next;
+      final zoneKey = isWenku ? 'wenku' : 'legado';
+      slivers.add(
+        BookCollectionSliver(
+          itemCount: books.length,
+          itemBuilder: (context, i) {
+            final book = books[i];
+            return LoadedContentItem(
+              key: ValueKey('$zoneKey-${book.id}'),
+              index: base + i,
+              placeholder: const BookRowSkeleton(),
+              child: NovelRow(
+                novel: book,
+                sourceLabel: showSources
+                    ? bookshelfSource(
+                        book.id,
+                        repository is OfflineNovelRepository
+                            ? repository as OfflineNovelRepository
+                            : null,
+                      )
+                    : null,
+                coverHeroTag: CoverHeroTag(context, book.id),
+                onTap: () {
+                  onOpenBook();
+                  openDetail(
+                    context,
+                    book,
+                    state,
+                    repository,
+                    coverHeroTag: CoverHeroTag(context, book.id),
+                    fromCache: fromCache,
+                  );
+                },
+              ),
+            );
+          },
+        ),
+      );
+      next = base + books.length;
+      slivers.add(
+        SliverList.builder(
+          itemCount: 1,
+          itemBuilder: (context, _) => LoadedContentItem(
+            index: next,
+            placeholder: const SizedBox.shrink(),
+            child: FeedFooter(feed: zone, horizontalPadding: 0),
+          ),
+        ),
+      );
+      return next + 1;
+    }
+    slivers.add(
+      SliverList.builder(
+        itemCount: 1,
+        itemBuilder: (context, _) => LoadedContentItem(
+          index: next,
+          placeholder: const SizedBox.shrink(),
+          child: _zoneEmptyState(context, zone, isWenku: isWenku),
+        ),
+      ),
+    );
+    return next + 1;
+  }
+
+  /// What a zone shows when it has no rows: loading skeleton, error with
+  /// retry, the Legado idle hint for an empty query, the blocked-tags
+  /// notice, or the plain "nothing found" notice. Same wording as the
+  /// single-feed path.
+  Widget _zoneEmptyState(
+    BuildContext context,
+    NovelFeedController zone, {
+    required bool isWenku,
+  }) {
+    if (zone.loading) {
+      return const BookCollectionSkeleton(rows: 2);
+    }
+    if (zone.error != null) {
+      return ContentNotice(
+        icon: CupertinoIcons.wifi_exclamationmark,
+        title: '搜索失败，请稍后重试',
+        onRetry: zone.retry,
+      );
+    }
+    if (!isWenku && zone.query.isEmpty) {
+      return const AppText('搜索书名或作者，开始寻找故事。');
+    }
+    if (zone.blockedItemCount > 0) {
+      return ContentNotice(
+        icon: CupertinoIcons.eye_slash,
+        title: '当前结果已被标签屏蔽',
+        message: '可管理屏蔽标签，或继续加载后续结果。',
+        secondaryAction: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (allowBlockedTags)
+              BlockedTagsButton(
+                key: ValueKey(
+                  'search-blocked-tags-manage-${isWenku ? 'wenku' : 'legado'}',
+                ),
+                state: state,
+                feed: zone,
+                label: '管理屏蔽标签',
+              ),
+            if (zone.loading)
+              const AppText('正在加载…')
+            else if (zone.hasMore)
+              GlassTextButton(
+                key: ValueKey(
+                  'search-blocked-tags-more-${isWenku ? 'wenku' : 'legado'}',
+                ),
+                onPressed: zone.loadMore,
+                child: const AppText('继续加载'),
+              ),
+          ],
+        ),
+      );
+    }
+    return const ContentNotice(
+      icon: CupertinoIcons.search,
+      title: '没有找到相关故事',
+      message: '试试更短的书名或作者名',
+    );
+  }
 
   Widget _buildResults(BuildContext context) {
     final books = feed.items;
