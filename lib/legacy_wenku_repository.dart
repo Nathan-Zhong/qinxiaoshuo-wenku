@@ -429,7 +429,7 @@ class LegacyWenkuRepository extends NovelRepository
               ? null
               : (scannedPages, totalPages) {
                   if (current?.call() == false) return;
-                  onProgress!(
+                  onProgress(
                     TagSearchProgress(
                       items: const [],
                       scannedPages: scannedPages,
@@ -451,7 +451,7 @@ class LegacyWenkuRepository extends NovelRepository
       // Report real progress while the page resolves: the scan position
       // comes from the shared tag cursor, the items from this page so far.
       if (field == BookSearchField.tags && onProgress != null) {
-        onProgress!(
+        onProgress(
           TagSearchProgress(
             items: List.unmodifiable(found),
             scannedPages: tagCursor == null ? 0 : tagCursor.next - 1,
