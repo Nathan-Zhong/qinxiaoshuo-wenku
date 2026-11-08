@@ -29,6 +29,7 @@ import 'bookshelf_scope.dart';
 import 'book_source_badge.dart';
 import 'bookmark_library_page.dart';
 import 'bookmark_note_sheet.dart';
+import 'blocked_tags_controls.dart';
 import 'book_search.dart';
 import 'catalog.dart';
 import 'glass_dock.dart';
@@ -40,7 +41,6 @@ import 'library_reflow.dart';
 import 'library_search_repository.dart';
 import 'legado/legado_book_registry.dart';
 import 'legado/legado_books.dart';
-import 'legado/legado_explore.dart';
 import 'legado/legado_manga_reader.dart';
 import 'legado/legado_novel_repository.dart';
 import 'legado/legado_search_controller.dart';
@@ -121,9 +121,14 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     GlassDockItem(CupertinoIcons.person_crop_circle, '我的'),
     GlassDockItem(CupertinoIcons.bookmark, '书签'),
   ];
-  // The discovery tab owns its explore feed (LegadoDiscoverTab); the
-  // global search feed streams from the Legado engine (PLAN items 6/7/11:
-  // no wenku online search in this app, all enabled sources together).
+  late final _catalog = NovelFeedController(
+    widget.repository,
+    initialItems: 60,
+  );
+  bool _catalogStarted = false;
+  // Discovery follows Wenku8 (0.5.6): the catalog feed reads the Wenku8
+  // remote through the repository, and Legado explore stays hidden. Legado
+  // books are found only through the global search feed below.
   // The repository is per-shell (over the shared client + registry) so
   // its engine-init memoisation lives exactly as long as the shell.
   late final _legadoRepository = LegadoNovelRepository(
@@ -209,6 +214,8 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     _navigation.addListener(_navigationChanged);
     _searchText.addListener(_searchEdited);
     _searchFeed.addListener(_searchSucceeded);
+    widget.state.blockedTagsChanges.addListener(_blockedTagsChanged);
+    _blockedTagsChanged();
     _searchFeed.onNoSourcesHint = () {
       if (mounted) {
         showNovelFeedback(context, '暂无可用书源，请先到「我的 → 书源管理」导入书源');
@@ -217,10 +224,11 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     if (widget.repository case final OfflineNovelRepository offline) {
       unawaited(offline.loadCache().catchError((Object _) {}));
     }
-    final discover = LegadoDiscoverTab(
+    final discover = DiscoverPage(
+      books: const [],
+      feed: _catalog,
       state: widget.state,
       repository: widget.repository,
-      engine: _legadoRepository,
       showHeader: false,
       onSearch: _openSearch,
     );
@@ -281,6 +289,22 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
             ]
             .map((page) => RepaintBoundary(child: Atmosphere(child: page)))
             .toList(growable: false);
+    _ensureCatalog();
+  }
+
+  void _ensureCatalog() {
+    if (_tab != 0 || !_visibleTabs.contains(0)) return;
+    if (!_catalogStarted) {
+      _catalogStarted = true;
+      _catalog.loadInitial();
+    } else if (_catalog.items.isEmpty && _catalog.error != null) {
+      _catalog.retry();
+    }
+  }
+
+  void _blockedTagsChanged() {
+    _catalog.setBlockedTags(widget.state.blockedTags);
+    _searchFeed.setBlockedTags(widget.state.blockedTags);
   }
 
   void _navigationChanged() {
@@ -295,6 +319,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     if (_searchOpen && _searchScope == 1) {
       _shelfSearch.refresh();
     }
+    _ensureCatalog();
   }
 
   @override
@@ -323,12 +348,14 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    widget.state.blockedTagsChanges.removeListener(_blockedTagsChanged);
     _navigation.removeListener(_navigationChanged);
     _navigation.dispose();
     _pageTransition.dispose();
     _searchExpansion.dispose();
     _searchText.dispose();
     _searchFocus.dispose();
+    _catalog.dispose();
     _searchFeed.dispose();
     _shelfSearch.dispose();
     _localSearch.dispose();
@@ -554,6 +581,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
                                 onRecall: _searchScope == 0
                                     ? _recallSearch
                                     : null,
+                                allowBlockedTags: _searchScope == 0,
                                 emptyQueryTitle: switch (_searchScope) {
                                   1 => '书架中的书籍',
                                   2 => '本地书籍',
@@ -898,9 +926,36 @@ class DiscoverPage extends StatelessWidget {
 
   Widget _buildContent(BuildContext context, List<Novel> books) {
     final featuredCount = books.length.clamp(0, 10);
+    final blockedAll = books.isEmpty && (feed?.blockedItemCount ?? 0) > 0;
+    final returnToLatest =
+        feed != null &&
+            (feed!.tags.isNotEmpty ||
+                feed!.publication != null ||
+                feed!.sort != NovelSort.lastUpdate)
+        ? GlassTextButton(
+            key: const ValueKey('discover-return-to-latest'),
+            onPressed: () => feed!.selectSort(NovelSort.lastUpdate),
+            child: const AppText('返回最近更新'),
+          )
+        : null;
     Widget body;
-    if (books.isEmpty && feed?.loading == true) {
-      body = LibrarySkeleton(header: _categoryHeader(context));
+    if (books.isEmpty && feed?.loading == true && feed?.hasLoaded != true) {
+      body = LibrarySkeleton(
+        header: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _categoryHeader(context),
+            if (feed?.tagProgressLabel case final progress?) ...[
+              const SizedBox(height: 12),
+              AppText(progress, style: const TextStyle(fontSize: 13)),
+            ],
+            if (returnToLatest != null) ...[
+              const SizedBox(height: 8),
+              returnToLatest,
+            ],
+          ],
+        ),
+      );
     } else if (books.isEmpty && feed?.error != null) {
       // Keep the category/source header above the error notice (fix2,
       // 2026-11-03): this header carries the discovery source picker,
@@ -973,7 +1028,35 @@ class DiscoverPage extends StatelessWidget {
                     children: [
                       _categoryHeader(context),
                       const SizedBox(height: 14),
-                      if (books.isEmpty)
+                      if (blockedAll)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 48),
+                          child: Column(
+                            children: [
+                              const AppText('当前已加载的书籍均被标签屏蔽'),
+                              const SizedBox(height: 8),
+                              BlockedTagsButton(
+                                key: const ValueKey(
+                                  'discover-blocked-tags-manage',
+                                ),
+                                state: state,
+                                feed: feed!,
+                                label: '管理屏蔽标签',
+                              ),
+                              if (feed!.loading)
+                                const AppText('正在加载…')
+                              else if (feed!.hasMore)
+                                GlassTextButton(
+                                  key: const ValueKey(
+                                    'discover-blocked-tags-more',
+                                  ),
+                                  onPressed: feed!.loadMore,
+                                  child: const AppText('继续加载'),
+                                ),
+                            ],
+                          ),
+                        )
+                      else if (books.isEmpty)
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 90),
                           child: Center(child: AppText('暂无书籍')),
@@ -1092,18 +1175,36 @@ class DiscoverPage extends StatelessWidget {
   );
 
   Future<void> _chooseSort(BuildContext context) async {
+    final features = WenkuFeaturesScope.maybeOf(context);
     final selected = await showJellySheet<DiscoverySelection>(
       context: context,
       reduceMotion: state.reduceMotion,
       heightFactor: .75,
       builder: (_) => DiscoveryFilters(
         sort: feed!.sort,
-        books: feed!.items,
+        books: feed!.allItems,
         selectedTags: feed!.tags.toSet(),
         availableTags: feed!.tagSuggestions,
+        publicationCatalog: features?.publications,
+        selectedPublication: feed!.publication,
+        preparePublications: features?.account.initialize,
+        blockedTags: state.blockedTags,
+        onBlockedTagsChanged: (tags) async {
+          await state.setBlockedTags(tags);
+          feed!.setBlockedTags(state.blockedTags);
+        },
       ),
     );
     if (!context.mounted || selected == null) return;
+    if (selected.publication case final publication?) {
+      if (features == null) return;
+      await features.account.initialize();
+      if (!context.mounted) return;
+      await feed!.selectPublication(
+        publication,
+        catalog: features.publications,
+      );
+    }
     if (selected.sort case final sort?) await feed!.selectSort(sort);
     if (selected.tags case final tags?) await feed!.selectTags(tags);
   }
@@ -1161,11 +1262,26 @@ class FeedFooter extends StatelessWidget {
     child: Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (feed.loading)
-          const BookCollectionSkeleton(rows: 2, label: '正在加载更多书籍')
-        else if (feed.error != null) ...[
+        if (feed.loading && !feed.refreshing) ...[
+          if (feed.tagProgressLabel case final progress?) ...[
+            AppText(
+              progress,
+              key: const ValueKey('tag-search-progress'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          const BookCollectionSkeleton(rows: 2, label: '正在加载更多书籍'),
+        ] else if (feed.error != null) ...[
           AppText(
-            feed.refreshFailed ? '刷新失败，已保留原列表' : '加载下一页失败',
+            feed.refreshFailed
+                ? '刷新失败，已保留原列表'
+                : feed.hasLoaded
+                ? '加载下一页失败'
+                : '搜索尚未完成，已保留找到的书籍',
             style: TextStyle(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
               fontSize: 12,
@@ -1528,30 +1644,6 @@ class ShelfPage extends StatefulWidget {
               label: '阅读历史',
               onPressed: () => openReadingHistory(context, state, repository),
             ),
-            if (state.combinedShelf && repository is OfflineNovelRepository)
-              if ((repository as OfflineNovelRepository).local
-                  case final local?)
-                LocalBookImportButton(
-                  books: local,
-                  library: state,
-                  onManage: () => pushNovelPage<void>(
-                    context,
-                    LocalLibraryPage(
-                      books: local,
-                      state: state,
-                      onOpen: (page, book) =>
-                          openDetail(page, book, state, repository),
-                      onOpenWithCover: (page, book, tag) => openDetail(
-                        page,
-                        book,
-                        state,
-                        repository,
-                        coverHeroTag: tag,
-                      ),
-                    ),
-                    reduceMotion: state.reduceMotion,
-                  ),
-                ),
             GlassIconButton(
               key: const ValueKey('shelf-search-entry'),
               icon: CupertinoIcons.search,
@@ -1980,7 +2072,7 @@ class _ShelfPageState extends State<ShelfPage>
                                       ? '缓存正文后即可在这里阅读'
                                       : '已缓存正文的收藏会显示在这里'
                                 : state.combinedShelf && all.isEmpty
-                                ? '收藏、缓存或点击右上角 ＋ 从网盘导入'
+                                ? '收藏喜欢的书'
                                 : state.shelf.isEmpty
                                 ? '在发现页收藏喜欢的书'
                                 : '试试其他关键词或切回全部',
@@ -2876,6 +2968,7 @@ class InlineSearchResults extends StatelessWidget {
     this.emptyQueryTitle = '你可能会喜欢',
     this.showSources = false,
     this.fromCache = false,
+    this.allowBlockedTags = false,
   });
   final LibraryState state;
   final NovelRepository repository;
@@ -2883,7 +2976,7 @@ class InlineSearchResults extends StatelessWidget {
   final VoidCallback onOpenBook;
   final ValueChanged<String>? onRecall;
   final String emptyQueryTitle;
-  final bool showSources, fromCache;
+  final bool showSources, fromCache, allowBlockedTags;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -2931,7 +3024,7 @@ class InlineSearchResults extends StatelessWidget {
       );
     }
     if (books.isEmpty && feed.loading) {
-      return const SearchSkeleton();
+      return SearchSkeleton(status: feed.tagProgressLabel);
     }
     if (books.isEmpty && feed.error != null) {
       return ContentNotice(
@@ -2941,6 +3034,33 @@ class InlineSearchResults extends StatelessWidget {
       );
     }
     if (books.isEmpty) {
+      if (feed.blockedItemCount > 0) {
+        return ContentNotice(
+          icon: CupertinoIcons.eye_slash,
+          title: '当前结果已被标签屏蔽',
+          message: '可管理屏蔽标签，或继续加载后续结果。',
+          secondaryAction: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (allowBlockedTags)
+                BlockedTagsButton(
+                  key: const ValueKey('search-blocked-tags-manage'),
+                  state: state,
+                  feed: feed,
+                  label: '管理屏蔽标签',
+                ),
+              if (feed.loading)
+                const AppText('正在加载…')
+              else if (feed.hasMore)
+                GlassTextButton(
+                  key: const ValueKey('search-blocked-tags-more'),
+                  onPressed: feed.loadMore,
+                  child: const AppText('继续加载'),
+                ),
+            ],
+          ),
+        );
+      }
       return const ContentNotice(
         icon: CupertinoIcons.search,
         title: '没有找到相关故事',
