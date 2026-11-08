@@ -19,11 +19,16 @@ typedef IllustrationRequest = Future<Uint8List> Function(String url);
 class ReaderIllustrationCache {
   ReaderIllustrationCache({
     IllustrationRequest? request,
+    this.offlineReader,
     this.maxBytes = 16 * 1024 * 1024,
   }) : _request = request ?? LegacyTransport.illustration;
   static final shared = ReaderIllustrationCache();
   final IllustrationRequest _request;
   final int maxBytes;
+
+  /// The application binds its explicit book cache once at startup. Viewing
+  /// cache eviction never deletes these durable, book-owned illustrations.
+  Future<Uint8List?> Function(String url)? offlineReader;
   final _pending = <String, Future<Uint8List>>{};
   final _cache = <String, Uint8List>{};
   final _dimensions = <String, Size>{};
@@ -118,7 +123,7 @@ class ReaderIllustrationCache {
       try {
         final bytes = url.startsWith('wenku-local:')
             ? await LocalBookMedia.load(url)
-            : await _request(url);
+            : await offlineReader?.call(url) ?? await _request(url);
         if (bytes.isEmpty || bytes.length > 8 * 1024 * 1024) {
           throw const FormatException('插图大小无效');
         }
