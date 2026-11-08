@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'blocked_tags.dart';
 import 'catalog.dart';
 import 'book_identity.dart';
 import 'reader_preferences.dart';
@@ -323,6 +324,9 @@ class LibraryState extends ChangeNotifier {
     _localReaderMode = _prefs.get('localReaderMode') == true;
     _directReading = _prefs.get('directReading') == true;
     _combinedShelf = _prefs.get('combinedShelf') == true;
+    _blockedTags = BlockedTags.fromRecord(
+      _prefs.get(BlockedTags.preferenceKey),
+    );
     final recent = _prefs.get('recentSearches');
     if (recent is List<String>) {
       final seen = <String>{};
@@ -352,6 +356,7 @@ class LibraryState extends ChangeNotifier {
   final _bookmarkChanges = ChangeNotifier();
   final _illustrationChanges = ChangeNotifier();
   final _searchChanges = ChangeNotifier();
+  final _blockedTagsChanges = ChangeNotifier();
   final _shelfViewChanges = ChangeNotifier();
   final _readerBehaviorChanges = ChangeNotifier();
   final _navigationChanges = ChangeNotifier();
@@ -366,6 +371,7 @@ class LibraryState extends ChangeNotifier {
   final Map<int, List<ReaderBookmark>> _bookmarks = {};
   final Map<int, List<IllustrationPlacement>> _illustrations = {};
   final Map<int, int> _shelfRevisions = {};
+  BlockedTags _blockedTags = BlockedTags.empty;
   List<String> _recentSearches = const [];
   String _shelfSort = 'recentRead';
   String _shelfFilter = 'all';
@@ -504,6 +510,8 @@ class LibraryState extends ChangeNotifier {
   }
 
   Listenable get searchChanges => _searchChanges;
+  Set<String> get blockedTags => _blockedTags.tags;
+  Listenable get blockedTagsChanges => _blockedTagsChanges;
   Listenable get shelfViewChanges => _shelfViewChanges;
   Set<int> get hiddenLocalBooks => Set.unmodifiable(_hiddenLocalBooks);
   bool localBookVisible(int id) => !_hiddenLocalBooks.contains(id);
@@ -662,6 +670,27 @@ class LibraryState extends ChangeNotifier {
       await writeLibraryPreference(_prefs, 'recentSearches', <String>[]);
       _recentSearches = const [];
       if (!_disposed) _searchChanges.notifyListeners();
+    });
+  }
+
+  Future<void> setBlockedTags(Iterable<String> values) {
+    final input = List<String>.of(values);
+    if (_restoreBarrier case final barrier?) {
+      return barrier.future.then((_) => setBlockedTags(input));
+    }
+    return _queuePositionWrite(() async {
+      final next = await BlockedTags.fromInput(input);
+      if (_blockedTags.sameAs(next)) return;
+      await writeLibraryPreference(
+        _prefs,
+        BlockedTags.preferenceKey,
+        next.toRecord(),
+      );
+      _blockedTags = next;
+      if (!_disposed) {
+        _blockedTagsChanges.notifyListeners();
+        _settings.notifyListeners();
+      }
     });
   }
 
@@ -1686,6 +1715,7 @@ class LibraryState extends ChangeNotifier {
     'reading_history_hidden': _hiddenHistory.map((id) => '$id').toList(),
     'local_shelf_hidden': _hiddenLocalBooks.map((id) => '$id').toList(),
     'recentSearches': _recentSearches,
+    BlockedTags.preferenceKey: _blockedTags.toRecord(),
     'theme': _theme.name,
     'readerFontSize': _fontSize,
     'appLanguage': language.name,
@@ -1756,6 +1786,14 @@ class LibraryState extends ChangeNotifier {
           await ChineseText.prepare();
         }
       }
+      final restoredBlockedTags =
+          importPreferences &&
+              backup.records.containsKey(BlockedTags.preferenceKey)
+          ? await BlockedTags.fromInput(
+              (backup.records[BlockedTags.preferenceKey] as List)
+                  .cast<String>(),
+            )
+          : null;
       await _queuePositionWrite(() async {
         final records = backup.records;
         final shelf = {
@@ -1899,6 +1937,10 @@ class LibraryState extends ChangeNotifier {
           for (final key in backupPreferenceKeys) {
             if (records[key] case final value?) changed[key] = value;
           }
+          if (restoredBlockedTags != null) {
+            changed[BlockedTags.preferenceKey] =
+                restoredBlockedTags.toRecord();
+          }
           if (records.containsKey('appTypeface') &&
               !records.containsKey('appCustomFont')) {
             changed['appCustomFont'] = '';
@@ -1956,6 +1998,7 @@ class LibraryState extends ChangeNotifier {
         _hiddenLocalBooks
           ..clear()
           ..addAll(hiddenLocal);
+        if (restoredBlockedTags != null) _blockedTags = restoredBlockedTags;
         _recentSearches = searches;
         if (importPreferences) {
           if (records['theme'] case final String value) {
@@ -2025,6 +2068,7 @@ class LibraryState extends ChangeNotifier {
           _bookmarkChanges.notifyListeners();
           _illustrationChanges.notifyListeners();
           _searchChanges.notifyListeners();
+          _blockedTagsChanges.notifyListeners();
           _shelfViewChanges.notifyListeners();
           if (importPreferences) {
             _application.notifyListeners();
@@ -2087,6 +2131,7 @@ class LibraryState extends ChangeNotifier {
     _bookmarkChanges.dispose();
     _illustrationChanges.dispose();
     _searchChanges.dispose();
+    _blockedTagsChanges.dispose();
     _shelfViewChanges.dispose();
     _readerBehaviorChanges.dispose();
     _navigationChanges.dispose();
