@@ -541,6 +541,7 @@ class LegadoDispatchRepository extends NovelRepository
     int page = 1,
     bool refresh = false,
     bool Function()? current,
+    TagProgressCallback? onProgress,
   }) {
     final target = legacy;
     if (target is ProgressiveTagCatalogue) {
@@ -549,6 +550,7 @@ class LegadoDispatchRepository extends NovelRepository
         page: page,
         refresh: refresh,
         current: current,
+        onProgress: onProgress,
       );
     }
     return legacy.searchFilteredPage(
