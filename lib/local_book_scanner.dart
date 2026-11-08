@@ -34,6 +34,7 @@ Future<LocalScanResult> scanLocalBooks({
   required BookDocuments documents,
   required BookScanSnapshot snapshot,
   required Set<String> selectedTokens,
+  required bool linkText,
   required Future<LocalImportReport> Function(BookDocumentSelection source)
   importSource,
   required bool Function() current,
@@ -51,7 +52,9 @@ Future<LocalScanResult> scanLocalBooks({
       if (!current()) break;
       BookDocumentSelection? staged;
       try {
-        staged = await documents.stageScanBook(entry.token);
+        staged = linkText
+            ? await documents.linkScanBook(entry.token)
+            : await documents.stageScanBook(entry.token);
         final report = await importSource(staged);
         ids.addAll(report.bookIds);
         added += report.added;
