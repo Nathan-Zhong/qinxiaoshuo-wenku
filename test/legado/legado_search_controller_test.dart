@@ -11,6 +11,7 @@ Map<String, Object?> _book({
   required String name,
   String author = '天蚕土豆',
   String bookUrl = 'https://x.example/b1',
+  String kind = '玄幻',
 }) => {
   'name': name,
   'author': author,
@@ -20,7 +21,7 @@ Map<String, Object?> _book({
   'originName': origin,
   'origins': [origin],
   'type': 0,
-  'kind': '玄幻',
+  'kind': kind,
   'coverUrl': null,
   'intro': null,
   'wordCount': null,
@@ -185,6 +186,44 @@ void main() {
     expect(controller.page, 1);
     expect(controller.hasMore, isFalse);
     expect(controller.totalItems, 2);
+  });
+
+  test('blocked tags filter Legado results and report the count', () async {
+    await controller.searchFor('斗破');
+    await settle();
+    final taskId = taskIdOfSearch();
+    sink!.success({
+      'type': 'searchSnapshot',
+      'taskId': taskId,
+      'books': [
+        _book(origin: 'https://a.example', name: '斗破苍穹'),
+        _book(
+          origin: 'https://b.example',
+          name: '都市传说',
+          bookUrl: 'https://x.example/b2',
+          kind: '都市',
+        ),
+      ],
+      'groups': [],
+      'hasMore': false,
+    });
+    await settle();
+    expect(controller.items, hasLength(2));
+    expect(controller.blockedItemCount, 0);
+    expect(controller.hasBlockedTags, isFalse);
+
+    // The 玄幻 row is hidden at once; the raw list is untouched, so
+    // clearing the rule restores it without a new search.
+    controller.setBlockedTags(['玄幻']);
+    expect(controller.items, hasLength(1));
+    expect(controller.items.single.title, '都市传说');
+    expect(controller.blockedItemCount, 1);
+    expect(controller.hasBlockedTags, isTrue);
+    expect(controller.resultStartIndex, 0);
+
+    controller.setBlockedTags([]);
+    expect(controller.items, hasLength(2));
+    expect(controller.blockedItemCount, 0);
   });
 
   test('a new search cancels the previous native task', () async {
