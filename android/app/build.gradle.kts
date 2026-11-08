@@ -29,13 +29,14 @@ android {
     }
 
     defaultConfig {
-        // Public source previews must not replace an installed distribution.
-        applicationId = "org.mewx.wenku8_flutter.source_preview"
+        // Same id as the personal fork build so installing this shell upgrades
+        // the existing install and keeps the local library on device.
+        applicationId = "com.cassidy.xiaoshuowenku"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["wenkuAppLabel"] = "轻小说文库 · 源码预览"
+        manifestPlaceholders["wenkuAppLabel"] = "轻小说文库"
         // AGP otherwise builds upstream desktop utilities too, including the
         // DRM tool whose encryption code is intentionally disabled in this app.
         externalNativeBuild.cmake.targets.addAll(listOf("mobi", "wenku_mobi"))
@@ -57,6 +58,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".probe"
+        }
         release {
             proguardFile(file("document-import.pro"))
             if (readerPreview) {
