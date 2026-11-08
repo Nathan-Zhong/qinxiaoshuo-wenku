@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'library_state.dart';
 import 'network_status.dart';
 import 'wenku_account.dart';
+import 'legado/legado_book_registry.dart';
 
 class CloudShelfPlan {
   CloudShelfPlan({
@@ -46,7 +47,9 @@ class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
   Set<int> _observed = {};
   Set<int>? _cloudObserved;
   Set<int> get _local =>
-      library.shelf.where((id) => id > 0 && id < 0x60000000).toSet();
+      library.shelf
+          .where((id) => id > 0 && id < 0x60000000 && !isLegadoBookId(id))
+          .toSet();
   void start() {
     _observed = _local;
     account.addListener(_accountChanged);
@@ -141,7 +144,7 @@ class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
         }
         return (map[field] as List)
             .whereType<int>()
-            .where((id) => id > 0 && id < 0x60000000)
+            .where((id) => id > 0 && id < 0x60000000 && !isLegadoBookId(id))
             .toSet();
       }
 
