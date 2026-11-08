@@ -2,6 +2,10 @@ name: shell-build
 
 on:
   workflow_dispatch:
+  push:
+    branches: [official-base]
+    paths:
+      - '.github/workflows/shell-build.yml'
 
 permissions:
   contents: read
