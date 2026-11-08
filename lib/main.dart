@@ -28,6 +28,7 @@ import 'offline_cache.dart';
 import 'offline_repository.dart';
 import 'pages.dart';
 import 'performance_preferences.dart';
+import 'reader_illustrations.dart';
 import 'touch_sampling.dart';
 import 'updates/app_updates.dart';
 import 'updates/update_page.dart';
@@ -82,6 +83,10 @@ Future<void> main() async {
           network: network,
         )
       : const DemoNovelRepository();
+  if (repository is OfflineNovelRepository) {
+    ReaderIllustrationCache.shared.offlineReader =
+        repository.cache.readIllustration;
+  }
   if (repository is OfflineNovelRepository && repository.local != null) {
     await reconcileLocalSeries(repository.local!, state);
   }
