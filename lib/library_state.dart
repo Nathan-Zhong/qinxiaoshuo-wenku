@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'blocked_tags.dart';
 import 'catalog.dart';
 import 'book_identity.dart';
+import 'legado/legado_book_registry.dart';
 import 'reader_preferences.dart';
 import 'library_backup.dart';
 import 'performance_preferences.dart';
@@ -1161,6 +1162,7 @@ class LibraryState extends ChangeNotifier {
       for (final id in {...add, ...remove}) {
         if (id <= 0 ||
             isLocalBook(id) ||
+            isLegadoBookId(id) ||
             shelfRevision(id) != (expectedRevisions[id] ?? 0)) {
           continue;
         }
