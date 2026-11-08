@@ -43,7 +43,20 @@ jobs:
         run: python3 tools/check_public_source.py
       - run: flutter pub get
       - run: flutter analyze
-      - run: flutter test
+      # expanded reporter 把每条用例结果单独打一行；下一步把「-N: 用例名 [E]」
+      # 提升成 annotation，手机上在运行页就能直接看到失败用例名。
+      - name: Run flutter test
+        run: |
+          set -o pipefail
+          flutter test --reporter expanded 2>&1 | tee "$RUNNER_TEMP/flutter-test.log"
+      - name: Report failing tests as annotations
+        if: failure()
+        run: |
+          log="$RUNNER_TEMP/flutter-test.log"
+          [ -f "$log" ] || exit 0
+          grep -aoE '[0-9]{2}:[0-9]{2} \+[0-9]+( ~[0-9]+)? -[0-9]+: .*' "$log" | sort -u | tail -40 | while IFS= read -r line; do
+            echo "::error title=flutter test:: $line"
+          done
       - name: Build debug APK
         run: flutter build apk --debug
       - uses: actions/upload-artifact@v4
@@ -109,8 +122,6 @@ jobs:
           ls -l "$apk"
           echo "--- ABIs in lib/:"
           unzip -l "$apk" | grep -o 'lib/[^/]*/' | sort -u
-          # lib/assets/ is a non-ABI folder an engine AAR ships; only real
-          # ABI directories count for the single-ABI assertion.
           abis=$(unzip -l "$apk" | grep -oE 'lib/(arm64-v8a|armeabi-v7a|armeabi|x86_64|x86)/' | sort -u)
           echo "ABI dirs: $abis"
           test "$abis" = "lib/arm64-v8a/"
