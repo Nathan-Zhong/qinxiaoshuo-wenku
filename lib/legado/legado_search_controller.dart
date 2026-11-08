@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../blocked_tags.dart';
 import '../book_search.dart';
 import '../catalog.dart';
 import '../novel_feed_controller.dart';
@@ -72,7 +73,9 @@ String legadoSearchRoundErrorText(SearchErrorEvent error) {
 /// - every full snapshot is re-merged with the定版 merge function
 ///   (item 7), so one book with several sources stays one row;
 /// - the field filter （全部/书名/作者/标签/ID) is applied locally on the
-///   merged list, mirroring `NovelRepository.searchFilteredPage`.
+///   merged list, mirroring `NovelRepository.searchFilteredPage`; the
+///   blocked-tag rules filter that same list (setBlockedTags), mirroring
+///   `NovelFeedController`, so a rule added mid-search hides matches at once.
 class LegadoSearchFeedController extends NovelFeedController {
   LegadoSearchFeedController({
     required this.engineRepository,
@@ -96,6 +99,8 @@ class LegadoSearchFeedController extends NovelFeedController {
   // points are all overridden).
   List<Novel> _items = const [];
   List<Novel> _rawItems = const [];
+  BlockedTags _blockedTags = BlockedTags.empty;
+  int _blockedItemCountValue = 0;
   bool _loadingValue = false;
   Object? _errorValue;
   bool _hasMoreValue = false;
@@ -143,6 +148,12 @@ class LegadoSearchFeedController extends NovelFeedController {
 
   @override
   int get resultStartIndex => _resultStartIndexValue;
+
+  @override
+  bool get hasBlockedTags => _blockedTags.isNotEmpty;
+
+  @override
+  int get blockedItemCount => _blockedItemCountValue;
 
   @override
   bool get loading => _loadingValue;
@@ -303,6 +314,23 @@ class LegadoSearchFeedController extends NovelFeedController {
     if (_disposed || _searchFieldValue == value) return;
     _searchFieldValue = value;
     _applyFilter();
+    notifyListeners();
+  }
+
+  /// Blocked-tag rules filter the already merged snapshots, exactly like
+  /// [NovelFeedController.setBlockedTags]: the engine session, its page
+  /// cursor and the raw list are untouched, and clearing a rule restores
+  /// the retained rows. The shell calls this whenever the saved rules
+  /// change, so a rule added mid-search hides matching rows at once.
+  @override
+  void setBlockedTags(Iterable<String> values) {
+    if (_disposed) return;
+    final next = BlockedTags(values);
+    if (_blockedTags.sameAs(next)) return;
+    _blockedTags = next;
+    _applyFilter();
+    _resultStartIndexValue = 0;
+    _resultRevisionValue++;
     notifyListeners();
   }
 
@@ -486,12 +514,21 @@ class LegadoSearchFeedController extends NovelFeedController {
   }
 
   void _applyFilter() {
+    // Blocked tags first, then the search-field filter, mirroring
+    // NovelFeedController's projection (blocked rows never reach the
+    // field filter, and clearing a rule restores them from _rawItems).
+    final unblocked = _blockedTags.isEmpty
+        ? _rawItems
+        : List<Novel>.unmodifiable(
+            _rawItems.where((book) => !_blockedTags.blocks(book)),
+          );
+    _blockedItemCountValue = _rawItems.length - unblocked.length;
     if (_searchFieldValue == BookSearchField.all) {
-      _items = _rawItems;
+      _items = unblocked;
     } else {
       final pattern = BookSearch(_queryValue, field: _searchFieldValue);
       _items = List.unmodifiable(
-        _rawItems.where(
+        unblocked.where(
           (book) => pattern.matches(
             title: book.title,
             author: book.author,
