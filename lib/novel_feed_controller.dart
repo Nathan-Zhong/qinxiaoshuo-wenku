@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'catalog.dart';
+import 'blocked_tags.dart';
 import 'book_search.dart';
+import 'publication_catalog.dart';
 import 'tag_catalogue.dart';
 
 /// Owns page cursors, stale-result isolation and explicit recovery. A failed
@@ -21,6 +23,17 @@ class NovelFeedController extends ChangeNotifier {
   /// page sizes/cursors stay unchanged; search remains one page at a time.
   final int initialItems;
   List<Novel> _items = const [];
+  BlockedTags _blockedTags = BlockedTags.empty;
+  List<Novel>? _visibleItems;
+  int _visibleResultStartIndex = 0;
+  int _blockedItemCount = 0;
+  PublicationLibrary? _publication;
+  PublicationCatalog? _publicationCatalog;
+
+  /// An explicit publication category replaces, rather than combines with,
+  /// ranking and tag requests because its service has its own ordered cursor.
+  PublicationLibrary? get publication => _publication;
+
   NovelSort sort = NovelSort.lastUpdate;
   String query = '';
   BookSearchField searchField = BookSearchField.all;
@@ -52,9 +65,55 @@ class NovelFeedController extends ChangeNotifier {
   bool _disposed = false;
   Timer? _searchDelay;
 
-  List<Novel> get items => _items;
+  List<Novel> get allItems => _items;
+  List<Novel> get items {
+    if (_blockedTags.isEmpty) return _items;
+    _projectVisibleItems();
+    return _visibleItems!;
+  }
+
+  bool get hasBlockedTags => _blockedTags.isNotEmpty;
+  int get blockedItemCount {
+    if (_blockedTags.isEmpty) return 0;
+    _projectVisibleItems();
+    return _blockedItemCount;
+  }
+
+  bool get hasLoaded => page > 0;
   int get resultRevision => _resultRevision;
-  int get resultStartIndex => _resultStartIndex;
+  int get resultStartIndex {
+    if (_blockedTags.isEmpty) return _resultStartIndex;
+    _projectVisibleItems();
+    return _visibleResultStartIndex;
+  }
+
+  void _projectVisibleItems() {
+    if (_visibleItems != null) return;
+    final visible = <Novel>[];
+    var first = 0;
+    for (var index = 0; index < _items.length; index++) {
+      final book = _items[index];
+      if (_blockedTags.blocks(book)) continue;
+      visible.add(book);
+      if (index < _resultStartIndex) first++;
+    }
+    _visibleItems = List.unmodifiable(visible);
+    _visibleResultStartIndex = first;
+    _blockedItemCount = _items.length - visible.length;
+  }
+
+  /// Filter the already accepted pages, without touching service cursors or
+  /// starting a request. Clearing a rule restores the retained original rows.
+  void setBlockedTags(Iterable<String> values) {
+    if (_disposed) return;
+    final next = BlockedTags(values);
+    if (_blockedTags.sameAs(next)) return;
+    _blockedTags = next;
+    _visibleItems = null;
+    _resultStartIndex = 0;
+    _resultRevision++;
+    notifyListeners();
+  }
 
   Future<void> refresh() {
     _searchDelay?.cancel();
@@ -90,6 +149,7 @@ class NovelFeedController extends ChangeNotifier {
     }
     if (!changed) return;
     _items = List.unmodifiable(next);
+    _visibleItems = null;
     notifyListeners();
   }
 
@@ -104,9 +164,11 @@ class NovelFeedController extends ChangeNotifier {
       : _load(replace: page == 0 || refreshFailed, force: true);
 
   Future<void> selectSort(NovelSort value) async {
-    if (sort == value && tags.isEmpty) return;
+    if (sort == value && tags.isEmpty && _publication == null) return;
     sort = value;
     tags = const [];
+    _publication = null;
+    _publicationCatalog = null;
     _reset();
     await _load(replace: true);
   }
@@ -115,10 +177,40 @@ class NovelFeedController extends ChangeNotifier {
     final next =
         values.map((t) => t.trim()).where((t) => t.isNotEmpty).toSet().toList()
           ..sort();
-    if (listEquals(tags, next)) return;
+    if (listEquals(tags, next) && _publication == null) return;
     tags = List.unmodifiable(next);
+    _publication = null;
+    _publicationCatalog = null;
     _reset();
     await _load(replace: true);
+  }
+
+  /// Browse a publication through the same paging, refresh and stale-response
+  /// isolation as discovery. The caller restores the existing account first.
+  Future<void> selectPublication(
+    PublicationLibrary value, {
+    required PublicationCatalog catalog,
+    bool force = false,
+  }) async {
+    if (_disposed || search) return;
+    if (!force &&
+        _publication?.id == value.id &&
+        identical(_publicationCatalog, catalog)) {
+      return;
+    }
+    _publication = value;
+    _publicationCatalog = catalog;
+    tags = const [];
+    _reset();
+    await _load(replace: true, force: force);
+  }
+
+  /// A changed identity must not retain another account's visible book list.
+  /// A refreshed connection for the same identity preserves resolved content.
+  Future<void> refreshPublicationSession({required bool retain}) async {
+    if (_disposed || _publication == null) return;
+    if (!retain) _reset();
+    await _load(replace: true, force: true);
   }
 
   Future<void> searchFor(String value) async {
@@ -181,6 +273,7 @@ class NovelFeedController extends ChangeNotifier {
   void _reset() {
     _generation++;
     _items = const [];
+    _visibleItems = null;
     page = 0;
     totalItems = null;
     hasMore = true;
@@ -198,6 +291,8 @@ class NovelFeedController extends ChangeNotifier {
     var requestedPage = replace ? 1 : page + 1;
     var replacing = replace;
     final requestedSort = sort;
+    final requestedPublication = _publication;
+    final publicationCatalog = _publicationCatalog;
     final filteringTags = !search && tags.isNotEmpty;
     final requestedQuery = filteringTags ? tags.join(' ') : query;
     final requestedField = filteringTags ? BookSearchField.tags : searchField;
@@ -222,6 +317,7 @@ class NovelFeedController extends ChangeNotifier {
               for (final item in progress.items) item.id: item,
             };
             _items = List.unmodifiable(merged.values);
+            _visibleItems = null;
             _resultStartIndex = replacing ? 0 : oldCount;
             replacing = false;
             _tagSuggestions.addAll(_items.expand((book) => book.tags));
@@ -235,7 +331,13 @@ class NovelFeedController extends ChangeNotifier {
             requestedField == BookSearchField.all &&
                 requestedQuery.trim().startsWith('#');
         final result =
-            (search || filteringTags) &&
+            requestedPublication != null && publicationCatalog != null
+            ? await publicationCatalog.browsePublication(
+                requestedPublication.id,
+                page: requestedPage,
+                refresh: force,
+              )
+            : (search || filteringTags) &&
                 tagOnly &&
                 repository is ProgressiveTagCatalogue
             ? await (repository as ProgressiveTagCatalogue).tagPage(
@@ -269,6 +371,7 @@ class NovelFeedController extends ChangeNotifier {
         };
         _resultStartIndex = replacing ? 0 : oldCount;
         _items = List.unmodifiable(merged.values);
+        _visibleItems = null;
         _tagSuggestions.addAll(result.items.expand((book) => book.tags));
         if (_resultStartIndex < _items.length) _resultRevision++;
         page = requestedPage;
