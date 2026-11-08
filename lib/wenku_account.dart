@@ -5,6 +5,7 @@ import 'package:xml/xml.dart';
 
 import 'legacy_transport.dart';
 import 'library_state.dart';
+import 'legado/legado_book_registry.dart';
 import 'wenku_shelf_sync.dart' show CloudShelfPlan;
 
 typedef AccountRequest = Future<String> Function(String action);
@@ -336,7 +337,9 @@ class WenkuAccount extends ChangeNotifier {
     final remote = CloudBook.parse(await _send('action=bookcase&t=0'));
     final ids = remote.map((b) => b.id).toSet();
     final plan = CloudShelfPlan(
-      local: local,
+      // Legado books are local-only: never let a Legado id into the plan,
+      // even if a caller passes one in `local`.
+      local: local.where((id) => !isLegadoBookId(id)).toSet(),
       remote: ids,
       lastLocal: lastLocal,
       lastCloud: lastCloud,
@@ -369,7 +372,11 @@ class WenkuAccount extends ChangeNotifier {
       final remote = CloudBook.parse(await _send('action=bookcase&t=0'));
       final remoteIds = remote.map((book) => book.id).toSet();
       final missing = localIds
-          .where((id) => id > 0 && id < 0x60000000 && !remoteIds.contains(id))
+          .where((id) =>
+              id > 0 &&
+              id < 0x60000000 &&
+              !isLegadoBookId(id) &&
+              !remoteIds.contains(id))
           .toList();
       final uploaded = <int>[];
       Object? failure;
@@ -402,7 +409,7 @@ class WenkuAccount extends ChangeNotifier {
   );
 
   Future<void> addCloud(int id) => _run('正在收藏到云端', () async {
-    if (id <= 0) throw ArgumentError.value(id);
+    if (id <= 0 || isLegadoBookId(id)) throw ArgumentError.value(id);
     requireWenkuSuccess(
       await _send('action=bookcase&do=add&aid=$id'),
       accepted: const {1, 5},
