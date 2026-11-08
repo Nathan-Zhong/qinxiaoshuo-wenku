@@ -21,7 +21,6 @@ Future<Uint8List> renderReadingDesktopCard(
     data: data,
     size: size,
     brightness: brightness,
-    quoteText: data.design.name == 'quote' ? null : null,
     cover: readingDesktopCover(data.latestCompletion?.coverPath),
     paintQuote: paintQuote,
   );

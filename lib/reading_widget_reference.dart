@@ -815,7 +815,7 @@ class ReadingDesktopCardPainter extends CustomPainter {
       textAlign: align,
       maxLines: maxLines,
       ellipsis: '…',
-    )..layout(maxWidth: math.max(1, width));
+    )..layout(maxWidth: math.max(1.0, width));
     painter.paint(canvas, at);
     final painted = painter.height;
     painter.dispose();

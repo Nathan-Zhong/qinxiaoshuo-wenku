@@ -265,14 +265,64 @@ class _ReadingReportPageState extends State<ReadingReportPage> {
                 code: 'REPORT / ${module.name.toUpperCase()}',
               ),
               ContentPanel(
-                child: ReadingStatisticsAnalysisView(
-                  data: _data,
-                  module: module,
-                ),
+                child:
+                    module == ReadingReportModule.days &&
+                        _options.modules.contains(ReadingReportModule.calendar)
+                    ? _footprint()
+                    : ReadingStatisticsAnalysisView(
+                        data: _data,
+                        module: module,
+                      ),
               ),
             ],
         ],
       ),
+    );
+  }
+
+  Widget _footprint() {
+    final colors = Theme.of(context).colorScheme;
+    final entries = <(DateTime, int)>[
+      for (var i = 0; i < _data.dates.length && i < _data.seconds.length; i++)
+        if ((_data.seconds[i] ?? 0) > 0) (_data.dates[i], _data.seconds[i]!),
+    ]..sort((a, b) => b.$2.compareTo(a.$2));
+    if (entries.isEmpty) {
+      return AppText(
+        '这段时间还没有记录到阅读时长。',
+        style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final entry in entries.take(6))
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                AppText(
+                  statisticsDate(entry.$1),
+                  style: const TextStyle(fontSize: 13),
+                ),
+                AppText(
+                  statisticsDuration(entry.$2),
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (entries.length > 6) ...[
+          const SizedBox(height: 6),
+          AppText(
+            '还有 ${entries.length - 6} 个有记录的日子',
+            style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+          ),
+        ],
+      ],
     );
   }
 
