@@ -1377,12 +1377,14 @@ class ContentNotice extends StatelessWidget {
     this.message,
     this.onRetry,
     this.actionLabel = '重试',
+    this.secondaryAction,
   });
   final IconData icon;
   final String title;
   final String? message;
   final VoidCallback? onRetry;
   final String actionLabel;
+  final Widget? secondaryAction;
 
   @override
   Widget build(BuildContext context) => Center(
@@ -1417,6 +1419,10 @@ class ContentNotice extends StatelessWidget {
           if (onRetry != null) ...[
             const SizedBox(height: 16),
             GlassTextButton(onPressed: onRetry, child: AppText(actionLabel)),
+          ],
+          if (secondaryAction != null) ...[
+            const SizedBox(height: 16),
+            secondaryAction!,
           ],
         ],
       ),
