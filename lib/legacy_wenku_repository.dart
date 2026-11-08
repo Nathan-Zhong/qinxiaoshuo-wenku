@@ -352,11 +352,13 @@ class LegacyWenkuRepository extends NovelRepository
   }) => _searchPage(query, field: field, page: page, refresh: refresh);
 
   @override
+  @override
   Future<NovelPage> tagPage(
     String tag, {
     int page = 1,
     bool refresh = false,
     bool Function()? current,
+    TagProgressCallback? onProgress,
   }) {
     final term = tag.trim();
     return _searchPage(
@@ -365,6 +367,7 @@ class LegacyWenkuRepository extends NovelRepository
       page: page,
       refresh: refresh,
       current: current,
+      onProgress: onProgress,
     );
   }
 
@@ -374,6 +377,7 @@ class LegacyWenkuRepository extends NovelRepository
     bool refresh = false,
     BookSearchField field = BookSearchField.all,
     bool Function()? current,
+    TagProgressCallback? onProgress,
   }) async {
     if (page < 1) throw ArgumentError.value(page, 'page');
     var term = query.trim();
@@ -415,7 +419,25 @@ class LegacyWenkuRepository extends NovelRepository
         version,
       ), () => _TagCursor(refresh: refresh));
       if ((page > 1 || ids.length < 20) && !tagCursor.done) {
-        await _extendTagIndex(term, cacheKey, version, page * 20 + 1, current);
+        await _extendTagIndex(
+          term,
+          cacheKey,
+          version,
+          page * 20 + 1,
+          current,
+          onScan: onProgress == null
+              ? null
+              : (scannedPages, totalPages) {
+                  if (current?.call() == false) return;
+                  onProgress!(
+                    TagSearchProgress(
+                      items: const [],
+                      scannedPages: scannedPages,
+                      totalPages: totalPages,
+                    ),
+                  );
+                },
+        );
         ids = _searchIds[cacheKey] ?? ids;
       }
     }
@@ -426,6 +448,17 @@ class LegacyWenkuRepository extends NovelRepository
       final batch = matches.skip(start).take(4);
       final novels = await Future.wait(batch.map(find));
       found.addAll(novels.whereType<Novel>());
+      // Report real progress while the page resolves: the scan position
+      // comes from the shared tag cursor, the items from this page so far.
+      if (field == BookSearchField.tags && onProgress != null) {
+        onProgress!(
+          TagSearchProgress(
+            items: List.unmodifiable(found),
+            scannedPages: tagCursor == null ? 0 : tagCursor.next - 1,
+            totalPages: tagCursor?.pages,
+          ),
+        );
+      }
     }
     return NovelPage(
       items: List.unmodifiable(found),
@@ -442,8 +475,9 @@ class LegacyWenkuRepository extends NovelRepository
     String key,
     int version,
     int needed,
-    bool Function()? current,
-  ) async {
+    bool Function()? current, {
+    void Function(int scannedPages, int? totalPages)? onScan,
+  }) async {
     final ticket = (key, version);
     if (current?.call() == false) return;
     final pending = _tagRequests[ticket];
@@ -498,6 +532,9 @@ class LegacyWenkuRepository extends NovelRepository
           cursor.pages = result.totalPages;
           cursor.next = result.page + 1;
           if (!result.hasMore || result.items.isEmpty) cursor.done = true;
+          if (current?.call() != false) {
+            onScan?.call(cursor.next - 1, cursor.pages);
+          }
         }
         _searchIds[key] = List<int>.unmodifiable(ids);
       }
