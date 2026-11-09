@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/branding/app-icon.png" width="96" alt="小说文库" />
+  <img src="assets/branding/app-icon.png" width="96" alt="轻小说文库" />
 </p>
 
-<h1 align="center">小说文库</h1>
+<h1 align="center">轻小说文库</h1>
 
 <p align="center">基于 Flutter 的 Android 轻小说阅读客户端，接入 Legado 书源</p>
 
@@ -19,7 +19,7 @@
 
 ## 简介
 
-小说文库是面向 Android 手机与平板的轻小说阅读客户端，基于「轻小说文库」（[Wenku8_Flutter](https://github.com/mikufoxxx/Wenku8_Flutter) 0.5.6）二次开发：在保留文库 8 阅读体验的基础上，接入了 Legado 书源解析，可以导入书源、跨书源搜索、换源、登录需要登录的书源，阅读小说与漫画。
+轻小说文库是面向 Android 手机与平板的轻小说阅读客户端，基于「轻小说文库」（[Wenku8_Flutter](https://github.com/mikufoxxx/Wenku8_Flutter) 0.5.6）二次开发：在保留文库 8 阅读体验的基础上，接入了 Legado 书源解析，可以导入书源、跨书源搜索、换源、登录需要登录的书源，阅读小说与漫画。
 
 > [!IMPORTANT]
 > **本版本属于非官方修改版本。** 安装包由本地独立构建，不接入官方更新渠道。本版本基于「轻小说文库」二次开发，旨在提供更丰富的小说与漫画阅读体验。在此感谢原作者及其团队的辛勤付出与开源贡献。如果您认可并喜爱「轻小说文库」，欢迎通过原项目官方渠道赞助支持原作者，共同助力项目的持续发展。
@@ -58,8 +58,8 @@
 开发环境：**Flutter 3.41.5 / Dart 3.11.3、JDK 17、Android SDK**。
 
 ```sh
-git clone https://github.com/Nathan-Zhong/xiaoshuo-wenku.git
-cd xiaoshuo-wenku
+git clone https://github.com/Nathan-Zhong/qinxiaoshuo-wenku.git
+cd qinxiaoshuo-wenku
 flutter pub get
 flutter build apk --release --target-platform android-arm64
 ```
@@ -73,7 +73,7 @@ flutter build apk --release --target-platform android-arm64
 
 ## 贡献
 
-欢迎通过 [Issues](https://github.com/Nathan-Zhong/xiaoshuo-wenku/issues) 反馈问题或提出建议，通过 Pull Request 参与开发。提交问题时请提供应用版本、Android 版本和复现步骤。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎通过 [Issues](https://github.com/Nathan-Zhong/qinxiaoshuo-wenku/issues) 反馈问题或提出建议，通过 Pull Request 参与开发。提交问题时请提供应用版本、Android 版本和复现步骤。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 致谢与许可
 
