@@ -34,7 +34,7 @@ internal class BookMarkupImport(private val root: File,
                             require(tags <= 200000) { "HTML 结构过于复杂，请转换为 EPUB 后导入" }
                         }
                     }
-                    html(source.inputStream().use { input -> Jsoup.parse(input) }, writer, resource)
+                    html(source.inputStream().use { input -> Jsoup.parse(source) }, writer, resource)
                 }
                 "md", "markdown" -> {
                     val normalized = File(work, "decoded.txt")
