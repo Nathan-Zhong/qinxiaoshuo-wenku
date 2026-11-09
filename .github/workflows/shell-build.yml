@@ -62,7 +62,16 @@ jobs:
           ls -l "$RUNNER_TEMP/release.jks"
 
       - name: build release apk
-        run: flutter build apk --release --target-platform android-arm64
+        run: |
+          for attempt in 1 2 3; do
+            echo "== build attempt $attempt =="
+            if flutter build apk --release --target-platform android-arm64; then
+              exit 0
+            fi
+            echo "attempt $attempt failed, retrying in 45s"
+            sleep 45
+          done
+          exit 1
 
       - name: verify apk
         run: |
