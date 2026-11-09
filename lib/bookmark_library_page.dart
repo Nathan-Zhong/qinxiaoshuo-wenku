@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'app_interactions.dart';
 import 'app_ui.dart';
+import 'archive_carousel.dart';
 import 'app_search_field.dart';
 import 'catalog.dart';
 import 'feature_pages.dart';

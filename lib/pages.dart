@@ -2765,18 +2765,6 @@ class _ShelfPageState extends State<ShelfPage>
           onReading: (v) => save(filter: v),
           onSource: (v) => save(source: v),
           onSort: (v) => save(sort: v),
-          footer:
-              state.combinedShelf && _offline?.local?.books.isNotEmpty == true
-              ? GlassTextButton(
-                  key: const ValueKey('shelf-manage-local'),
-                  onPressed: () => openLocalBookBatch(
-                    context,
-                    books: _offline!.local!,
-                    library: state,
-                  ),
-                  child: const AppText('批量整理本地书'),
-                )
-              : null,
         );
       },
     ),
