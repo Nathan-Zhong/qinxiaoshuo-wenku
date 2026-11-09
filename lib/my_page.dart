@@ -236,8 +236,8 @@ class MyPage extends StatelessWidget {
               const SizedBox(height: 14),
               FeatureEntry(
                 key: const ValueKey('my-support'),
-                title: '赞助与反馈',
-                subtitle: '自愿赞助 · 最新版本问题反馈',
+                title: '赞助与说明',
+                subtitle: '自愿赞助',
                 icon: CupertinoIcons.heart,
                 onTap: () => pushNovelPage<void>(
                   context,
@@ -253,15 +253,12 @@ class MyPage extends StatelessWidget {
   }
 }
 
-/// 官方「赞助与反馈」的本地版：赞助指向原作者的爱发电，
-/// 反馈指向我们自己仓库的 Issues（官方那条是给原项目用的）。
+/// 官方「赞助与反馈」的本地版：只保留赞助原作者的入口，
+/// 下面一个说明框讲清本地构建与只适配小说、漫画类书源，不设反馈入口。
 class SupportFeedbackPage extends StatelessWidget {
   const SupportFeedbackPage({super.key});
 
   static final Uri _sponsor = Uri.parse('https://afdian.com/a/mikufoxxx');
-  static final Uri _feedback = Uri.parse(
-    'https://github.com/Nathan-Zhong/xiaoshuo-wenku/issues',
-  );
 
   Future<void> _open(BuildContext context, Uri uri) async {
     final done = await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -273,8 +270,8 @@ class SupportFeedbackPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ArchiveFeaturePage(
-      title: '赞助与反馈',
-      code: 'SUPPORT / FEEDBACK',
+      title: '赞助与说明',
+      code: 'SUPPORT / INFO',
       child: ListView(
         padding: featurePadding(context),
         children: [
@@ -285,19 +282,11 @@ class SupportFeedbackPage extends StatelessWidget {
             icon: CupertinoIcons.gift,
             onTap: () => _open(context, _sponsor),
           ),
-          const SizedBox(height: 14),
-          FeatureEntry(
-            key: const ValueKey('support-feedback'),
-            title: '问题反馈',
-            subtitle: 'GitHub Issues · 附上版本号与复现步骤',
-            icon: CupertinoIcons.exclamationmark_bubble,
-            onTap: () => _open(context, _feedback),
-          ),
           const SizedBox(height: 24),
           ContentPanel(
             child: AppText(
               '这个版本是我们自己编译维护的，装包来自本地构建，'
-              '不走官方更新通道；遇到问题请走上面的 Issues。',
+              '不走官方更新通道；本版只适配小说和漫画类书源。',
               style: TextStyle(
                 fontSize: 13,
                 height: 1.6,
