@@ -61,7 +61,10 @@ abstract final class LegacyTransport {
         'page': page,
       })) ??
       '';
-  static Future<Uint8List> illustration(String url) async {
+  static Future<Uint8List> illustration(
+    String url, {
+    bool cacheForViewing = true,
+  }) async {
     final bytes = await channel.invokeMethod<Uint8List>('illustration', {
       'url': url,
     });

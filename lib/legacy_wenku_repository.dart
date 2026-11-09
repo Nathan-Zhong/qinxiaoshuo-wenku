@@ -357,6 +357,7 @@ class LegacyWenkuRepository extends NovelRepository
     int page = 1,
     bool refresh = false,
     bool Function()? current,
+    void Function(TagSearchProgress)? onProgress,
   }) {
     final term = tag.trim();
     return _searchPage(

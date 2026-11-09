@@ -425,6 +425,24 @@ class WenkuAccount extends ChangeNotifier {
     if (id <= 0) throw ArgumentError.value(id);
     requireWenkuSuccess(await _send('action=book&do=vote&aid=$id'));
   });
+  Future<void> postReview({
+    required int bookId,
+    String? title,
+    required String content,
+  }) => submitReview(
+    'action=review&do=post&aid=$bookId' +
+    '&title=' + Uri.encodeQueryComponent(title ?? '') +
+    '&content=' + Uri.encodeQueryComponent(content),
+  );
+
+  Future<void> replyReview({
+    required int threadId,
+    required String content,
+  }) => submitReview(
+    'action=review&do=reply&tid=$threadId' +
+    '&content=' + Uri.encodeQueryComponent(content),
+  );
+
   Future<void> submitReview(String action) => _run('正在发表', () async {
     if (!action.startsWith('action=review&do=post&') &&
         !action.startsWith('action=review&do=reply&')) {
