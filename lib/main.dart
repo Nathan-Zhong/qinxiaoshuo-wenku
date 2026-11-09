@@ -14,6 +14,8 @@ import 'app_repository.dart';
 import 'catalog.dart';
 import 'legacy_wenku_repository.dart';
 import 'legado/legado_books.dart';
+import 'legado/legado_login_ui.dart';
+import 'legado/legado_verification_ui.dart';
 import 'library_state.dart';
 import 'local_platform.dart';
 import 'local_series_actions.dart';
@@ -223,6 +225,21 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
       }),
     );
     unawaited(_prepareReadingWidgets());
+    _installLegadoFlows();
+  }
+
+  /// Engine verification (image captcha) and source login sheets are
+  /// driven from Kotlin while an engine JS thread waits, so they are
+  /// installed once against the app's navigator.
+  void _installLegadoFlows() {
+    if (!LocalPlatform.fileActions) return;
+    final client = LegadoBooks.client;
+    final contextProvider = () => _navigator.currentState?.overlay?.context;
+    LegadoVerificationUi.install(
+      client: client,
+      contextProvider: contextProvider,
+    );
+    LegadoLoginUi.install(client: client, contextProvider: contextProvider);
   }
 
   Future<void> _prepareReadingWidgets() async {
