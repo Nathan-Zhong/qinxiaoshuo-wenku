@@ -47,7 +47,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["wenkuAppLabel"] = "小说文库"
+        manifestPlaceholders["wenkuAppLabel"] = "轻小说文库"
         testInstrumentationRunner = "org.mewx.wenku8_flutter.SessionFixtureInstrumentation"
         if (catalogProbe) testInstrumentationRunner = "org.mewx.wenku8_flutter.CatalogReadInstrumentation"
         // AGP otherwise builds upstream desktop utilities too, including the
