@@ -53,7 +53,7 @@ jobs:
           set -e
           if [ -z "$KEYSTORE_B64" ]; then echo "missing signing secrets"; exit 1; fi
           echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
-          cat > key.properties <<EOF
+          cat > android/key.properties <<EOF
           storeFile=$RUNNER_TEMP/release.jks
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
