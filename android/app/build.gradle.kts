@@ -110,7 +110,8 @@ dependencies {
     implementation("org.apache.poi:poi-scratchpad:5.5.1")
     implementation("com.github.albfernandez:juniversalchardet:2.0.4")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
-    implementation("org.jsoup:jsoup:1.23.2")
+    // jsoup ships inside the Legado data.aar (see libs/); declaring it here
+    // duplicates org.jsoup.* classes at the release class check.
     implementation("org.commonmark:commonmark:0.30.1")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // Keep the media host classes available to the app's shared-engine wiring.
