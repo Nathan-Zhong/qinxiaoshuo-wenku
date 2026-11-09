@@ -5,12 +5,14 @@ import '../app_ui.dart';
 import '../catalog.dart';
 import 'legado_book_registry.dart';
 
-/// The 来源 section shown on the detail page of an engine book that
-/// exists on more than one source (PLAN item 7, display half): the
-/// current source is marked, every other source is a tappable chip in
-/// the same style as the page's tag chips, and switching reopens the
-/// detail page on that source so its info and directory refresh.
-/// Renders nothing for single-source books and non-engine books.
+/// The 来源 section shown on the detail page of an engine book
+/// (PLAN item 7, display half): the current source is marked, every
+/// other source is a tappable chip in the same style as the page's tag
+/// chips, and switching reopens the detail page on that source so its
+/// info and directory refresh. A book with only one source still
+/// shows that source as a single marked chip — the detail page never
+/// leaves a source book without saying where it came from — it is
+/// just not tappable. Renders nothing for non-engine books.
 class LegadoSourceSection extends StatelessWidget {
   const LegadoSourceSection({
     super.key,
@@ -28,7 +30,7 @@ class LegadoSourceSection extends StatelessWidget {
     listenable: registry,
     builder: (context, _) {
       final group = registry.groupOf(novel.id);
-      if (group.length < 2) return const SizedBox.shrink();
+      if (group.isEmpty) return const SizedBox.shrink();
       return Column(
         key: const ValueKey('detail-legado-sources'),
         crossAxisAlignment: CrossAxisAlignment.start,
