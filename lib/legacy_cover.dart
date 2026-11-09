@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
@@ -8,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'legado/legado_book_registry.dart';
 import 'legado/legado_books.dart';
 import 'legado/legado_image_resolver.dart';
+import 'url_cover.dart';
 
 /// Bounded cover cache for both the Wenku8 catalogue and Legado sources.
 ///
@@ -15,7 +15,8 @@ import 'legado/legado_image_resolver.dart';
 /// channel: `action=book&do=cover&aid=<id>`), which keeps the original
 /// on-disk cache. Legado source covers are resolved through the engine
 /// (`resolveImageRequest`, so source headers/cookies apply) and fetched
-/// over HTTP; they live in this in-memory cache only.
+/// through UrlCover (URL-keyed cache, browser User-Agent, tight
+/// timeouts, resolved-then-bare fallback); they live in-memory only.
 abstract final class LegacyCover {
   static const _channel = MethodChannel('org.mewx.wenku8/legacy_api');
 
@@ -25,7 +26,17 @@ abstract final class LegacyCover {
 
   static final _cache = LegacyCoverCache(request: _request);
 
-  static Uint8List? peek(int aid, {String? url}) => _cache.peek(aid);
+  // 1.0.0 parity: the peek also consults the URL-keyed cover cache
+  // (a cover fetched once for one book is visible to every book
+  // sharing the URL, and survives this aid-keyed cache's eviction).
+  // The hint comes from the caller or from the last bytes() call.
+  static Uint8List? peek(int aid, {String? url}) {
+    final cached = _cache.peek(aid);
+    if (cached != null) return cached;
+    final hint = url ?? _urlHints[aid];
+    if (hint == null || hint.isEmpty) return null;
+    return UrlCover.peek(hint);
+  }
 
   static Future<Uint8List> bytes(int aid, {String? url}) {
     if (url != null && url.isNotEmpty) _urlHints[aid] = url;
@@ -54,21 +65,45 @@ abstract final class LegacyCover {
       target = _urlHints[aid];
     }
     if (target == null || target.trim().isEmpty) return null;
-    var url = target;
+    if (target.startsWith('data:')) return _dataUri(target);
+    var fetchUrl = target;
     var headers = const <String, String>{};
     if (origin.isNotEmpty) {
       try {
-        final resolved = await _resolver.resolve(origin, url);
+        final resolved = await _resolver.resolve(origin, target);
         if (resolved != null && resolved.url.isNotEmpty) {
-          url = resolved.url;
+          fetchUrl = resolved.url;
           headers = resolved.headers;
         }
       } catch (_) {
         // Resolution is best-effort; the bare URL may still work.
       }
     }
-    if (url.startsWith('data:')) return _dataUri(url);
-    return _fetch(url, headers);
+    if (fetchUrl.startsWith('data:')) return _dataUri(fetchUrl);
+    // 1.0.0 parity (cover_images.dart loadLegadoCoverBytes): the fetch
+    // goes through UrlCover, not a bare HttpClient — that restores four
+    // behaviours the 0.5.6 re-port dropped:
+    //  1. a browser Chrome User-Agent by default (a bare Dart HttpClient
+    //     sends Dart/<version>, which image hosts and CDNs reject);
+    //  2. a resolved-URL fetch that falls back to the bare URL when the
+    //     resolved fetch fails (one failed attempt no longer means no
+    //     cover at all), with a failed headered attempt never poisoning
+    //     the bare retry window (separate failure keys in UrlCover);
+    //  3. tight timeouts (5s connect / 10s read) and an 8MB size cap,
+    //     so a dead or hostile image host can neither hang nor bloat
+    //     cover loading;
+    //  4. a URL-keyed cache shared by every book with the same cover,
+    //     with a synchronous peek (see peek above).
+    try {
+      return await UrlCover.load(
+        target,
+        headers: headers,
+        fetchUrl: fetchUrl,
+      );
+    } catch (_) {
+      if (fetchUrl == target && headers.isEmpty) rethrow;
+      return UrlCover.load(target);
+    }
   }
 
   static Uint8List? _dataUri(String url) {
@@ -78,33 +113,6 @@ abstract final class LegacyCover {
       return base64Decode(url.substring(comma + 1));
     } on FormatException {
       return null;
-    }
-  }
-
-  static Future<Uint8List?> _fetch(
-    String url,
-    Map<String, String> headers,
-  ) async {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 20)
-      ..idleTimeout = const Duration(seconds: 10);
-    try {
-      final request = await client.getUrl(Uri.parse(url));
-      headers.forEach(request.headers.set);
-      request.headers.set(
-        HttpHeaders.acceptHeader,
-        'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-      );
-      final response = await request.close();
-      if (response.statusCode < 200 || response.statusCode >= 300) return null;
-      final builder = BytesBuilder(copy: false);
-      await for (final chunk in response) {
-        builder.add(chunk);
-      }
-      final bytes = builder.takeBytes();
-      return bytes.isEmpty ? null : bytes;
-    } finally {
-      client.close(force: true);
     }
   }
 }
