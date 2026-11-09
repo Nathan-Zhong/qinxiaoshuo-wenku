@@ -1,10 +1,10 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'app_interactions.dart';
 import 'app_ui.dart';
 import 'book_source_manager_page.dart';
-import 'bookmark_library_page.dart';
 import 'reading_statistics_page.dart';
 import 'catalog.dart';
 import 'dock_layout.dart';
@@ -181,30 +181,6 @@ class MyPage extends StatelessWidget {
                   reduceMotion: state.reduceMotion,
                 ),
               ),
-              const SizedBox(height: 14),
-              ActiveListenableBuilder(
-                listenable: state.bookmarkChanges,
-                builder: (context) {
-                  final count = libraryBookmarks(
-                    state,
-                    books: repository is OfflineNovelRepository
-                        ? (repository as OfflineNovelRepository).local
-                        : null,
-                  ).length;
-                  return FeatureEntry(
-                    key: const ValueKey('my-bookmarks'),
-                    title: '书签',
-                    subtitle: count == 0 ? '收藏喜欢的句子与阅读位置' : '$count 条书签与摘录',
-                    icon: CupertinoIcons.bookmark,
-                    onTap: () => pushNovelPage<void>(
-                      context,
-                      BookmarkLibraryPage(state: state, repository: repository),
-                      reduceMotion: state.reduceMotion,
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 14),
               FeatureEntry(
                 key: const ValueKey('my-book-sources'),
                 title: '书源管理',
@@ -246,6 +222,18 @@ class MyPage extends StatelessWidget {
               ),
               const SizedBox(height: 14),
               FeatureEntry(
+                key: const ValueKey('my-support'),
+                title: '赞助与反馈',
+                subtitle: '自愿赞助 · 最新版本问题反馈',
+                icon: CupertinoIcons.heart,
+                onTap: () => pushNovelPage<void>(
+                  context,
+                  const SupportFeedbackPage(),
+                  reduceMotion: state.reduceMotion,
+                ),
+              ),
+              const SizedBox(height: 14),
+              FeatureEntry(
                 key: const ValueKey('my-about'),
                 title: '关于',
                 subtitle:
@@ -260,6 +248,65 @@ class MyPage extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 官方「赞助与反馈」的本地版：赞助指向原作者的爱发电，
+/// 反馈指向我们自己仓库的 Issues（官方那条是给原项目用的）。
+class SupportFeedbackPage extends StatelessWidget {
+  const SupportFeedbackPage({super.key});
+
+  static final Uri _sponsor = Uri.parse('https://afdian.com/a/mikufoxxx');
+  static final Uri _feedback = Uri.parse(
+    'https://github.com/Nathan-Zhong/xiaoshuo-wenku/issues',
+  );
+
+  Future<void> _open(BuildContext context, Uri uri) async {
+    final done = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!done && context.mounted) {
+      showNovelFeedback(context, '没有可以打开链接的应用');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ArchiveFeaturePage(
+      title: '赞助与反馈',
+      code: 'SUPPORT / FEEDBACK',
+      child: ListView(
+        padding: featurePadding(context),
+        children: [
+          FeatureEntry(
+            key: const ValueKey('support-sponsor'),
+            title: '赞助原作者',
+            subtitle: '爱发电 · 自愿赞助，不影响功能',
+            icon: CupertinoIcons.gift,
+            onTap: () => _open(context, _sponsor),
+          ),
+          const SizedBox(height: 14),
+          FeatureEntry(
+            key: const ValueKey('support-feedback'),
+            title: '问题反馈',
+            subtitle: 'GitHub Issues · 附上版本号与复现步骤',
+            icon: CupertinoIcons.exclamationmark_bubble,
+            onTap: () => _open(context, _feedback),
+          ),
+          const SizedBox(height: 24),
+          ContentPanel(
+            child: AppText(
+              '这个版本是我们自己编译维护的，装包来自本地构建，
+'
+              '不走官方更新通道；遇到问题请走上面的 Issues。',
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.6,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
