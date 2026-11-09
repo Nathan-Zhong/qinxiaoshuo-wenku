@@ -183,15 +183,37 @@ class WenkuAccount extends ChangeNotifier {
       ? error.message.toString()
       : '网络或本地存储暂时异常，请重试';
 
-  Future<void> initialize() => _initialization ??= _run('正在读取账号', () async {
-    final session = await _hasSession();
-    if (_disposed) return;
-    authenticated = session;
+  Future<void> initialize({bool keepLogin = true}) =>
+      _initialization ??= _run('正在读取账号', () async {
+        if (!keepLogin) {
+          // The user asked not to keep the session: a stored session from an
+          // earlier launch must not restore itself.
+          await _clear();
+        }
+        final session = await _hasSession();
+        if (_disposed) return;
+        authenticated = session;
+        if (authenticated) {
+          profile = WenkuProfile.parse(await _send('action=userinfo'));
+          unawaited(_loadAvatar());
+        }
+      }).catchError((Object _) {});
+
+  /// Probes the Wenku8 relay without changing membership or progress.
+  /// When a session is present it also refreshes the profile; without one,
+  /// any well-formed reply (a numeric code such as 4, or a metadata
+  /// document) proves the relay is reachable.
+  Future<String> testConnection() => _run('正在测试连接', () async {
     if (authenticated) {
       profile = WenkuProfile.parse(await _send('action=userinfo'));
-      unawaited(_loadAvatar());
+      return '连接正常，已登录';
     }
-  }).catchError((Object _) {});
+    final reply = await LegacyTransport.request('action=userinfo');
+    if (wenkuResponseCode(reply) != null || reply.contains('<metadata')) {
+      return '连接正常，未登录';
+    }
+    throw const FormatException('连接测试未得到有效回应');
+  });
 
   Future<T> _run<T>(String label, Future<T> Function() work) async {
     if (busy) throw StateError('An account operation is already active');
