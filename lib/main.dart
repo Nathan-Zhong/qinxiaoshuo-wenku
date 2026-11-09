@@ -40,8 +40,6 @@ import 'wenku_account.dart';
 import 'wenku_features.dart';
 import 'wenku_shelf_sync.dart';
 import 'publication_catalog.dart';
-import 'lan_reading_sync.dart';
-import 'lan_handoff_widgets.dart';
 import 'reader_handoff_navigation.dart';
 import 'reader_appearance.dart';
 import 'reader_illustrations.dart';
@@ -159,7 +157,9 @@ Future<void> main() async {
     // frame. A service-created engine also gets a handler, with no auto-play.
     unawaited(prepareListeningService(listening).catchError((Object _) {}));
   }
-  if (features != null) unawaited(features.account.initialize());
+  if (features != null) {
+    unawaited(features.account.initialize(keepLogin: state.keepWenkuLogin));
+  }
 }
 
 class NovelApp extends StatefulWidget {
@@ -217,7 +217,6 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
     _updateNavigation.addListener(_queueStartupReading);
     updates?.addListener(_queueStartupReading);
     if (!_startupReadingConsumed) unawaited(_prepareStartupReading());
-    unawaited(_prepareLanSync());
     unawaited(
       _readingWidgets.attach().then((_) {
         if (mounted) return _widgetCards.attach();
@@ -507,78 +506,6 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
     }
   }
 
-  LanReadingSync? _lanSync;
-  Future<void> _continueNearbyBook(LanHandoffReceipt receipt) async {
-    final context = _navigator.currentState?.overlay?.context;
-    if (context == null || !context.mounted) {
-      throw const FormatException('阅读器暂未准备好，请重试');
-    }
-    final handoff = _lanSync?.handoff;
-    if (handoff == null) {
-      throw const FormatException('局域网续读暂未准备好，请重试');
-    }
-    final resolved = await handoff.resolveReceipt(receipt);
-    if (!mounted || !context.mounted || !identical(handoff.received, receipt)) {
-      throw const FormatException('续读提醒已更新，请重新选择');
-    }
-    final book = resolved.book;
-    await state.rememberNovel(book);
-    if (!mounted || !context.mounted || !identical(handoff.received, receipt)) {
-      return;
-    }
-    await _readerHandoff.open(
-      bookId: book.id,
-      position: resolved.position,
-      reuseCurrentReader: receipt.online == null,
-      page: ReaderPage(
-        novel: book,
-        state: state,
-        repository: repository,
-        initialChapter: resolved.position.chapter,
-        initialPosition: resolved.position,
-        directEntry: true,
-      ),
-      reduceMotion: state.reduceMotion,
-    );
-    if (identical(_lanSync?.handoff.received, receipt)) {
-      _lanSync?.handoff.dismissReceipt();
-    }
-  }
-
-  Widget _nearbyNotice(Widget notice) => AnimatedBuilder(
-    animation: _readerHandoff,
-    child: notice,
-    builder: (context, child) {
-      final id = _readerHandoff.currentBookId;
-      return id == null
-          ? child!
-          : ReaderAppearance(
-              state: state,
-              appTheme: Theme.of(context),
-              bookId: id,
-              child: child!,
-            );
-    },
-  );
-
-  Future<void> _prepareLanSync() async {
-    if (!LocalPlatform.nearbyReading || repository is! OfflineNovelRepository) {
-      return;
-    }
-    final sync = LanReadingSync(
-      state: state,
-      preferences: await SharedPreferences.getInstance(),
-      books: (repository as OfflineNovelRepository).local,
-      repository: repository,
-    );
-    if (!mounted) {
-      sync.dispose();
-      return;
-    }
-    setState(() => _lanSync = sync);
-    await sync.initialize();
-  }
-
   @override
   Future<void> didChangeLocales(List<Locale>? locales) async {
     final ticket = ++_localeRequest;
@@ -651,7 +578,6 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
     _updateNavigation.dispose();
     updates?.removeListener(_queueStartupReading);
     _readerHandoff.dispose();
-    _lanSync?.dispose();
     _readingWidgets.dispose();
     ReadingWidgetBridge.stop();
     super.dispose();
@@ -713,20 +639,11 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
                           opacity: state.glassOpacity,
                           child: ListeningScope(
                             controller: listening,
-                            child: LanSyncScope(
-                              sync: _lanSync,
-                              child: WenkuFeaturesScope(
-                                features: features,
-                                child: ReaderHandoffScope(
-                                  navigation: _readerHandoff,
-                                  child: LanHandoffMonitor(
-                                    handoff: _lanSync?.handoff,
-                                    onContinue: _continueNearbyBook,
-                                    reduceMotion: state.effectiveReduceMotion,
-                                    noticeWrapper: _nearbyNotice,
-                                    child: child!,
-                                  ),
-                                ),
+                            child: WenkuFeaturesScope(
+                              features: features,
+                              child: ReaderHandoffScope(
+                                navigation: _readerHandoff,
+                                child: child!,
                               ),
                             ),
                           ),
