@@ -178,6 +178,14 @@ object LegadoLogin {
      * management surface has no reading context; the fork fills them
      * only when a book/chapter opened the dialog). Select/toggle
      * changes run through this same path in the fork.
+     *
+     * One deliberate deviation from the fork (bug 4): the fork logs
+     * a button-row JS error and shows nothing, but our sheet shows
+     * nothing on success either — so a swallowed failure looks
+     * exactly like a dead button. Failures are therefore thrown as a
+     * [LegadoBridgeException] with a human message, which the Dart
+     * sheet shows; the sheet stays open and the button can be tapped
+     * again. Cancellation still propagates.
      */
     suspend fun runLoginAction(
         source: BookSource,
@@ -185,17 +193,20 @@ object LegadoLogin {
         data: Map<String, String>
     ): Map<String, Any?> {
         if (action.isAbsUrl()) {
-            openActionUrl(source, action)
+            if (!openActionUrl(source, action)) {
+                throw LegadoBridgeException(
+                    "BROWSER_LAUNCH_FAILED", "浏览器打不开，请重试"
+                )
+            }
             return mapOf("ok" to true, "opened" to "browser")
         }
         val loginJs = source.getLoginJs() ?: ""
-        // Fork semantics (SourceLoginDialog.handleButtonClick): a
-        // button-row JS error is logged, not surfaced. The common
-        // case is a web login the user closed without confirming —
-        // the engine wakes the waiting script with an empty result
-        // ("验证结果为空"); the login itself already took effect
-        // through cookie sync, and the sheet stays open so the user
-        // can tap the button again. Cancellation still propagates.
+        // The common failure is a web login the user closed without
+        // confirming — the engine wakes the waiting script with an
+        // empty result ("验证结果为空"); the login itself already took
+        // effect through cookie sync. That case (and every other JS
+        // failure) is reported, not swallowed: see
+        // [loginActionFailure].
         runCatching {
             runScriptWithContext {
                 source.evalJS("$loginJs\n$action") {
@@ -208,9 +219,50 @@ object LegadoLogin {
             if (e is CancellationException) throw e
             AppLog.put("LoginUI Button JavaScript error: $action", e)
             LegadoEngine.recordBridgeError("loginAction:${source.bookSourceUrl}", e)
+            throw loginActionFailure(source, e)
         }
         return mapOf("ok" to true)
     }
+
+    /**
+     * Translates a button-row JS failure into the error the Dart
+     * sheet shows (bug 4). Three cases, in order:
+     * - the browser never opened (a launch failure was recorded for
+     *   this source while the script ran): "浏览器打不开" — the user
+     *   never saw a browser, so "验证结果为空" would be a lie;
+     * - the waiting script was woken with an empty result (the user
+     *   closed the login browser without confirming): a soft hint,
+     *   not a failure — the login itself already took effect through
+     *   cookie sync, and the sheet stays open for another try;
+     * - anything else: the short engine message.
+     */
+    private fun loginActionFailure(
+        source: BookSource,
+        e: Throwable
+    ): LegadoBridgeException {
+        if (LegadoBrowserHost.consumeLaunchFailure(source.getKey())) {
+            return LegadoBridgeException(
+                "BROWSER_LAUNCH_FAILED", "浏览器打不开，请重试"
+            )
+        }
+        if (chainMentions(e, "验证结果为空")) {
+            return LegadoBridgeException(
+                "LOGIN_UNFINISHED",
+                "网页登录未完成：请在浏览器里登录后点右上角「确定」，直接返回会取消本次登录"
+            )
+        }
+        val short = generateSequence(e) { it.cause }
+            .mapNotNull { it.message?.lineSequence()?.firstOrNull()?.trim() }
+            .firstOrNull { it.isNotEmpty() }
+            ?.take(200)
+            ?: "操作失败，请重试"
+        return LegadoBridgeException("LOGIN_ACTION_FAILED", short)
+    }
+
+    /** True when this exception (or any cause under it) mentions [text]. */
+    private fun chainMentions(e: Throwable, text: String): Boolean =
+        generateSequence(e) { it.cause }
+            .any { it.message?.contains(text) == true }
 
     /**
      * Logout = the fork's two removal paths composed (its dialog
@@ -248,7 +300,14 @@ object LegadoLogin {
             return if (openLoginWebView(source)) {
                 mapOf("kind" to "web")
             } else {
-                mapOf("kind" to "none")
+                // The browser could not be started at all: say so
+                // instead of claiming the source has no login page
+                // (bug 4 — "none" made the sheet show
+                // "该书源没有登录页", which is false when a login page
+                // exists but the browser would not open).
+                throw LegadoBridgeException(
+                    "BROWSER_LAUNCH_FAILED", "浏览器打不开，请重试"
+                )
             }
         }
         val rows = runCatching { source.loginUi() }.getOrNull()
@@ -256,7 +315,11 @@ object LegadoLogin {
             !rows.isNullOrEmpty() -> mapOf("kind" to "form")
             loginUrl.isNullOrBlank() -> mapOf("kind" to "none")
             loginUrl.isAbsUrl() -> {
-                openLoginWebView(source)
+                if (!openLoginWebView(source)) {
+                    throw LegadoBridgeException(
+                        "BROWSER_LAUNCH_FAILED", "浏览器打不开，请重试"
+                    )
+                }
                 mapOf("kind" to "web")
             }
 
@@ -310,10 +373,15 @@ object LegadoLogin {
         return startBrowserActivity(token)
     }
 
-    /** A button row's URL action: system browser, internal fallback. */
-    private suspend fun openActionUrl(source: BookSource, url: String) {
+    /**
+     * A button row's URL action: system browser, internal fallback.
+     * Returns whether a browser actually opened (bug 4): when neither
+     * works the caller must say "浏览器打不开" instead of silently
+     * reporting success.
+     */
+    private suspend fun openActionUrl(source: BookSource, url: String): Boolean {
         val activity = LegadoUiHost.activity
-        val context = activity ?: LegadoLoginHost.appContext ?: return
+        val context = activity ?: LegadoLoginHost.appContext ?: return false
         val launched = runCatching {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                 if (activity == null) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -321,42 +389,41 @@ object LegadoLogin {
             context.startActivity(intent)
             true
         }.getOrElse { false }
-        if (!launched) {
-            // No system browser took it: fall back to the internal
-            // browser with NO result hand-back (an auxiliary page —
-            // closing it must not touch verification or login waits).
-            val spec = runCatching {
-                deriveWebViewLoadSpec(
-                    url = url,
-                    isLogin = false,
-                    sourceKey = source.getKey(),
-                    sourceType = source.getSourceType(),
-                    coroutineContext = currentCoroutineContext(),
-                )
-            }.getOrElse {
-                WebViewLoadSpec(
-                    baseUrl = url,
-                    headerMap = runCatching { source.getHeaderMap(true) }
-                        .getOrElse { emptyMap() },
-                    html = null,
-                )
-            }
-            val token = LegadoBrowserHost.stash(
-                LegadoBrowserRequest(
-                    sourceKey = source.getKey(),
-                    sourceName = source.getTag(),
-                    sourceType = source.getSourceType(),
-                    url = url,
-                    title = source.getTag(),
-                    saveResult = false,
-                    refetchAfterSuccess = false,
-                    asBottomSheet = false,
-                    spec = spec,
-                    resultMode = LegadoBrowserRequest.RESULT_NONE,
-                )
+        if (launched) return true
+        // No system browser took it: fall back to the internal
+        // browser with NO result hand-back (an auxiliary page —
+        // closing it must not touch verification or login waits).
+        val spec = runCatching {
+            deriveWebViewLoadSpec(
+                url = url,
+                isLogin = false,
+                sourceKey = source.getKey(),
+                sourceType = source.getSourceType(),
+                coroutineContext = currentCoroutineContext(),
             )
-            startBrowserActivity(token)
+        }.getOrElse {
+            WebViewLoadSpec(
+                baseUrl = url,
+                headerMap = runCatching { source.getHeaderMap(true) }
+                    .getOrElse { emptyMap() },
+                html = null,
+            )
         }
+        val token = LegadoBrowserHost.stash(
+            LegadoBrowserRequest(
+                sourceKey = source.getKey(),
+                sourceName = source.getTag(),
+                sourceType = source.getSourceType(),
+                url = url,
+                title = source.getTag(),
+                saveResult = false,
+                refetchAfterSuccess = false,
+                asBottomSheet = false,
+                spec = spec,
+                resultMode = LegadoBrowserRequest.RESULT_NONE,
+            )
+        )
+        return startBrowserActivity(token)
     }
 
     /**
