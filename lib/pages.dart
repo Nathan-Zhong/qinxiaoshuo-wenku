@@ -3335,12 +3335,14 @@ class InlineSearchResults extends StatelessWidget {
               child: NovelRow(
                 novel: book,
                 sourceLabel: showSources
-                    ? bookshelfSource(
-                        book.id,
-                        repository is OfflineNovelRepository
-                            ? repository as OfflineNovelRepository
-                            : null,
-                      )
+                    ? (isLegadoBookId(book.id)
+                          ? legadoSourceLabel(book.id)
+                          : bookshelfSource(
+                              book.id,
+                              repository is OfflineNovelRepository
+                                  ? repository as OfflineNovelRepository
+                                  : null,
+                            ))
                     : null,
                 coverHeroTag: CoverHeroTag(context, book.id),
                 onTap: () {

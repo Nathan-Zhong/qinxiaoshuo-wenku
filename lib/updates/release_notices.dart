@@ -1,4 +1,4 @@
-const currentReleaseSourcePolicy = '本 APP 仅支持轻小说文库及本地导入，不再支持其他源或自定义书源。';
+const currentReleaseSourcePolicy = '本 APP 在轻小说文库之外支持导入第三方书源（Legado 格式），书源内容与可用性由书源自身决定。';
 
 const projectFreeNotice = '''**免费使用与公开源码**
 

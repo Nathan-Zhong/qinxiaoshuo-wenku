@@ -265,7 +265,10 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
             }
 
             "openSourceLogin" -> launchEngine(result) {
-                LegadoEngine.openSourceLogin(reqString(call, "sourceUrl"))
+                LegadoEngine.openSourceLogin(
+                    reqString(call, "sourceUrl"),
+                    webOnly = call.argument<Boolean>("webOnly") ?: false
+                )
             }
 
             "logoutSource" -> launchEngine(result) {

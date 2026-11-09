@@ -220,9 +220,25 @@ object LegadoLogin {
      * WebView here; JS-only sources run `login()` here (its script
      * drives any browser/captcha through the P5.2 channels).
      */
-    suspend fun openSourceLogin(source: BookSource): Map<String, Any?> {
-        val rows = runCatching { source.loginUi() }.getOrNull()
+    suspend fun openSourceLogin(
+        source: BookSource,
+        webOnly: Boolean = false,
+    ): Map<String, Any?> {
         val loginUrl = source.loginUrl
+        // The Dart sheet's “web login” button: always take the source's own
+        // login page, even when it also exposes form rows (many sources gate
+        // full text behind a web session that the form cannot produce).
+        if (webOnly) {
+            if (loginUrl.isNullOrBlank() || !loginUrl.isAbsUrl()) {
+                return mapOf("kind" to "none")
+            }
+            return if (openLoginWebView(source)) {
+                mapOf("kind" to "web")
+            } else {
+                mapOf("kind" to "none")
+            }
+        }
+        val rows = runCatching { source.loginUi() }.getOrNull()
         return when {
             !rows.isNullOrEmpty() -> mapOf("kind" to "form")
             loginUrl.isNullOrBlank() -> mapOf("kind" to "none")

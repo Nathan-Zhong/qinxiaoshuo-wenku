@@ -236,7 +236,7 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
     if (busy) return;
     setState(() => busy = true);
     try {
-      final kind = await widget.client.openSourceLogin(widget.sourceUrl);
+      final kind = await widget.client.openSourceLogin(widget.sourceUrl, webOnly: true);
       if (!mounted) return;
       switch (kind) {
         case LegadoLoginKind.web:
@@ -246,8 +246,9 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
           _feedback('已运行登录脚本，请在弹出的页面中完成');
           unawaited(_load());
         case LegadoLoginKind.form:
+          _feedback('该书源没有独立登录页，请使用表单登录');
         case LegadoLoginKind.none:
-          _feedback('该书源没有网页登录入口，请使用表单登录');
+          _feedback('该书源没有登录页，请使用表单登录');
       }
     } on PlatformException catch (error) {
       _feedback('网页登录失败：${error.message ?? '请重试'}');

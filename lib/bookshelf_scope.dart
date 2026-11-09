@@ -2,6 +2,7 @@ import 'library_state.dart';
 import 'offline_repository.dart';
 import 'local_library_preferences.dart';
 import 'catalog.dart';
+import 'legado/legado_books.dart';
 
 /// The shelf contains saved books and, when merged, imported originals.
 /// Cached trial chapters provide offline availability, never membership.
@@ -72,6 +73,14 @@ String bookshelfSourceLabel(String source) => switch (source) {
   'online' => '在线收藏',
   _ => '全部来源',
 };
+
+/// The book source's own name for engine books (e.g. 「漫蛙」); the
+/// shelf labels are meaningless there because an engine book is never a
+/// local import and its “online” state says nothing about where it came from.
+String legadoSourceLabel(int id) {
+  final name = LegadoBooks.registryOrNull?.recordById(id)?.originName ?? '';
+  return name.isEmpty ? '书源' : name;
+}
 
 String bookshelfSource(int id, OfflineNovelRepository? offline) {
   if (offline?.local?.book(id) != null) return '本地';

@@ -231,9 +231,13 @@ class LegadoEngineClient {
   /// launched natively); web opens the login browser window; js runs
   /// the source's `login()` script (which may itself raise browser /
   /// captcha UI through the engine's channels).
-  Future<LegadoLoginKind> openSourceLogin(String sourceUrl) async {
+  Future<LegadoLoginKind> openSourceLogin(
+    String sourceUrl, {
+    bool webOnly = false,
+  }) async {
     final result = await _invokeMap('openSourceLogin', {
       'sourceUrl': sourceUrl,
+      'webOnly': webOnly,
     });
     return switch (result?['kind']) {
       'web' => LegadoLoginKind.web,

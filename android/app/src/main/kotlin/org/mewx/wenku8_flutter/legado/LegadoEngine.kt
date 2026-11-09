@@ -1024,9 +1024,9 @@ object LegadoEngine {
         return LegadoLogin.runLoginAction(sourceOrThrow(sourceUrl), action, data)
     }
 
-    suspend fun openSourceLogin(sourceUrl: String): Map<String, Any?> {
+    suspend fun openSourceLogin(sourceUrl: String, webOnly: Boolean = false): Map<String, Any?> {
         requireInit()
-        return LegadoLogin.openSourceLogin(sourceOrThrow(sourceUrl))
+        return LegadoLogin.openSourceLogin(sourceOrThrow(sourceUrl), webOnly)
     }
 
     suspend fun logoutSource(sourceUrl: String) {
