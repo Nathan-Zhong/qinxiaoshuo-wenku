@@ -207,7 +207,17 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
   }
 
   Future<void> _run(Future<void> Function() work, String success) async {
-    if (widget.account.busy) return;
+    // A tap during a background sync used to vanish silently (bug 6):
+    // say what is running instead of dropping the tap.
+    if (widget.account.busy) {
+      if (mounted) {
+        showNovelFeedback(
+          context,
+          '正在${widget.account.operation ?? '处理'}，请稍后再试',
+        );
+      }
+      return;
+    }
     FocusManager.instance.primaryFocus?.unfocus();
     try {
       await work();
@@ -219,7 +229,15 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
 
   Future<void> _login() async {
     final account = widget.account;
-    if (account.busy) return;
+    if (account.busy) {
+      if (mounted) {
+        showNovelFeedback(
+          context,
+          '正在${account.operation ?? '处理'}，请稍后再试',
+        );
+      }
+      return;
+    }
     final revision = account.sessionRevision;
     FocusManager.instance.primaryFocus?.unfocus();
     try {
@@ -242,7 +260,15 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
 
   Future<void> _testConnection() async {
     final account = widget.account;
-    if (account.busy) return;
+    if (account.busy) {
+      if (mounted) {
+        showNovelFeedback(
+          context,
+          '正在${account.operation ?? '处理'}，请稍后再试',
+        );
+      }
+      return;
+    }
     FocusManager.instance.primaryFocus?.unfocus();
     try {
       final message = await account.testConnection();
@@ -379,7 +405,7 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                         const SizedBox(height: 20),
                         GlassTextButton(
                           key: const ValueKey('account-login'),
-                          onPressed: account.busy ? null : _login,
+                          onPressed: _login,
                           child: const AppText('登录'),
                         ),
                       ],
@@ -407,9 +433,7 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                                     key: const ValueKey(
                                       'account-test-connection',
                                     ),
-                                    onTap: account.busy
-                                        ? null
-                                        : _testConnection,
+                                    onTap: _testConnection,
                                     child: const AppText('测试连接'),
                                   ),
                                 ),
@@ -461,7 +485,11 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                             children: [
                               GlassTextButton(
                                 key: const ValueKey('account-sign'),
-                                onPressed: account.busy || account.signedToday
+                                // Busy is handled inside _run with a
+                                // "正在…，请稍后再试" notice (bug 6); only
+                                // "already signed today" disables the
+                                // button, and the label says so.
+                                onPressed: account.signedToday
                                     ? null
                                     : () => _run(account.signIn, '今日签到已完成'),
                                 child: AppText(
@@ -469,10 +497,8 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                                 ),
                               ),
                               GlassTextButton(
-                                onPressed: account.busy
-                                    ? null
-                                    : () =>
-                                          _run(account.refreshProfile, '账号已更新'),
+                                onPressed: () =>
+                                    _run(account.refreshProfile, '账号已更新'),
                                 child: const AppText('刷新资料'),
                               ),
                             ],
@@ -525,23 +551,21 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                       title: '云书架',
                       subtitle: '收藏自动同步，查看云端书目',
                       icon: CupertinoIcons.cloud,
-                      onTap: account.busy
-                          ? null
-                          : () => pushNovelPage<void>(
-                              context,
-                              CloudBookshelfPage(
-                                account: account,
-                                state: widget.state,
-                                repository: widget.repository,
-                              ),
-                              reduceMotion: widget.state.reduceMotion,
-                            ),
+                      onTap: () => pushNovelPage<void>(
+                        context,
+                        CloudBookshelfPage(
+                          account: account,
+                          state: widget.state,
+                          repository: widget.repository,
+                        ),
+                        reduceMotion: widget.state.reduceMotion,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 24),
                   GlassTextButton(
                     key: const ValueKey('account-logout'),
-                    onPressed: account.busy ? null : _logout,
+                    onPressed: _logout,
                     child: const AppText('退出账号'),
                   ),
                 ],
@@ -551,7 +575,7 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                   const SizedBox(height: 10),
                   AppText(account.operation ?? ''),
                 ],
-                FeatureError(account.error),
+                FeatureError(account.lastErrorText),
               ],
             ),
           ),
@@ -743,7 +767,7 @@ class _CloudBookshelfPageState extends State<CloudBookshelfPage> {
                           ),
                         ],
                       ),
-                    FeatureError(_localError ?? account.error),
+                    FeatureError(_localError ?? account.lastErrorText),
                     if (busy)
                       const SizedBox(
                         height: 72,
