@@ -21,6 +21,11 @@ android {
     ndkVersion = flutter.ndkVersion
     packaging.jniLibs.keepDebugSymbols.add("**/libcpp.so")
     packaging.resources.excludes.add("META-INF/INDEX.LIST")
+    // BouncyCastle ships post-quantum parameter tables (~8 MB uncompressed)
+    // inside the APK; nothing in this app (reader, Legado engine, PDF/POI
+    // import) uses PQC algorithms, so the tables are dead weight. Standard
+    // BouncyCastle crypto (org.bouncycastle.crypto.*) is untouched.
+    packaging.resources.excludes.add("org/bouncycastle/pqc/**")
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
