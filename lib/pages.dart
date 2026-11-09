@@ -70,7 +70,6 @@ import 'local_book_editor.dart';
 import 'local_text_reference.dart';
 import 'local_text_recovery.dart';
 import 'native_effects.dart' show NativeGlassGroup;
-import 'lan_handoff_widgets.dart';
 import 'network_status.dart';
 import 'novel_feed_controller.dart';
 import 'offline_repository.dart';
@@ -101,8 +100,6 @@ import 'reader_book_find.dart';
 import 'reader_annotations.dart';
 import 'reader_annotation_editor.dart';
 import 'reader_embedded_vertical.dart';
-import 'lan_reading_sync.dart';
-import 'lan_reading_page.dart';
 import 'reader_pagination.dart';
 import 'reader_paged_view.dart';
 import 'reader_vertical_text.dart';
@@ -8644,46 +8641,8 @@ class _ReaderPageState extends State<ReaderPage>
     );
   }
 
-  bool _canHandoff(BuildContext context) {
-    final sync = LanSyncScope.maybeOf(context);
-    return isLocalBook(widget.novel.id)
-        ? sync?.books != null
-        : widget.novel.id > 0 && sync?.repository != null;
-  }
-
   double _readerHeaderExtent(BuildContext context) =>
       math.max(46, MediaQuery.textScalerOf(context).scale(16) * 1.25);
-
-  // The secondary action floats independently. It must not extend the title
-  // row's full-width blur/shade or change its entrance travel distance.
-  Widget _readerHandoff(BuildContext context) => Listener(
-    onPointerDown: (_) => _contentTapSurface.commitPreview(),
-    child: ReaderChromeLayer(
-      key: const ValueKey('reader-chrome-handoff'),
-      animation: _chrome.drive(CurveTween(curve: const Interval(0, .90))),
-      interactionThreshold: 0,
-      slide: const Offset(0, -1),
-      curve: NovelMotion.settle,
-      scaleFrom: .96,
-      clip: false,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(
-          16 + MediaQuery.viewPaddingOf(context).left,
-          0,
-          16 + MediaQuery.viewPaddingOf(context).right,
-          4,
-        ),
-        child: Center(
-          child: ControlMaterialScope.chrome(
-            child: ReaderHandoffChip(
-              key: const ValueKey('reader-header-handoff'),
-              onPressed: _openHandoff,
-            ),
-          ),
-        ),
-      ),
-    ),
-  );
 
   Widget _readerHeader(BuildContext context) => Listener(
     onPointerDown: (_) => _contentTapSurface.commitPreview(),
@@ -9479,13 +9438,6 @@ class _ReaderPageState extends State<ReaderPage>
           _readerScrollInformation(chapter),
           _readerScrollInformation(chapter, footer: true),
           Positioned(top: 0, left: 0, right: 0, child: _readerHeader(context)),
-          if (_canHandoff(context))
-            Positioned(
-              top: _readerHeaderTop(context) + _readerHeaderExtent(context) + 2,
-              left: 0,
-              right: 0,
-              child: _readerHandoff(context),
-            ),
           Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
@@ -10234,7 +10186,6 @@ class _ReaderPageState extends State<ReaderPage>
           initialBookmarks: bookmarks,
           initialTab: initialTab,
           scope: scope,
-          canHandoff: _canHandoff(context),
           listeningBuilder: _listening == null
               ? null
               : (sheetContext) => ListeningPanel(
@@ -10318,40 +10269,8 @@ class _ReaderPageState extends State<ReaderPage>
       case ReaderOpenIllustrations():
         _toolsOpen = false;
         await _openIllustrationLayout();
-      case ReaderOpenHandoff():
-        _toolsOpen = false;
-        await _openHandoff();
       case null:
         break;
-    }
-  }
-
-  Future<void> _openHandoff() async {
-    if (_toolsOpen || _catalogueOpen || _findOpen || _detailsOpen) return;
-    final sync = LanSyncScope.maybeOf(context);
-    final position = _currentPosition();
-    if (!_canHandoff(context) || sync == null || position == null) return;
-    _cancelExitRequest();
-    _selection.clear();
-    _stopAutoScroll();
-    _followTicket++;
-    _followScroll.cancel();
-    _toolsOpen = true;
-    try {
-      await showJellySheet<void>(
-        context: context,
-        reduceMotion: widget.state.reduceMotion,
-        surfaceWrapper: _readerSurface,
-        builder: (_) => LanSendBookSheet(
-          sync: sync,
-          book: _sourceBook,
-          position: position,
-          reduceMotion: widget.state.reduceMotion,
-        ),
-      );
-    } finally {
-      _toolsOpen = false;
-      _savePosition(notify: false);
     }
   }
 
@@ -10559,21 +10478,6 @@ class SettingsPage extends StatelessWidget {
             options: _effectsOptions,
           ),
           const SizedBox(height: 14),
-          if (LanSyncScope.maybeOf(context) case final sync?) ...[
-            FeatureEntry(
-              key: const ValueKey('settings-lan-sync'),
-              title: '局域网续读',
-              subtitle: '连接自己的设备，接着上次的位置阅读',
-              icon: CupertinoIcons.wifi,
-              onTap: () => pushNovelPage<void>(
-                context,
-                LanReadingPage(sync: sync, reduceMotion: state.reduceMotion),
-                reduceMotion: state.reduceMotion,
-                slot: ('settings', 'lan-reading'),
-              ),
-            ),
-            const SizedBox(height: 14),
-          ],
           FeatureEntry(
             key: const ValueKey('settings-reading-widgets'),
             title: '小组件',
@@ -10692,17 +10596,6 @@ class SettingsPage extends StatelessWidget {
               ),
             ),
           const Divider(height: 22),
-          GlassSettingMenu<AppStartPage>(
-            key: const ValueKey('settings-start-page'),
-            icon: CupertinoIcons.house,
-            label: '启动页面',
-            value: state.startPage,
-            options: {for (final page in AppStartPage.values) page: page.label},
-            reduceMotion: state.reduceMotion,
-            onChanged: (page) =>
-                _savePreference(context, () => state.setStartPage(page)),
-          ),
-          const Divider(height: 22),
           _toggleSetting(
             context,
             keyName: 'settings-open-recent-on-launch',
@@ -10712,17 +10605,6 @@ class SettingsPage extends StatelessWidget {
             value: state.openRecentOnLaunch,
             onChanged: state.setOpenRecentOnLaunch,
           ),
-          const Divider(height: 22),
-          _toggleSetting(
-            context,
-            keyName: 'settings-combined-shelf',
-            icon: CupertinoIcons.square_stack,
-            title: '合并书架',
-            description: '收藏与本地书统一显示在书架，试读缓存不加入',
-            value: state.combinedShelf,
-            onChanged: (value) => state.setNavigationMode(combinedShelf: value),
-          ),
-          const Divider(height: 22),
           _toggleSetting(
             context,
             keyName: 'settings-adapt-offline',
@@ -10736,15 +10618,15 @@ class SettingsPage extends StatelessWidget {
                 state.setNavigationMode(adaptWhenOffline: value),
           ),
           const Divider(height: 22),
-          _toggleSetting(
-            context,
-            keyName: 'settings-local-reader-mode',
-            icon: CupertinoIcons.book,
-            title: '阅读器模式',
-            description: state.combinedShelf ? '只显示离线可读的合并书架和我的' : '只显示本地和我的',
-            value: state.localReaderMode,
-            onChanged: (value) =>
-                state.setNavigationMode(localReaderMode: value),
+          GlassSettingMenu<AppStartPage>(
+            key: const ValueKey('settings-start-page'),
+            icon: CupertinoIcons.house,
+            label: '启动页面',
+            value: state.startPage,
+            options: {for (final page in AppStartPage.values) page: page.label},
+            reduceMotion: state.reduceMotion,
+            onChanged: (page) =>
+                _savePreference(context, () => state.setStartPage(page)),
           ),
         ],
       ),
