@@ -1,6 +1,7 @@
 package org.mewx.wenku8_flutter.legado
 
 import io.legado.app.constant.AppConst
+import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.data.entities.RuleSub
 import io.legado.app.help.book.ContentProcessorProviders
@@ -11,6 +12,7 @@ import io.legado.app.model.Debug
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.systemCurrentTimeMillis
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -18,6 +20,12 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import java.net.ConnectException
+import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
+import java.net.URL
+import java.net.UnknownHostException
 import kotlin.math.min
 
 /**
@@ -118,33 +126,15 @@ object LegadoManage {
                                 val message = if (ok) {
                                     "校验成功"
                                 } else {
-                                    // fix6: keep the WHOLE error paragraph,
-                                    // not just its first line. The engine's
-                                    // addErrorComment stores "// Error: " +
-                                    // e.message, and for JS failures that
-                                    // message is "JS执行出错\n<real cause>" —
-                                    // first-line extraction showed Cassidy
-                                    // only the wrapper and dropped the cause
-                                    // (device report 2026-11-04). The error
-                                    // block is the comment's first paragraph
-                                    // (addErrorComment prepends it ahead of a
-                                    // "\n\n" separator); collapse its inner
-                                    // newlines so the sheet stays one line.
-                                    val errorLine = source.bookSourceComment
-                                        ?.takeIf { it.startsWith("// Error: ") }
-                                        ?.removePrefix("// Error: ")
-                                        ?.substringBefore("\n\n")
-                                        ?.replace(Regex("\\s*\\n\\s*"), " ")
-                                        ?.trim()
-                                        // FIX8: widened 300 -> 1200 so a JS
-                                        // error's full QuickJS stack survives
-                                        // into the note (7753's truncated
-                                        // stack hid which eval path threw).
-                                        ?.take(1200)
-                                    listOfNotNull(
-                                        invalid,
-                                        errorLine?.takeIf { it.isNotBlank() }
-                                    ).joinToString("：")
+                                    // fix9 (bug 5): the engine reports
+                                    // every failure twice — once as the
+                                    // invalid-group list and once as the
+                                    // "// Error: " comment, which usually
+                                    // just repeats those same groups —
+                                    // and when it does carry a real
+                                    // cause it is engine jargon. Clean
+                                    // it up before showing it.
+                                    checkFailureMessage(source, invalid)
                                 }
                                 val snapshot = synchronized(this@LegadoManage) {
                                     done++
@@ -178,6 +168,226 @@ object LegadoManage {
                 )
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // G12 failure text (bug 5)
+    // ------------------------------------------------------------------
+
+    /**
+     * Builds the one-line failure text for a failed source check.
+     *
+     * What the engine hands us is two descriptions of the same
+     * failure: the invalid-group list (e.g. "发现失效，失效，搜索失效")
+     * and the "// Error: " comment, which usually just repeats those
+     * groups ("校验失败:发现失效，搜索失效") — so the sheet showed
+     * every failure twice. And when the comment does carry a real
+     * cause it is engine jargon ("Expected URL scheme ... for
+     * {{java..."). This cleans both up:
+     *
+     * - the bare "失效" group (added on any failure) is dropped when
+     *   stage names exist — it says nothing beyond them;
+     * - a comment that only repeats the stage names is dropped;
+     * - a real cause is translated into plain language;
+     * - when the engine gives no cause at all, the source's own
+     *   address is probed (plain-URL sources) or compared with the
+     *   address written inside its rules (script sources), so the
+     *   sheet can say what is actually wrong instead of "失败".
+     *
+     * The verdict itself (ok/fail) still comes from the engine
+     * check, unchanged — only the words change.
+     */
+    private suspend fun checkFailureMessage(
+        source: BookSource,
+        invalidRaw: String,
+    ): String {
+        val stages = invalidRaw.split('，', ',')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != "失效" }
+        val invalid = stages.joinToString("，")
+        val rawError = source.bookSourceComment
+            ?.takeIf { it.startsWith("// Error: ") }
+            ?.removePrefix("// Error: ")
+            ?.substringBefore("\n\n")
+            ?.replace(Regex("\\s*\\n\\s*"), " ")
+            ?.trim()
+            // FIX8: keep 1200 so a JS error's full QuickJS stack
+            // survives into the note (7753's truncated stack hid
+            // which eval path threw).
+            ?.take(1200)
+            .orEmpty()
+        val cause = translateCheckError(rawError, stages)
+            ?: probeSearchAddress(source, stages)
+        val base = listOfNotNull(
+            invalid.takeIf { it.isNotBlank() },
+            cause,
+        ).joinToString("：")
+        val hints = buildList {
+            hostMismatchHint(source)?.let { add(it) }
+            if (source.bookSourceComment?.contains("魔法") == true) {
+                add("源作者注明：使用需要魔法")
+            }
+        }
+        return (listOf(base) + hints)
+            .filter { it.isNotBlank() }
+            .joinToString("；")
+    }
+
+    /**
+     * Translates the engine's error comment into a human cause, or
+     * null when it says nothing beyond the failed stages (pure
+     * repetition, e.g. "校验失败:发现失效，搜索失效").
+     */
+    private fun translateCheckError(
+        rawError: String,
+        stages: List<String>,
+    ): String? {
+        var text = rawError.trim()
+        // The final exception often just wraps the group list.
+        while (true) {
+            text = when {
+                text.startsWith("校验失败:") -> text.removePrefix("校验失败:").trim()
+                text.startsWith("校验失败：") -> text.removePrefix("校验失败：").trim()
+                text.startsWith("失效：") -> text.removePrefix("失效：").trim()
+                else -> break
+            }
+        }
+        if (text.isBlank()) return null
+        if (text.contains("Expected URL scheme")) {
+            // The check fetched a {{...}} action URL as if it were a
+            // web page. Those are buttons, not pages — e.g. 大灰狼聚合
+            // 的发现页第一项是"登录大灰狼书源"，其地址是
+            // {{java.startBrowser(...)}}；the check takes the first
+            // explore kind with a URL and fetches it raw. The source
+            // is not broken; the check tripped over a button. Search
+            // runs before explore, so when no search stage failed,
+            // search is unaffected.
+            val isActionUrl = text.contains("{{java") ||
+                text.contains("{[java") ||
+                text.contains("java.startBrowser")
+            if (isActionUrl) {
+                val searchOk = stages.none { it.contains("搜索") }
+                return "发现页里有个操作按钮（登录入口），校验把它当成网址打开了；这不是书源坏了" +
+                    if (searchOk) "，搜索不受影响" else ""
+            }
+            return "校验拿到的地址不是网址，可能是源里的操作按钮"
+        }
+        if (text.contains("Unable to resolve host") ||
+            text.contains("UnknownHostException")
+        ) {
+            return "源地址打不开（域名解析失败）"
+        }
+        if (text.contains("SocketTimeoutException") ||
+            text.contains("ConnectException") ||
+            text.contains("Failed to connect") ||
+            text.contains("timeout", ignoreCase = true) ||
+            text.contains("校验超时")
+        ) {
+            return "连接源地址超时或失败"
+        }
+        if (text.contains("HTTP 403")) return "源地址返回了 HTTP 403（可能被风控拦截）"
+        if (text.contains("HTTP 404")) return "源地址返回了 HTTP 404"
+        if (Regex("HTTP 5\\d\\d").containsMatchIn(text)) {
+            return "源地址返回了服务端错误（HTTP 5xx）"
+        }
+        // Drop segments that only repeat the failed stages.
+        val kept = text.split('，', ',', '：', ':')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .filter { segment ->
+                stages.none { stage -> sameStage(segment, stage) }
+            }
+        if (kept.isEmpty()) return null
+        return kept.joinToString("，").take(300)
+    }
+
+    /** Two stage spellings count as the same when they match with or
+     * without the trailing "失效" (e.g. "搜索" vs "搜索失效"). */
+    private fun sameStage(a: String, b: String): Boolean {
+        val cleanA = a.removeSuffix("失效")
+        val cleanB = b.removeSuffix("失效")
+        return cleanA == cleanB || a == b
+    }
+
+    /**
+     * When the engine gives no cause at all, probe the address the
+     * source actually searches or explores — but only for plain-URL
+     * sources, and only for reachability: any HTTP answer at all
+     * (even 403/404) counts as "reachable", because a bare probe
+     * without the source's headers cannot judge the API itself. The
+     * bookSourceUrl is deliberately NOT a fallback: it is often a
+     * different address from the one search uses (e.g. 漫蛙书源的
+     * bookSourceUrl 是 manwapm.cc，搜索实际走 manwa.me)，probing it
+     * would report the wrong address as reachable. The verdict is
+     * untouched; this only supplies the missing reason.
+     */
+    private suspend fun probeSearchAddress(
+        source: BookSource,
+        stages: List<String>,
+    ): String? {
+        // Only search/explore failures are about reachability; a
+        // bare toc/content failure has nothing to probe.
+        if (stages.isNotEmpty() &&
+            stages.none { it.contains("搜索") || it.contains("发现") }
+        ) {
+            return null
+        }
+        val plainUrl = listOfNotNull(
+            source.searchUrl,
+            source.exploreUrl,
+        ).firstOrNull { it.isAbsUrl() && !it.startsWith("@js:") && !it.startsWith("<js>") }
+            ?: return null
+        val host = runCatching { URL(plainUrl).host }.getOrNull()
+            ?: return null
+        val origin = runCatching {
+            URL(plainUrl).let { "${it.protocol}://${it.host}${if (it.port == -1) "" else ":${it.port}"}/" }
+        }.getOrNull() ?: return null
+        return runCatching {
+            withContext(Dispatchers.IO) {
+                val connection = URL(origin).openConnection() as HttpURLConnection
+                try {
+                    connection.connectTimeout = 5000
+                    connection.readTimeout = 5000
+                    connection.instanceFollowRedirects = true
+                    connection.requestMethod = "GET"
+                    connection.responseCode
+                    "源地址能打开，可能是规则失效或源站风控"
+                } finally {
+                    connection.disconnect()
+                }
+            }
+        }.getOrElse { e ->
+            when (e) {
+                is UnknownHostException -> "源地址 $host 打不开（域名解析失败）"
+                is SocketTimeoutException -> "连接源地址 $host 超时"
+                is ConnectException -> "连接源地址 $host 失败"
+                else -> null
+            }
+        }
+    }
+
+    /**
+     * Script sources (searchUrl/exploreUrl starting with @js:/<js>)
+     * hide their real address inside the script, and it can go stale
+     * while the source's own address stays current — e.g. 漫蛙书源的
+     * 搜索/发现默认用 manwa.me，而书源地址是 manwapm.cc. Point that
+     * out as a hint (not a verdict): the user can change the domain
+     * in the source's login settings.
+     */
+    private fun hostMismatchHint(source: BookSource): String? {
+        val baseHost = source.bookSourceUrl
+            ?.takeIf { it.isAbsUrl() }
+            ?.let { runCatching { URL(it).host }.getOrNull() }
+            ?: return null
+        val scriptHosts = (listOfNotNull(source.searchUrl, source.exploreUrl))
+            .flatMap { text ->
+                Regex("https?://([A-Za-z0-9][A-Za-z0-9.-]*)")
+                    .findAll(text).map { it.groupValues[1] }
+            }
+            .filter { it.contains('.') && !it.equals(baseHost, ignoreCase = true) }
+            .distinct()
+        val other = scriptHosts.firstOrNull() ?: return null
+        return "源里写的地址（$other）与书源地址（$baseHost）不一致，可能是旧域名，可在登录设置里换一个域名"
     }
 
     // ------------------------------------------------------------------
