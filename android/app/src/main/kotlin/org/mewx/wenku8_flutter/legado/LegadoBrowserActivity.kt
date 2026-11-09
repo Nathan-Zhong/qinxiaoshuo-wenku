@@ -150,7 +150,7 @@ class LegadoBrowserActivity : Activity() {
             textSize = 30f
             gravity = Gravity.CENTER
             setPadding(dp(10), dp(2), dp(12), dp(6))
-            setOnClickListener { closeBrowser() }
+            setOnClickListener { maybeCloseBrowser() }
         }
         chromeBar.addView(
             backButton,
@@ -171,7 +171,21 @@ class LegadoBrowserActivity : Activity() {
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         subtitleView = TextView(this).apply {
-            text = request.sourceName
+            // Verification windows have a waiter parked on the
+            // result, and the source's own title often says
+            // "完成后点右上角完成/返回" — but this browser has no
+            // 完成 button, and 返回 is exactly the gesture that
+            // discards the result. Say plainly which gesture saves
+            // it. (Login windows keep the plain source name: their
+            // 确定 only syncs cookies and stays open.)
+            text = if (request.saveResult &&
+                request.resultMode ==
+                    LegadoBrowserRequest.RESULT_VERIFICATION
+            ) {
+                "${request.sourceName} · 完成后请点右上角「确定」，直接返回会失败"
+            } else {
+                request.sourceName
+            }
             setTextColor(colorMuted)
             textSize = 11f
             maxLines = 1
@@ -506,11 +520,48 @@ class LegadoBrowserActivity : Activity() {
                     ).getStrResponseAwait(allowWebView = false).body
                 }
                 body.onSuccess { text ->
-                    SourceVerificationHelpShared.setResult(
-                        req.sourceKey, text ?: ""
-                    )
-                    resultSaved = true
-                    withContext(Dispatchers.Main) { closeBrowser() }
+                    val bodyText = text.orEmpty()
+                    if (bodyText.isNotBlank()) {
+                        SourceVerificationHelpShared.setResult(
+                            req.sourceKey, bodyText
+                        )
+                        resultSaved = true
+                        withContext(Dispatchers.Main) { closeBrowser() }
+                    } else {
+                        // The refetched page came back empty (a plain
+                        // HTTP fetch can answer a login page with
+                        // nothing): fall back to the rendered DOM the
+                        // way the no-refetch path does, instead of
+                        // handing the waiter an empty result that
+                        // fails with "验证结果为空". If the DOM is
+                        // empty too, stay on the page so the user can
+                        // retry or leave on purpose.
+                        withContext(Dispatchers.Main) {
+                            webView.evaluateJavascript(
+                                "document.documentElement.outerHTML"
+                            ) { raw ->
+                                val dom = if (raw == null) {
+                                    ""
+                                } else {
+                                    EscapeUtils.unescapeJson(raw)
+                                        .trim('"')
+                                }
+                                if (dom.isNotBlank()) {
+                                    SourceVerificationHelpShared.setResult(
+                                        req.sourceKey, dom
+                                    )
+                                    resultSaved = true
+                                    closeBrowser()
+                                } else {
+                                    Toast.makeText(
+                                        this@LegadoBrowserActivity,
+                                        "验证结果为空，请确认已完成登录后重试",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            }
+                        }
+                    }
                 }.onFailure { e ->
                     // Fork: a failed refetch toasts and STAYS on the
                     // page so the user can retry or back out.
@@ -589,6 +640,35 @@ class LegadoBrowserActivity : Activity() {
         }
     }
 
+    /**
+     * Verification windows have a JS thread parked on the result:
+     * closing without tapping 确定 fills "" and the login or
+     * verification fails with "验证结果为空" — exactly what happened
+     * to 番茄小说, whose own title tells the user to tap "完成/返回"
+     * while this browser has no 完成 button. Ask first, so an
+     * accidental back-tap cannot silently drop a finished login;
+     * leaving on purpose still works (the empty result then fails
+     * the wait, as before, but by the user's choice). Login and
+     * auxiliary windows close directly: their close gesture is the
+     * finish gesture by design.
+     */
+    private fun maybeCloseBrowser() {
+        if (request.saveResult &&
+            request.resultMode ==
+                LegadoBrowserRequest.RESULT_VERIFICATION &&
+            !resultSaved
+        ) {
+            AlertDialog.Builder(this)
+                .setTitle("还没点「确定」")
+                .setMessage("现在退出，这次登录/验证会失败，需要重新登录。")
+                .setPositiveButton("退出") { _, _ -> closeBrowser() }
+                .setNegativeButton("继续登录", null)
+                .show()
+        } else {
+            closeBrowser()
+        }
+    }
+
     private fun closeBrowser() {
         handBackOnClose()
         finish()
@@ -602,7 +682,7 @@ class LegadoBrowserActivity : Activity() {
             webView.canGoBack() &&
                 webView.copyBackForwardList().size > 1 -> webView.goBack()
 
-            else -> closeBrowser()
+            else -> maybeCloseBrowser()
         }
     }
 
