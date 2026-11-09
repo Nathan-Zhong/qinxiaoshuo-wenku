@@ -71,6 +71,10 @@ object LegadoImport {
         val updated: Int,
         val unchanged: Int,
         val failed: Int,
+        // Policy-skipped sources (audio/file kinds this build does
+        // not adapt, A6): counted apart from failed, so the UI can
+        // say "not supported" instead of "import failed".
+        val skipped: Int = 0,
         val stored: List<BookSource>,
         val errors: List<String>
     )
@@ -81,14 +85,17 @@ object LegadoImport {
         val updated: Int = 0,
         val unchanged: Int = 0,
         val failed: Int = 0,
-        val errors: List<String> = emptyList()
+        val errors: List<String> = emptyList(),
+        // Policy-skipped items (see [Outcome.skipped]).
+        val skipped: Int = 0
     ) {
         operator fun plus(other: Counts) = Counts(
-            added + other.added,
-            updated + other.updated,
-            unchanged + other.unchanged,
-            failed + other.failed,
-            errors + other.errors
+            added = added + other.added,
+            updated = updated + other.updated,
+            unchanged = unchanged + other.unchanged,
+            failed = failed + other.failed,
+            errors = errors + other.errors,
+            skipped = skipped + other.skipped
         )
     }
 
@@ -167,12 +174,70 @@ object LegadoImport {
     fun parseSingleSource(sourceJson: String): BookSource {
         // Explicit-serializer decode: the reified fromJsonObject helper is
         // an inline function with JVM target 21 bytecode, which cannot be
-        // inlined into this host (compiled for target 17).
+        // inlined into this host (compiled for target 17). Parsed
+        // leniently first (same as batch import) so a numeric
+        // bookSourceType written as a string (A5) is normalised
+        // before the strict entity decode runs.
+        val element = runCatching { parseToJsonElementLenient(sourceJson) }
+            .getOrElse { throw LegadoParseException("不是书源") }
+        val obj = element as? JsonObject
+            ?: throw LegadoParseException("不是书源")
+        val normalized = normalizeBookSourceJson(obj)
         val source = runCatching {
-            GSON.decodeFromString(BookSource.serializer(), sourceJson)
+            GSON.decodeFromString(BookSource.serializer(), normalized.toString())
         }.getOrElse { throw LegadoParseException("不是书源") }
         if (source.bookSourceUrl.isBlank()) throw LegadoParseException("不是书源")
+        // A1: a book-source address must be a real web address. The old
+        // check only rejected blanks, so "大灰狼融合VIP5.0" imported
+        // "successfully" and only blew up later with an unreadable
+        // OkHttp scheme error at check/search time.
+        if (!isValidBookSourceUrl(source.bookSourceUrl)) {
+            throw LegadoParseException(
+                "书源地址不是网址：${source.bookSourceUrl.trim().take(80)}"
+            )
+        }
         return source
+    }
+
+    /**
+     * A book-source address must be a real web address (A1). The
+     * "##comment" suffix some sources carry (e.g.
+     * "https://www.qidian.com##zhbyjm7783") is stripped first;
+     * anything left must parse as an http(s) URL with a host.
+     * Plain text ("大灰狼融合VIP5.0", "全能书源", "珍藏版") fails here
+     * instead of importing "successfully" and breaking later.
+     */
+    internal fun isValidBookSourceUrl(raw: String): Boolean {
+        val url = raw.trim().substringBefore("##").trim()
+        if (url.isEmpty()) return false
+        return try {
+            val parsed = java.net.URL(url)
+            (parsed.protocol == "http" || parsed.protocol == "https") &&
+                !parsed.host.isNullOrBlank()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Source JSONs in the wild sometimes write bookSourceType as a
+     * string ("0") instead of a number (0); the strict entity decoder
+     * rejects that, so the import fails with an unreadable decode
+     * error (A5). Rewrite a numeric string back to a number before
+     * decoding; a non-numeric string is reported plainly instead of
+     * the decoder's jargon.
+     */
+    private fun normalizeBookSourceJson(obj: JsonObject): JsonObject {
+        val type = obj["bookSourceType"] as? JsonPrimitive ?: return obj
+        if (!type.isString) return obj
+        val text = type.contentOrNull ?: return obj
+        val number = text.trim().toIntOrNull()
+        if (number != null) {
+            return JsonObject(obj.toMap() + ("bookSourceType" to JsonPrimitive(number)))
+        }
+        throw LegadoParseException(
+            "书源类型字段写成了文字「$text」，请改成数字（0=小说，2=漫画）"
+        )
     }
 
     private suspend fun collect(text: String, acc: Parsed) {
@@ -241,9 +306,23 @@ object LegadoImport {
         runCatching {
             when {
                 obj.containsKey("bookSourceUrl") -> {
-                    val source = GSON.decodeFromString(BookSource.serializer(), text)
+                    // A5: a string-typed bookSourceType ("0") is
+                    // normalised to a number before the strict decode.
+                    val normalized = normalizeBookSourceJson(obj)
+                    val source = GSON.decodeFromString(
+                        BookSource.serializer(), normalized.toString()
+                    )
                     if (source.bookSourceUrl.isBlank()) {
                         throw LegadoParseException("不是书源")
+                    }
+                    // A1: refuse a non-URL address here, with the
+                    // source's name attached, instead of importing it
+                    // "successfully" and breaking at check/search time.
+                    if (!isValidBookSourceUrl(source.bookSourceUrl)) {
+                        throw LegadoParseException(
+                            "书源「${source.bookSourceName}」的地址不是网址：" +
+                                source.bookSourceUrl.trim().take(80)
+                        )
                     }
                     acc.sources.add(source)
                 }
@@ -251,6 +330,13 @@ object LegadoImport {
                 obj.containsKey("sourceUrl") -> {
                     val old = GSON.decodeFromString(OldRssSource.serializer(), text)
                     if (old.sourceUrl.isBlank()) throw LegadoParseException("不是书源")
+                    // A1, same as above: the converted source inherits
+                    // this address as its bookSourceUrl.
+                    if (!isValidBookSourceUrl(old.sourceUrl)) {
+                        throw LegadoParseException(
+                            "书源地址不是网址：${old.sourceUrl.trim().take(80)}"
+                        )
+                    }
                     acc.sources.add(old.toBookSource())
                 }
 
@@ -364,6 +450,7 @@ object LegadoImport {
             updated = sourceCounts.updated + typed.updated,
             unchanged = sourceCounts.unchanged + typed.unchanged,
             failed = parsed.failed + sourceCounts.failed,
+            skipped = sourceCounts.skipped + typed.skipped,
             stored = stored,
             errors = (parsed.errors + sourceCounts.errors + typed.errors).take(8)
         )
@@ -374,6 +461,7 @@ object LegadoImport {
         val counts = storeSources(db, parsed.sources)
         return counts.copy(
             failed = parsed.failed + counts.failed,
+            skipped = counts.skipped,
             errors = (parsed.errors + counts.errors).take(8)
         )
     }
@@ -439,7 +527,12 @@ object LegadoImport {
                     if (rejectedNames.isEmpty()) "" else "：${rejectedNames.joinToString("、")}"
             )
         }
-        return Counts(added, updated, unchanged, failed = rejected, errors = errors)
+        // A6: policy rejections are not failures. They used to be
+        // returned as failed = rejected, so the UI showed "失败 N"
+        // for audio/file sources this build deliberately refuses —
+        // and the user read it as "the app broke the import". They
+        // now ride in skipped, with the reason kept in errors.
+        return Counts(added, updated, unchanged, failed = 0, errors = errors, skipped = rejected)
     }
 
     /**
