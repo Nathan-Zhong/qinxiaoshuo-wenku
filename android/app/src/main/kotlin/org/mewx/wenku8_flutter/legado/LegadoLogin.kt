@@ -19,7 +19,10 @@ import io.legado.app.model.script.runScriptWithContext
 import io.legado.app.utils.FlowBus
 import io.legado.app.utils.GSON
 import io.legado.app.utils.isAbsUrl
+import io.legado.app.utils.parseToJsonElementLenient
 import io.legado.app.utils.toJson
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -81,10 +84,7 @@ object LegadoLogin {
      * login text never leaves the engine.
      */
     fun loginData(source: BookSource): Map<String, Any?> {
-        val rows = runCatching { source.loginUi() }.getOrElse { e ->
-            LegadoEngine.recordBridgeError("loginUi:${source.bookSourceUrl}", e)
-            null
-        }.orEmpty()
+        val (rows, badRows) = loginRows(source)
         val info = source.getLoginInfoMap()
         // Fork rebuild(): text/password prefilled from saved info,
         // select snapped to the saved option (default first), toggle
@@ -129,8 +129,61 @@ object LegadoLogin {
             },
             "values" to values,
             "hasLoginInfo" to (info != null),
-            "hasLoginHeader" to (source.getLoginHeader() != null)
+            "hasLoginHeader" to (source.getLoginHeader() != null),
+            // A3: rows that failed to parse, skipped one by one.
+            // 0 = clean form; -1 = the form text itself would not
+            // parse at all. The Dart sheet shows a hint for either.
+            "badRows" to badRows
         )
+    }
+
+    /**
+     * Parses a source's login form with per-row tolerance (A3). The
+     * engine's [BaseSource.loginUi] decodes the whole loginUi array
+     * in one shot: one bad row (e.g. 全能书源 has rows with
+     * single-quoted keys, 漫画柜/哔哩哔哩漫画/起点限免/听姬 use
+     * unquoted keys) voids the entire form, and the sheet shows
+     * nothing — with no hint that the form itself was malformed.
+     * Here the array is parsed leniently first and each row is
+     * decoded on its own, so a bad row is skipped and counted
+     * instead of taking the good rows with it.
+     *
+     * Returns the good rows plus the number of skipped bad rows;
+     * badRows == -1 means the form text itself would not parse at
+     * all (not even as an array). Callers still show the sheet, with
+     * the "N 行写坏" hint, rather than pretending there is no form.
+     */
+    internal fun loginRows(source: BookSource): Pair<List<RowUi>, Int> {
+        val raw = source.loginUi
+        if (raw.isNullOrBlank()) return emptyList<RowUi>() to 0
+        val element = runCatching { parseToJsonElementLenient(raw) }.getOrElse {
+            // A JS-style escape (e.g. \' inside a double-quoted
+            // action, as in 全能书源's set_source('番茄')) is not
+            // valid JSON even for the lenient parser; the intent is
+            // a plain quote either way, so drop the backslash and
+            // try once more before giving up on the whole form.
+            val relaxed = raw.replace("\\'", "'")
+            runCatching { parseToJsonElementLenient(relaxed) }.getOrNull()
+                ?: return emptyList<RowUi>() to -1
+        }
+        val items = when (element) {
+            is JsonArray -> element.toList()
+            is JsonObject -> listOf(element)
+            else -> return emptyList<RowUi>() to -1
+        }
+        var bad = 0
+        val rows = items.mapNotNull { item ->
+            runCatching {
+                GSON.decodeFromString(RowUi.serializer(), item.toString())
+            }.getOrElse {
+                LegadoEngine.recordBridgeError(
+                    "loginUiRow:${source.bookSourceUrl}", it
+                )
+                bad++
+                null
+            }
+        }
+        return rows to bad
     }
 
     /** Batch login-state probe for the management list (flags only). */
@@ -310,7 +363,11 @@ object LegadoLogin {
                 )
             }
         }
-        val rows = runCatching { source.loginUi() }.getOrNull()
+        // A3: per-row tolerance — a form with one bad row still
+        // counts as a form (its good rows render, the bad ones are
+        // reported in loginData's badRows), instead of falling
+        // through to web/js/none as if there were no form at all.
+        val (rows, _) = loginRows(source)
         return when {
             !rows.isNullOrEmpty() -> mapOf("kind" to "form")
             loginUrl.isNullOrBlank() -> mapOf("kind" to "none")
@@ -507,7 +564,13 @@ object LegadoLoginEventBridge {
         var browserOwnsWake = false
         try {
             val bookSource = source as? BookSource
-            val rows = runCatching { source.loginUi() }.getOrNull()
+            // A3: same per-row tolerance as openSourceLogin — a form
+            // with one bad row still opens as a form.
+            val (rows, _) = if (bookSource != null) {
+                loginRows(bookSource)
+            } else {
+                emptyList<RowUi>() to 0
+            }
             val loginUrl = source.loginUrl
             when {
                 bookSource != null && !rows.isNullOrEmpty() ->
