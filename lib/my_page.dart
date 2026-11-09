@@ -222,18 +222,6 @@ class MyPage extends StatelessWidget {
               ),
               const SizedBox(height: 14),
               FeatureEntry(
-                key: const ValueKey('my-support'),
-                title: '赞助与反馈',
-                subtitle: '自愿赞助 · 最新版本问题反馈',
-                icon: CupertinoIcons.heart,
-                onTap: () => pushNovelPage<void>(
-                  context,
-                  const SupportFeedbackPage(),
-                  reduceMotion: state.reduceMotion,
-                ),
-              ),
-              const SizedBox(height: 14),
-              FeatureEntry(
                 key: const ValueKey('my-about'),
                 title: '关于',
                 subtitle:
@@ -242,6 +230,18 @@ class MyPage extends StatelessWidget {
                 onTap: () => pushNovelPage<void>(
                   context,
                   AppUpdatePage(updates: updates),
+                  reduceMotion: state.reduceMotion,
+                ),
+              ),
+              const SizedBox(height: 14),
+              FeatureEntry(
+                key: const ValueKey('my-support'),
+                title: '赞助与反馈',
+                subtitle: '自愿赞助 · 最新版本问题反馈',
+                icon: CupertinoIcons.heart,
+                onTap: () => pushNovelPage<void>(
+                  context,
+                  const SupportFeedbackPage(),
                   reduceMotion: state.reduceMotion,
                 ),
               ),
