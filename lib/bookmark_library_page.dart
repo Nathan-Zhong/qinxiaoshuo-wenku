@@ -80,11 +80,17 @@ class BookmarkLibraryPage extends StatefulWidget {
     super.key,
     required this.state,
     required this.repository,
+    this.showHeader = true,
   });
   final LibraryState state;
   final NovelRepository repository;
+
+  /// When embedded in the home shell the shell draws the masthead, so the
+  /// page only contributes its body (and a [buildHeader] for the shell).
+  final bool showHeader;
   @override
-  State<BookmarkLibraryPage> createState() => _BookmarkLibraryPageState();
+  State<BookmarkLibraryPage> createState() =>
+      BookmarkLibraryPageState();
 }
 
 typedef _BookmarkEntry = ({int novelId, ReaderBookmark bookmark});
@@ -95,7 +101,7 @@ class _BookmarkMarkRow {
   final int order;
 }
 
-class _BookmarkLibraryPageState extends State<BookmarkLibraryPage>
+class BookmarkLibraryPageState extends State<BookmarkLibraryPage>
     with TickerProviderStateMixin {
   String _query = '';
   String _category = '_book';
@@ -238,6 +244,69 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage>
             widget.state.cachedNovel(id)
       : widget.state.cachedNovel(id);
 
+  final _previewCache = <int, Novel>{};
+  Future<List<Novel>>? _previewFuture;
+  String _previewKey = '';
+
+  /// The shelf-style preview above the bookmark list: every book with a
+  /// bookmark, in shelf order of appearance, all of them (no cap).
+  Widget _shelfPreview(List<int> ids) {
+    if (ids.isEmpty) return const SizedBox.shrink();
+    final known = <Novel>[];
+    var complete = true;
+    for (final id in ids) {
+      final book = _known(id) ?? _previewCache[id];
+      if (book == null) {
+        complete = false;
+      } else {
+        known.add(book);
+      }
+    }
+    final key = ids.join(',');
+    if (!complete && _previewKey != key) {
+      _previewKey = key;
+      _previewFuture = _resolvePreview(ids);
+    }
+    return FutureBuilder<List<Novel>>(
+      future: complete ? null : _previewFuture,
+      initialData: complete ? known : null,
+      builder: (context, snapshot) {
+        final books = complete ? known : (snapshot.data ?? const <Novel>[]);
+        if (books.isEmpty) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 22),
+          child: ArchiveFileCarousel(
+            key: const ValueKey('bookmark-preview'),
+            books: books,
+            library: widget.state,
+            reduceMotion: widget.state.reduceMotion,
+            animateEntrance: true,
+            onOpen: (book, tag) {
+              final mark = widget.state.bookmarksFor(book.id).firstOrNull;
+              if (mark != null) _open(book.id, mark);
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Future<List<Novel>> _resolvePreview(List<int> ids) async {
+    for (final id in ids) {
+      if (_known(id) != null || _previewCache.containsKey(id)) continue;
+      try {
+        final novel = await widget.repository.find(id);
+        if (novel != null) _previewCache[id] = novel;
+      } catch (_) {
+        // Unresolvable books simply stay out of the preview.
+      }
+    }
+    return [
+      for (final id in ids)
+        if (_known(id) ?? _previewCache[id] case final book?) book,
+    ];
+  }
+
   Future<void> _open(int id, ReaderBookmark mark) async {
     if (_opening != null) return;
     setState(() => _opening = mark.id);
@@ -296,28 +365,42 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage>
         ),
   );
 
-  @override
-  Widget build(BuildContext context) => ArchiveFeaturePage(
-    title: '书签',
-    code: 'PERSONAL / EXCERPTS',
-    actions: [
-      GlassIconButton(
-        key: const ValueKey('bookmark-search-toggle'),
-        icon: _searchOpen ? CupertinoIcons.xmark : CupertinoIcons.search,
-        label: _searchOpen ? '收起搜索' : '搜索书签',
-        onPressed: () {
-          if (_searchOpen) {
-            FocusScope.of(context).unfocus();
-            _search.clear();
-          }
-          setState(() {
-            _searchOpen = !_searchOpen;
-            if (!_searchOpen) _query = '';
-          });
-        },
+  Widget _searchAction() => GlassIconButton(
+    key: const ValueKey('bookmark-search-toggle'),
+    icon: _searchOpen ? CupertinoIcons.xmark : CupertinoIcons.search,
+    label: _searchOpen ? '收起搜索' : '搜索书签',
+    onPressed: _toggleSearch,
+  );
+
+  Widget buildHeader(BuildContext context) => Row(
+    children: [
+      const Expanded(
+        child: ArchiveMasthead(
+          title: '书签',
+          code: 'PERSONAL / EXCERPTS',
+        ),
       ),
+      _searchAction(),
     ],
-    child: AnimatedBuilder(
+  );
+
+  /// Public so the home shell can drive the search toggle from its own masthead.
+  void toggleSearch() => _toggleSearch();
+
+  void _toggleSearch() {
+    if (_searchOpen) {
+      FocusScope.of(context).unfocus();
+      _search.clear();
+    }
+    setState(() {
+      _searchOpen = !_searchOpen;
+      if (!_searchOpen) _query = '';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final content = AnimatedBuilder(
       animation: widget.state.bookmarkChanges,
       builder: (context, _) {
         final query = _query.trim().toLowerCase();
@@ -417,6 +500,10 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage>
                                   setState(() => _category = value),
                               reduceMotion: widget.state.reduceMotion,
                             ),
+                            if (groups.isNotEmpty) ...[
+                              const SizedBox(height: 18),
+                              _shelfPreview(groups.keys.toList()),
+                            ],
                             const SizedBox(height: 12),
                             AppText(
                               '${entries.length} 条记录 · ${groups.length} 本书',
@@ -690,6 +777,19 @@ class _BookmarkLibraryPageState extends State<BookmarkLibraryPage>
           ),
         );
       },
-    ),
-  );
+    );
+    if (!widget.showHeader) {
+      return GlassHeaderLayout(
+        showHeader: false,
+        header: buildHeader(context),
+        body: content,
+      );
+    }
+    return ArchiveFeaturePage(
+      title: '书签',
+      code: 'PERSONAL / EXCERPTS',
+      actions: [_searchAction()],
+      child: content,
+    );
+  }
 }

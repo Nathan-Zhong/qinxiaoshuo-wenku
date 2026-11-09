@@ -29,8 +29,12 @@ class BookShelfPreferences {
   final int maximumBooks;
   final bool repeatFill;
 
+  /// The discovery carousel keeps its configured ceiling.
   int featuredCount(int available) =>
       available < minimumBooks ? 0 : available.clamp(0, maximumBooks);
+
+  /// The shelf/bookmark carousels show every added book, without a cap.
+  int shelfCount(int available) => available < minimumBooks ? 0 : available;
 
   BookShelfPreferences copyWith({
     int? minimumBooks,

@@ -26,19 +26,11 @@ class HomeNavigation extends ChangeNotifier {
   bool get localReader => _value.localReader;
   bool get combinedShelf => _value.combinedShelf;
   bool get readableShelfOnly => cachedShelf || localReader;
-  List<int> get tabs {
-    if (localReader) return combinedShelf ? const [1, 3] : const [2, 3];
-    if (combinedShelf) return cachedShelf ? const [1, 3] : const [0, 1, 3];
-    return cachedShelf ? const [1, 2, 3] : const [0, 1, 2, 3];
-  }
+  /// The dock is fixed: 发现 / 书架 / 书签 / 我的. Offline and local-reader
+  /// preferences no longer change its membership — local import is gone.
+  List<int> get tabs => const [0, 1, 2, 3];
 
-  int destination(int current) => tabs.contains(current)
-      ? current
-      : localReader
-      ? combinedShelf
-            ? 1
-            : 2
-      : 1;
+  int destination(int current) => tabs.contains(current) ? current : 0;
 
   void _changed() {
     final next = _read();

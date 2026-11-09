@@ -228,6 +228,36 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
     }
   }
 
+  /// Opens the engine's web-login window (the source's own web page),
+  /// which is the only way sources that gate full text behind a web
+  /// session (e.g. 第10章后全文需登录) can sign in: the form rows alone
+  /// only carry a JS verification result that those sources refuse.
+  Future<void> _webLogin() async {
+    if (busy) return;
+    setState(() => busy = true);
+    try {
+      final kind = await widget.client.openSourceLogin(widget.sourceUrl);
+      if (!mounted) return;
+      switch (kind) {
+        case LegadoLoginKind.web:
+          _feedback('已打开网页登录，登录完成后返回本页确认');
+          unawaited(_load());
+        case LegadoLoginKind.js:
+          _feedback('已运行登录脚本，请在弹出的页面中完成');
+          unawaited(_load());
+        case LegadoLoginKind.form:
+        case LegadoLoginKind.none:
+          _feedback('该书源没有网页登录入口，请使用表单登录');
+      }
+    } on PlatformException catch (error) {
+      _feedback('网页登录失败：${error.message ?? '请重试'}');
+    } catch (_) {
+      _feedback('网页登录失败，请重试');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Future<void> _submit() async {
     if (busy) return;
     setState(() => busy = true);
@@ -472,10 +502,17 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
         ),
         const SizedBox(height: 14),
       ],
+      GlassTextButton(
+        key: const ValueKey('source-login-web'),
+        onPressed: busy ? null : () => unawaited(_webLogin()),
+        child: const AppText('网页登录（部分书源需要）'),
+      ),
+      const SizedBox(height: 12),
       Row(
         children: [
           GlassTextButton(
             key: const ValueKey('source-login-cancel'),
+
             onPressed: busy ? null : () => Navigator.pop(widget.sheet),
             child: const AppText('取消'),
           ),

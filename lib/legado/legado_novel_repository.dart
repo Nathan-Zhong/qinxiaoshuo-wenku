@@ -550,18 +550,42 @@ class LegadoDispatchRepository extends NovelRepository
     bool refresh = false,
   }) => legacy.authorPage(author, page: page, refresh: refresh);
 
+  /// Page 1 carries the whole result: the archive page first, the source
+  /// results appended (no de-duplication — the UI splits them into two
+  /// labelled sections). Later pages stay archive-only, so paging never
+  /// mixes engine results into a "next page" of the catalogue.
   @override
   Future<NovelPage> searchFilteredPage(
     String query, {
     BookSearchField field = BookSearchField.all,
     int page = 1,
     bool refresh = false,
-  }) => legacy.searchFilteredPage(
-    query,
-    field: field,
-    page: page,
-    refresh: refresh,
-  );
+  }) async {
+    final legacyPage = await legacy.searchFilteredPage(
+      query,
+      field: field,
+      page: page,
+      refresh: refresh,
+    );
+    if (page != 1) return legacyPage;
+    List<Novel> engine;
+    try {
+      engine = await legado.search(
+        query,
+        deadline: const Duration(seconds: 15),
+      );
+    } catch (_) {
+      return legacyPage;
+    }
+    if (engine.isEmpty) return legacyPage;
+    return NovelPage(
+      items: List.unmodifiable([...legacyPage.items, ...engine]),
+      page: legacyPage.page,
+      totalPages: legacyPage.totalPages,
+      totalItems: legacyPage.totalItems,
+      searchFailures: legacyPage.searchFailures,
+    );
+  }
 
   @override
   Future<NovelPage> tagPage(
