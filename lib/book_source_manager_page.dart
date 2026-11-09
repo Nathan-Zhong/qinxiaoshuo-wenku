@@ -360,6 +360,9 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
       if (result.updated > 0) '更新 ${result.updated}',
       if (result.unchanged > 0) '未变 ${result.unchanged}',
       if (result.failed > 0) '失败 ${result.failed}',
+      // A6: policy-skipped sources are their own category — this
+      // kind of source is not supported, not an import failure.
+      if (result.skipped > 0) '已跳过 ${result.skipped}（非小说/漫画源，本版不支持）',
     ];
     showNovelFeedback(
       context,
@@ -911,6 +914,14 @@ class _ImportSourceSheetState extends State<_ImportSourceSheet> {
       final result = await action();
       if (!mounted) return;
       if (result.added + result.updated + result.unchanged == 0) {
+        // A6: everything policy-skipped is not a failure — the
+        // batch held only audio/file sources this build does not
+        // adapt. Hand the result back so the manager page reports
+        // the skip plainly ("已跳过 N") instead of showing an error.
+        if (result.skipped > 0 && result.failed == 0) {
+          Navigator.pop(context, result);
+          return;
+        }
         setState(() {
           _busy = false;
           _error = result.errors.isNotEmpty
@@ -1487,6 +1498,9 @@ class _SubscriptionsSheetState extends State<_SubscriptionsSheet> {
         if (result.updated > 0) '更新 ${result.updated}',
         if (result.unchanged > 0) '未变 ${result.unchanged}',
         if (result.failed > 0) '失败 ${result.failed}',
+        // A6: policy-skipped sources are their own category — this
+        // kind of source is not supported, not an import failure.
+        if (result.skipped > 0) '已跳过 ${result.skipped}（非小说/漫画源，本版不支持）',
       ];
       setState(() {
         _busy = false;
@@ -1778,6 +1792,9 @@ class _ReplaceRulesSheetState extends State<_ReplaceRulesSheet> {
         if (result.updated > 0) '更新 ${result.updated}',
         if (result.unchanged > 0) '未变 ${result.unchanged}',
         if (result.failed > 0) '失败 ${result.failed}',
+        // A6: policy-skipped sources are their own category — this
+        // kind of source is not supported, not an import failure.
+        if (result.skipped > 0) '已跳过 ${result.skipped}（非小说/漫画源，本版不支持）',
       ];
       setState(() {
         _busy = false;
