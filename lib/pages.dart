@@ -12,8 +12,10 @@ import 'app_ui.dart';
 import 'app_window_insets.dart';
 import 'app_search_field.dart';
 import 'legado/legado_book_registry.dart' show isLegadoBookId;
+import 'legado/legado_books.dart';
 import 'legado/legado_manga_reader.dart';
 import 'legado/legado_novel_repository.dart';
+import 'legado/legado_source_section.dart';
 import 'setting_menu.dart';
 import 'cover_images.dart';
 import 'font_settings_page.dart';
@@ -3536,6 +3538,16 @@ class _DetailLoaderPageState extends State<DetailLoaderPage> {
   late Future<Novel> _loaded = _load();
   Novel? _cached;
 
+  /// Detail that loaded even though its directory did not: the page
+  /// keeps showing the book (title, author, synopsis, cover) instead
+  /// of failing the whole detail over a directory fetch.
+  Novel? _detailNovel;
+
+  /// Directory-only failure. Unlike [DetailPage.loadError] (the whole
+  /// detail failed) this leaves the loaded detail visible and only the
+  /// directory empty, with a chapters-only retry.
+  Object? _directoryError;
+
   @override
   void initState() {
     super.initState();
@@ -3561,10 +3573,52 @@ class _DetailLoaderPageState extends State<DetailLoaderPage> {
 
   Future<Novel> _load() async {
     final detail = await widget.repository.detail(widget.novel);
-    final chapters = await widget.repository.chapters(widget.novel.id);
+    // The detail is worth keeping even when the directory fetch fails
+    // (a dead/slow source, or a first open with no persisted directory
+    // yet): remember it before the directory attempt so the page and
+    // the chapters-only retry below can use it. The FutureBuilder
+    // rebuilds when this future completes, so the plain assignments
+    // below are picked up without an extra setState.
+    _detailNovel = detail;
+    List<NovelChapter> chapters;
+    try {
+      chapters = await widget.repository.chapters(widget.novel.id);
+    } catch (error) {
+      // A directory failure is not a detail failure: the book's info
+      // already loaded, and the repository's own persisted-directory
+      // fallback has already been tried inside chapters(). Showing
+      // "书籍详情加载失败" here used to throw that good detail away.
+      _directoryError = error;
+      chapters = const [];
+    }
     final loaded = detail.withChapters(chapters);
+    // Keep the chapter-bearing novel as the preferred one too: the
+    // builder reads _detailNovel before snapshot.data, so leaving the
+    // chapterless detail here would hide a successfully loaded
+    // directory.
+    _detailNovel = loaded;
     await widget.state.rememberNovel(loaded);
     return loaded;
+  }
+
+  /// Retries only the directory for a detail that already loaded, so
+  /// a transient source failure does not pay for a second detail
+  /// fetch (which might itself fail this time and lose the page).
+  Future<void> _retryChapters() async {
+    final detail = _detailNovel;
+    if (detail == null) return;
+    try {
+      final chapters = await widget.repository.chapters(detail.id);
+      if (!mounted) return;
+      final loaded = detail.withChapters(chapters);
+      setState(() {
+        _detailNovel = loaded;
+        _directoryError = null;
+      });
+      await widget.state.rememberNovel(loaded);
+    } catch (error) {
+      if (mounted) setState(() => _directoryError = error);
+    }
   }
 
   @override
@@ -3573,7 +3627,7 @@ class _DetailLoaderPageState extends State<DetailLoaderPage> {
     // Keep the destination cover's element and layout alive from the first
     // route frame through loading, errors and completion of its Hero flight.
     builder: (context, snapshot) => DetailPage(
-      novel: snapshot.data ?? _cached ?? widget.novel,
+      novel: _detailNovel ?? snapshot.data ?? _cached ?? widget.novel,
       transitionNovel: widget.novel,
       coverHeroTag: widget.coverHeroTag,
       state: widget.state,
@@ -3583,6 +3637,8 @@ class _DetailLoaderPageState extends State<DetailLoaderPage> {
           _cached == null &&
           snapshot.connectionState != ConnectionState.done,
       loadError: _cached == null ? snapshot.error : null,
+      directoryError: _directoryError,
+      onRetryDirectory: _retryChapters,
       fromCache:
           (_cached != null && !snapshot.hasData) ||
           (widget.repository is OfflineNovelRepository &&
@@ -3590,6 +3646,8 @@ class _DetailLoaderPageState extends State<DetailLoaderPage> {
                 widget.novel.id,
               )),
       onRetry: () => setState(() {
+        _detailNovel = null;
+        _directoryError = null;
         _loaded = _load();
       }),
     ),
@@ -3606,7 +3664,9 @@ class DetailPage extends StatefulWidget {
     this.transitionNovel,
     this.isLoading = false,
     this.loadError,
+    this.directoryError,
     this.onRetry,
+    this.onRetryDirectory,
     this.fromCache = false,
     this.onRead,
     this.onReadTarget,
@@ -3618,7 +3678,14 @@ class DetailPage extends StatefulWidget {
   final Novel? transitionNovel;
   final bool isLoading;
   final Object? loadError;
+
+  /// Directory-only failure: the detail itself loaded, only the
+  /// chapter list did not (see DetailLoaderPage._load). The page
+  /// shows the loaded detail with an empty directory and a
+  /// chapters-only retry instead of the whole-detail failure box.
+  final Object? directoryError;
   final VoidCallback? onRetry;
+  final VoidCallback? onRetryDirectory;
   final bool fromCache;
   final ValueChanged<int>? onRead;
   final ValueChanged<BookReadingTarget>? onReadTarget;
@@ -3714,7 +3781,9 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
       transitionNovel != null && transitionNovel!.author != novel.author;
   bool get isLoading => widget.isLoading;
   Object? get loadError => widget.loadError;
+  Object? get directoryError => widget.directoryError;
   VoidCallback? get onRetry => widget.onRetry;
+  VoidCallback? get onRetryDirectory => widget.onRetryDirectory;
   bool get _reduceMotion =>
       state.reduceMotion || MediaQuery.disableAnimationsOf(context);
 
@@ -3956,7 +4025,17 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                                           )
                                         : const SizedBox.shrink(),
                                   ),
+                                  // Wenku8 community actions call the
+                                  // Wenku8 account APIs with the book's
+                                  // id: a Legado source book's synthetic
+                                  // id is not a Wenku8 aid, so the relay
+                                  // answers with a non-numeric reply and
+                                  // every tap ends in "接口返回的操作结果
+                                  // 格式有误". Source books therefore get
+                                  // the source section below instead, and
+                                  // never see these buttons.
                                   if (!isLocalBook(novel.id) &&
+                                      !isLegadoBookId(novel.id) &&
                                       WenkuFeaturesScope.maybeOf(context) !=
                                           null)
                                     Padding(
@@ -3971,6 +4050,35 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                                           novel: novel,
                                           state: state,
                                           repository: repository,
+                                        ),
+                                      ),
+                                    ),
+                                  // Source books show where they came
+                                  // from — and, when several sources carry
+                                  // the same book, switch between them —
+                                  // exactly like Legado. Same gating as
+                                  // main's detail page.
+                                  if (isLegadoBookId(novel.id) &&
+                                      LegadoBooks.registryOrNull != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 24),
+                                      child: RevealFromTop(
+                                        animation: _contentIntro,
+                                        start: .4,
+                                        placeholder: const LoadingSkeleton(
+                                          layout: SkeletonLayout.actions,
+                                        ),
+                                        child: LegadoSourceSection(
+                                          novel: novel,
+                                          registry:
+                                              LegadoBooks.registryOrNull!,
+                                          onSwitch: (record) => openDetail(
+                                            context,
+                                            record.toNovel(),
+                                            state,
+                                            repository,
+                                            forceDetails: true,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -4236,7 +4344,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
             else
               _cacheReactive(
                 () => AppText(
-                  loadError != null
+                  loadError != null || directoryError != null
                       ? '目录暂未载入'
                       : '${novel.isComplete ? '已完结' : '连载中'} · ${bookshelfSource(novel.id, repository is OfflineNovelRepository ? repository as OfflineNovelRepository : null)}',
                   style: TextStyle(
@@ -4516,7 +4624,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
 
   String get _primaryLabel => isLoading
       ? '正在加载目录'
-      : loadError != null
+      : loadError != null || directoryError != null
       ? '重试加载目录'
       : novel.chapters.isEmpty
       ? '暂无可读章节'
@@ -4543,6 +4651,8 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
         ? null
         : loadError != null
         ? onRetry
+        : directoryError != null
+        ? onRetryDirectory
         : novel.chapters.isEmpty
         ? null
         : () => _openReader(context, _resumeChapter ?? 0);
@@ -4666,7 +4776,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
 
   String get _readLabel {
     if (isLoading) return '正在加载目录';
-    if (loadError != null) return '重试加载目录';
+    if (loadError != null || directoryError != null) return '重试加载目录';
     if (novel.chapters.isEmpty) return '暂无可读章节';
     final action = _resumeChapter != null ? '继续阅读' : '开始阅读';
     final chapter = _resumeChapter ?? 0;
