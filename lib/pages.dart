@@ -2424,10 +2424,10 @@ class _ShelfPageState extends State<ShelfPage>
                             AppText(
                               _cacheOnly
                                   ? state.combinedShelf
-                                        ? '已缓存的收藏和本地导入书籍会显示在这里'
-                                        : '已缓存正文的收藏会显示在这里，本地导入请到「本地」阅读'
+                                        ? '已缓存正文的收藏和本地导入书籍会显示在这里'
+                                        : '已缓存正文的收藏会显示在这里'
                                   : state.combinedShelf && all.isEmpty
-                                  ? '收藏喜欢的书，或点击右上角 ＋ 导入书籍'
+                                  ? '收藏喜欢的书，书架会出现在这里'
                                   : state.shelf.isEmpty
                                   ? '在发现页收藏喜欢的书'
                                   : '试试其他关键词或切回全部',
@@ -2583,7 +2583,7 @@ class _ShelfPageState extends State<ShelfPage>
           sourceOptions: state.combinedShelf
               ? const {
                   'all': '全部来源',
-                  'local': '本地导入',
+                  'local': '本地书籍',
                   'cached': '已缓存',
                   'online': '在线收藏',
                 }
@@ -2797,7 +2797,7 @@ class _ShelfPageState extends State<ShelfPage>
             shelfSourceOptions: state.combinedShelf
                 ? const {
                     'all': '全部来源',
-                    'local': '本地导入',
+                    'local': '本地书籍',
                     'cached': '已缓存',
                     'online': '在线收藏',
                   }
