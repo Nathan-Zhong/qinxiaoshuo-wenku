@@ -42,6 +42,16 @@ class AppVersionNotes {
 /// 详细更新说明里每个版本占一页，按这个顺序翻页。
 const appChangelog = <AppVersionNotes>[
   AppVersionNotes(
+    version: '1.0.15',
+    build: 10015,
+    date: '2026-11-09',
+    summary: ['搜索结果只剩书源命中时，也带上「书源」小标题。'],
+    items: [
+      '搜索只命中书源时，结果同样显示「书源」小标题，不再和文库结果混在一起',
+      '底部导航的书签图标改成手绘线稿风格，和另外三栏统一',
+    ],
+  ),
+  AppVersionNotes(
     version: '1.0.14',
     build: 10014,
     date: '2026-11-09',
@@ -59,16 +69,6 @@ const appChangelog = <AppVersionNotes>[
     items: [
       '书源登录的「网页登录」直接打开书源自己的登录页，表单登录不再是唯一入口',
       '搜索结果里的书源条目显示具体书源名，不再笼统写「在线」',
-    ],
-  ),
-  AppVersionNotes(
-    version: '1.0.12',
-    build: 10012,
-    date: '2026-11-09',
-    summary: ['清掉本地导入残留，应用不再接管系统里的打开文件。'],
-    items: [
-      '删除本地导入的页面与文件打开接管，只保留书架里的在线阅读',
-      '书架与书签的筛选标签去掉本地导入相关的旧文案',
     ],
   ),
 

@@ -162,7 +162,7 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   static const _dockItems = [
     GlassDockItem(CupertinoIcons.house, '发现'),
     GlassDockItem(CupertinoIcons.book, '书架', symbol: ArchiveSymbol.shelf),
-    GlassDockItem(CupertinoIcons.bookmark, '书签'),
+    GlassDockItem(CupertinoIcons.bookmark, '书签', symbol: ArchiveSymbol.bookmark),
     GlassDockItem(CupertinoIcons.person_crop_circle, '我的'),
   ];
   late final _catalog = NovelFeedController(
@@ -3212,11 +3212,17 @@ class InlineSearchResults extends StatelessWidget {
       for (final book in books)
         if (isLegadoBookId(book.id)) book,
     ];
+    final hasArchive = archiveBooks.isNotEmpty;
+    final hasSources = sourceBooks.isNotEmpty;
+    final splitSections = hasArchive && hasSources;
     final entries = <Object>[
-      if (archiveBooks.isNotEmpty && sourceBooks.isNotEmpty) ...[
+      if (splitSections) ...[
         const _SearchSectionLabel('轻小说文库', first: true),
         ...archiveBooks,
         const _SearchSectionLabel('书源', first: false),
+        ...sourceBooks,
+      ] else if (hasSources) ...[
+        const _SearchSectionLabel('书源', first: true),
         ...sourceBooks,
       ] else
         ...books,
