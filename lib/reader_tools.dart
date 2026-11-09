@@ -59,10 +59,6 @@ class ReaderOpenIllustrations extends ReaderToolAction {
   const ReaderOpenIllustrations();
 }
 
-class ReaderOpenHandoff extends ReaderToolAction {
-  const ReaderOpenHandoff();
-}
-
 class ReaderOpenListening extends ReaderToolAction {
   const ReaderOpenListening();
 }
@@ -338,7 +334,6 @@ class ReaderTools extends StatefulWidget {
     this.listeningBuilder,
     this.initialTab,
     this.scope = ReaderToolsScope.all,
-    this.canHandoff = false,
     this.onStyleScopeChanged,
     this.onReaderTypefaceChanged,
     this.languages = const {},
@@ -357,7 +352,6 @@ class ReaderTools extends StatefulWidget {
   final WidgetBuilder? listeningBuilder;
   final String? initialTab;
   final ReaderToolsScope scope;
-  final bool canHandoff;
   final ValueChanged<double>? onFontPreview, onLineHeightPreview;
   final ValueChanged<bool>? onPreviewChanged;
   final void Function(ReaderPreferences, bool persist)? onPreferencesChanged;
@@ -1794,18 +1788,6 @@ class _ReaderToolsState extends State<ReaderTools>
               ArchiveIcon(CupertinoIcons.headphones, size: 20),
               SizedBox(width: 12),
               AppText('听书'),
-            ],
-          ),
-        ),
-      if (category == 'turn' && widget.canHandoff)
-        GlassTextButton(
-          key: const ValueKey('reader-handoff-entry'),
-          onPressed: () => Navigator.pop(context, const ReaderOpenHandoff()),
-          child: const Row(
-            children: [
-              ArchiveIcon(CupertinoIcons.device_laptop, size: 20),
-              SizedBox(width: 12),
-              Expanded(child: AppText('在其他设备续读')),
             ],
           ),
         ),
