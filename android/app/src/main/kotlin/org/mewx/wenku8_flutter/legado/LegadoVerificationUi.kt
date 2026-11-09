@@ -129,6 +129,27 @@ object LegadoBrowserHost {
         pending.remove(token)
     }
 
+    // Last browser-launch failure per source, for the login sheet
+    // (bug 4): a browser that never opened wakes a waiting script
+    // with the same empty result as a browser the user closed
+    // without confirming, so without this the sheet cannot tell
+    // "never opened" from "closed unfinished" — and the user sees
+    // neither, because the launch happens in a background coroutine.
+    private val launchFailures = ConcurrentHashMap<String, Long>()
+
+    fun noteLaunchFailure(sourceKey: String) {
+        launchFailures[sourceKey] = System.currentTimeMillis()
+    }
+
+    /** True when a launch failure was recorded for this source recently. */
+    fun consumeLaunchFailure(
+        sourceKey: String,
+        withinMs: Long = 120_000,
+    ): Boolean {
+        val at = launchFailures.remove(sourceKey) ?: return false
+        return System.currentTimeMillis() - at <= withinMs
+    }
+
     private const val STALE_MS = 30 * 60 * 1000L
 }
 
@@ -213,6 +234,48 @@ class LegadoVerificationUiProvider(
         SourceVerificationHelpShared.notifyResultArrived(sourceKey)
     }
 
+    /**
+     * Tells Dart a fire-and-forget browser never opened (bug 4).
+     * Best-effort: a channel whose Dart side has no handler answers
+     * notImplemented and is skipped, exactly like the captcha path.
+     */
+    private fun notifyBrowserLaunchFailed(source: BaseSource) {
+        invokeOnChannel(
+            LegadoUiHost.channelSnapshot(),
+            0,
+            "browserLaunchFailed",
+            mapOf(
+                "sourceName" to source.getTag(),
+                "sourceKey" to source.getKey(),
+            ),
+        )
+    }
+
+    private fun invokeOnChannel(
+        channels: List<MethodChannel>,
+        index: Int,
+        method: String,
+        args: Map<String, Any?>,
+    ) {
+        if (index >= channels.size) return
+        channels[index].invokeMethod(
+            method,
+            args,
+            object : MethodChannel.Result {
+                override fun success(result: Any?) = Unit
+                override fun error(
+                    code: String,
+                    message: String?,
+                    details: Any?,
+                ) = Unit
+
+                override fun notImplemented() {
+                    invokeOnChannel(channels, index + 1, method, args)
+                }
+            },
+        )
+    }
+
     override fun startBrowser(
         source: BaseSource,
         url: String,
@@ -288,6 +351,18 @@ class LegadoVerificationUiProvider(
                 }.onFailure { e ->
                     LegadoBrowserHost.discard(token)
                     LegadoEngine.recordBridgeError("startBrowser.launch", e)
+                    LegadoBrowserHost.noteLaunchFailure(sourceKey)
+                    // A fire-and-forget browser (saveResult != true,
+                    // e.g. 漫蛙书源的发布页/登录页面) has no waiting
+                    // script to report through: tell Dart directly,
+                    // or the tap looks dead (bug 4). An awaiting
+                    // browser reports through its waiter instead —
+                    // the recorded failure is what lets
+                    // LegadoLogin tell the two apart — so this
+                    // notification must not fire for it.
+                    if (saveResult != true) {
+                        notifyBrowserLaunchFailed(source)
+                    }
                     // A browser that could not open must not leave a
                     // getVerificationResult waiter parked: same empty
                     // fill as a browser closed with no result.
