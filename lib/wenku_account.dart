@@ -21,6 +21,13 @@ class WenkuApiError implements Exception {
     9 => '今天已经签到',
     10 => '本次推荐未成功，请稍后再试',
     11 => '发表未成功，请检查内容后重试',
+    // 14 is not in any published wenku8 code table (the community
+    // table stops at 11, then 22): the server answered but did not
+    // complete the operation this time. Treat it as a transient
+    // server-side failure — the wording says so, and [_run] retries
+    // it once — instead of a bare "代码 14". Its exact server-side
+    // meaning still needs confirmation from the relay/operator.
+    14 => '服务器这次没完成操作，请稍后再试（代码 14）',
     _ => '服务器未完成本次操作，请稍后重试（代码 $code）',
   };
   @override
@@ -168,6 +175,18 @@ class WenkuAccount extends ChangeNotifier {
   bool authenticated = false;
   bool busy = false;
   String? operation, error;
+
+  /// Which operation produced [error] (the [_run] label, e.g. 正在签到),
+  /// so the page can say what failed. Without it, a background shelf
+  /// sync failing with code 14 reads on the account page as if the
+  /// user's own tap had failed.
+  String? errorOperation;
+
+  /// The last failure, prefixed with the operation that produced it
+  /// when known.
+  String? get lastErrorText => error == null
+      ? null
+      : (errorOperation == null ? error : '$errorOperation：$error');
   WenkuProfile? profile;
   List<CloudBook>? cloudBooks;
   int? syncedAt;
@@ -216,15 +235,41 @@ class WenkuAccount extends ChangeNotifier {
   });
 
   Future<T> _run<T>(String label, Future<T> Function() work) async {
-    if (busy) throw StateError('An account operation is already active');
+    if (busy) {
+      // A tap that lands while another account operation (usually a
+      // background shelf sync) holds the lock used to die silently:
+      // the guard threw before the try block, so `error` was never
+      // set and the button just looked dead (bug 6). Say what is
+      // running instead; the page shows it in its live region.
+      error = '正在${operation ?? '处理'}，请稍后再试';
+      errorOperation = operation;
+      _notify();
+      throw StateError('An account operation is already active');
+    }
     busy = true;
     operation = label;
     error = null;
+    errorOperation = null;
     _notify();
     try {
-      return await work();
+      try {
+        return await work();
+      } on WenkuApiError catch (failure) {
+        // Code 14 is intermittent (the server did not complete the
+        // operation this time): retry once after a short pause
+        // instead of painting the page red on the first try. All
+        // account operations are safe to repeat — sign-in, profile
+        // reads and shelf exchanges all re-read before writing.
+        if (failure.code == 14 && !_disposed) {
+          await Future.delayed(const Duration(seconds: 2));
+          if (_disposed) throw failure;
+          return await work();
+        }
+        rethrow;
+      }
     } catch (failure) {
       error = describeError(failure);
+      errorOperation = label;
       rethrow;
     } finally {
       busy = false;
