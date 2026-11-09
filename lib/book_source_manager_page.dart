@@ -518,22 +518,25 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
                       ),
                     ),
                   ),
-                  if (_selecting)
+                  if (_selecting) ...[
                     GlassTextButton(
                       key: const ValueKey('book-source-select-all'),
                       compact: true,
                       onPressed: _deleting ? null : _toggleSelectAll,
                       child: AppText(_allSelected ? '取消全选' : '全选'),
                     ),
-                  if (_selecting && _selected.isNotEmpty)
-                    GlassTextButton(
-                      compact: true,
-                      onPressed: _deleting
-                          ? null
-                          : () => setState(_selected.clear),
-                      child: const AppText('清空选择'),
-                    ),
-                  if (!_selecting)
+                    if (_selected.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      GlassTextButton(
+                        compact: true,
+                        onPressed: _deleting
+                            ? null
+                            : () => setState(_selected.clear),
+                        child: const AppText('清空选择'),
+                      ),
+                    ],
+                  ],
+                  if (!_selecting) ...[
                     GlassTextButton(
                       key: const ValueKey('book-source-self-check'),
                       compact: true,
@@ -542,14 +545,16 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
                           : () => unawaited(_runSelfCheck()),
                       child: AppText(_checking ? '自检中…' : '引擎自检'),
                     ),
-                  if (!_selecting)
+                    const SizedBox(width: 8),
                     GlassTextButton(
                       key: const ValueKey('book-source-import'),
                       compact: true,
                       onPressed: _loading ? null : _openImport,
                       child: const AppText('导入书源'),
                     ),
-                  if (_sources.isNotEmpty)
+                  ],
+                  if (_sources.isNotEmpty) ...[
+                    const SizedBox(width: 8),
                     GlassTextButton(
                       key: const ValueKey('book-source-select-mode'),
                       compact: true,
@@ -559,6 +564,7 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
                       }),
                       child: AppText(_selecting ? '完成' : '选择'),
                     ),
+                  ],
                 ],
               ),
               FeatureError(_error),
@@ -575,31 +581,37 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    GlassTextButton(
-                      key: const ValueKey('book-source-check'),
-                      compact: true,
-                      onPressed: _sourceChecking || _loading
-                          ? null
-                          : () => unawaited(_runSourceCheck()),
-                      child: AppText(_sourceChecking ? '校验中…' : '校验书源'),
+                    Expanded(
+                      child: GlassTextButton(
+                        key: const ValueKey('book-source-check'),
+                        compact: true,
+                        onPressed: _sourceChecking || _loading
+                            ? null
+                            : () => unawaited(_runSourceCheck()),
+                        child: AppText(_sourceChecking ? '校验中…' : '校验书源'),
+                      ),
                     ),
                     const SizedBox(width: 8),
-                    GlassTextButton(
-                      key: const ValueKey('book-source-subscriptions'),
-                      compact: true,
-                      onPressed: _loading
-                          ? null
-                          : () => unawaited(_openSubscriptions()),
-                      child: const AppText('订阅管理'),
+                    Expanded(
+                      child: GlassTextButton(
+                        key: const ValueKey('book-source-subscriptions'),
+                        compact: true,
+                        onPressed: _loading
+                            ? null
+                            : () => unawaited(_openSubscriptions()),
+                        child: const AppText('订阅管理'),
+                      ),
                     ),
                     const SizedBox(width: 8),
-                    GlassTextButton(
-                      key: const ValueKey('book-source-replace-rules'),
-                      compact: true,
-                      onPressed: _loading
-                          ? null
-                          : () => unawaited(_openReplaceRules()),
-                      child: const AppText('替换规则'),
+                    Expanded(
+                      child: GlassTextButton(
+                        key: const ValueKey('book-source-replace-rules'),
+                        compact: true,
+                        onPressed: _loading
+                            ? null
+                            : () => unawaited(_openReplaceRules()),
+                        child: const AppText('替换规则'),
+                      ),
                     ),
                   ],
                 ),
@@ -794,7 +806,11 @@ class _BookSourceManagerPageState extends State<BookSourceManagerPage> {
                     icon: CupertinoIcons.person_crop_circle,
                     label: '登录书源 ${source.sourceName}',
                     onPressed: () => unawaited(_openLogin(source)),
-                  ),
+                  )
+                else
+                  // Reserves the login slot so the toggle column lines up
+                  // across cards, whether or not a source offers login.
+                  const SizedBox(width: 46, height: 46),
                 GlassIconButton(
                   icon: CupertinoIcons.trash,
                   label: '删除书源 ${source.sourceName}',
