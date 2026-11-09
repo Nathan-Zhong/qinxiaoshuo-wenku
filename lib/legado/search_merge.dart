@@ -65,6 +65,67 @@ bool _isInvisibleRune(int rune) =>
     (rune < 0x20 && rune != 0x09) ||
     (rune >= 0x7f && rune <= 0x9f); // C0/C1 controls
 
+/// De-duplicates a book/author name polluted by a source's own title
+/// element (seen on 漫蛙: the detail title element renders the name
+/// twice and the latest chapter twice, and the engine's `@text` rule
+/// concatenates every descendant, so the stored name came out as
+/// "在超市后门吸烟的二人漫画在超市后门吸烟的二人漫画第54话 第54话").
+/// No concatenation happens anywhere in the app — the merge code takes
+/// the first non-empty name and the registry only replaces names — so
+/// the repetition can only arrive inside one source-supplied string,
+/// and it is cleaned where that string enters the registry.
+///
+/// Three narrow passes, all no-ops on a clean name:
+/// 1. a leading segment repeated immediately ("AAAA…" → "AA…"):
+///    the longest repeat of at least 4 characters is collapsed, then
+///    the scan restarts, so only genuine doubling is removed and a
+///    short legitimate repeat ("哈哈") is never touched;
+/// 2. a chapter marker repeated at the very end with a space between
+///    ("…第54话 第54话" → "…第54话");
+/// 3. when (and only when) pass 1 or 2 collapsed something — proof
+///    the element is polluted — a trailing chapter marker the site
+///    glued onto the name ("…第54话") is stripped as well, since the
+///    chapter already has its own `lastChapter` / directory field.
+///    The site's own name form is otherwise kept verbatim (the "漫画"
+///    suffix in "在超市后门吸烟的二人漫画" is how the source names the
+///    book, not a repetition, so it stays).
+String legadoDedupeBookName(String value) {
+  var text = value.trim();
+  if (text.isEmpty) return text;
+  var collapsed = false;
+  // Pass 1: leading immediate repeat, longest unit first.
+  while (true) {
+    var hit = false;
+    final maxUnit = text.length ~/ 2;
+    for (var unit = maxUnit; unit >= 4; unit--) {
+      if (text.length < unit * 2) continue;
+      final head = text.substring(0, unit);
+      if (text.substring(unit, unit * 2) == head) {
+        text = text.substring(unit);
+        collapsed = true;
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) break;
+  }
+  // Pass 2: trailing chapter marker written twice ("第54话 第54话").
+  final tailRepeat = RegExp(r'^(.*)\s+(第\d+[话章回集])$');
+  final tail = tailRepeat.firstMatch(text);
+  if (tail != null && tail.group(1)!.endsWith(tail.group(2)!)) {
+    text = tail.group(1)!;
+    collapsed = true;
+  }
+  // Pass 3: trailing chapter marker on a proven-polluted name.
+  if (collapsed) {
+    final stripped = text
+        .replaceFirst(RegExp(r'第\d+[话章回集]$'), '')
+        .trim();
+    if (stripped.isNotEmpty) text = stripped;
+  }
+  return text;
+}
+
 /// Grouping key for a book: normalized title + normalized author +
 /// media bucket.
 ///
