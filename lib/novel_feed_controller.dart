@@ -149,6 +149,29 @@ class NovelFeedController extends ChangeNotifier {
     return _visibleResultStartIndex;
   }
 
+  /// Swap matching rows in place (cover-prefetch results), keeping order,
+  /// paging cursors and the blocked-tag projection untouched.
+  void replaceItems(Iterable<Novel> updates) {
+    if (_disposed) return;
+    final byId = {for (final book in updates) book.id: book};
+    if (byId.isEmpty) return;
+    var changed = false;
+    final next = <Novel>[];
+    for (final book in _items) {
+      final replacement = byId[book.id];
+      if (replacement != null) {
+        next.add(replacement);
+        changed = true;
+      } else {
+        next.add(book);
+      }
+    }
+    if (!changed) return;
+    _items = List.unmodifiable(next);
+    _visibleItems = null;
+    notifyListeners();
+  }
+
   void _projectVisibleItems() {
     if (_visibleItems != null) return;
     final visible = <Novel>[];

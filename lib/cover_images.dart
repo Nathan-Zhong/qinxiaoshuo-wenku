@@ -2,6 +2,8 @@ import 'package:flutter/widgets.dart';
 import 'app_interactions.dart';
 import 'catalog.dart';
 import 'legacy_cover.dart';
+import 'legado/legado_books.dart';
+import 'legado/legado_image_resolver.dart';
 import 'reader_illustrations.dart';
 
 ReaderIllustrationCache novelCoverImageCache(Novel book) =>
@@ -28,3 +30,10 @@ Future<void> openNovelCoverImage(
     reduceMotion: reduceMotion,
   );
 }
+
+/// Shared resolution cache for Legado source images: one bridge
+/// resolution per (origin, url) per session, shared by every cover load.
+final legadoImageResolver = LegadoImageResolver(
+  call: ({required origin, required url}) =>
+      LegadoBooks.client.resolveImageRequest(origin: origin, url: url),
+);
