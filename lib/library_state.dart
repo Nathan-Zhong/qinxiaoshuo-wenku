@@ -547,6 +547,7 @@ class LibraryState extends ChangeNotifier {
     _directReadingEnabled =
         _prefs.get('directReading') == true && _directReadingPages.isNotEmpty;
     _openRecentOnLaunch = _prefs.get('openRecentOnLaunch') == true;
+    _keepWenkuLogin = _prefs.get('keepWenkuLogin') != false;
     _startPage = AppStartPage.parseOrDefault(_prefs.get('startPage'));
     _combinedShelf = _prefs.get('combinedShelf') == true;
     _blockedTags = BlockedTags.fromRecord(
@@ -775,6 +776,7 @@ class LibraryState extends ChangeNotifier {
   Set<ReadingEntry> _directReadingPages = {};
   bool _directReadingEnabled = false;
   bool _openRecentOnLaunch = false;
+  bool _keepWenkuLogin = true;
   AppStartPage _startPage = AppStartPage.discovery;
   bool _combinedShelf = false;
   ReaderPreferences _readerPreferences = const ReaderPreferences();
@@ -955,6 +957,7 @@ class LibraryState extends ChangeNotifier {
   bool get localReaderMode => _localReaderMode;
   bool get directReading => _directReadingEnabled;
   bool get openRecentOnLaunch => _openRecentOnLaunch;
+  bool get keepWenkuLogin => _keepWenkuLogin;
   AppStartPage get startPage => _startPage;
   Set<ReadingEntry> get directReadingPages =>
       Set.unmodifiable(_directReadingPages);
@@ -1403,6 +1406,19 @@ class LibraryState extends ChangeNotifier {
       await writeLibraryPreference(_prefs, 'openRecentOnLaunch', value);
       if (_openRecentOnLaunch != value) {
         _openRecentOnLaunch = value;
+        if (!_disposed) _settings.notifyListeners();
+      }
+    });
+  }
+
+  Future<void> setKeepWenkuLogin(bool value) async {
+    if (_restoreBarrier case final barrier?) {
+      return barrier.future.then((_) => setKeepWenkuLogin(value));
+    }
+    await _queuePositionWrite(() async {
+      await writeLibraryPreference(_prefs, 'keepWenkuLogin', value);
+      if (_keepWenkuLogin != value) {
+        _keepWenkuLogin = value;
         if (!_disposed) _settings.notifyListeners();
       }
     });
