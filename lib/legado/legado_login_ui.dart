@@ -211,6 +211,7 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
           values: result.values,
           hasLoginInfo: result.hasLoginInfo,
           hasLoginHeader: result.hasLoginHeader,
+          badRows: result.badRows,
         ),
       );
     } catch (_) {
@@ -426,6 +427,7 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
             values: current.values,
             hasLoginInfo: current.hasLoginInfo,
             hasLoginHeader: false,
+            badRows: current.badRows,
           );
         }
       });
@@ -514,6 +516,22 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
     ),
   );
 
+  /// A3: the source's login form had rows that failed to parse and
+  /// were skipped one by one — say so, instead of silently showing
+  /// a shorter form (or, when every row broke, an empty one).
+  List<Widget> _badRowsHint(LegadoLoginData current) {
+    if (current.badRows == 0) return const [];
+    return [
+      AppText(
+        current.badRows > 0
+            ? '登录表单有 ${current.badRows} 行写坏，已跳过。'
+            : '登录表单写坏了，读不出来。',
+        style: const TextStyle(height: 1.6),
+      ),
+      const SizedBox(height: 18),
+    ];
+  }
+
   List<Widget> _formChildren() {
     final current = data!;
     if (current.kind == LegadoLoginKind.none) {
@@ -521,6 +539,7 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
       // account/password form above. No web-login button — there is
       // no login page to open.
       return [
+        ..._badRowsHint(current),
         const AppText(
           '该书源没有登录页，可直接输入账号密码登录。',
           style: TextStyle(height: 1.6),
@@ -555,6 +574,7 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
     final hasWebLoginRow =
         current.rows.any((row) => row.type == 'button');
     return [
+      ..._badRowsHint(current),
       for (final row in current.rows) ...[
         _rowWidget(row),
         const SizedBox(height: 14),
