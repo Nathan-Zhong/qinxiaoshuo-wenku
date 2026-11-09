@@ -230,6 +230,16 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
     showNovelFeedback(context, message);
   }
 
+  /// The engine reports a web login that was closed unfinished as
+  /// the raw "验证结果为空" exception; say what actually happened
+  /// instead of showing the engine's words.
+  String _humanLoginError(String? message) {
+    if (message != null && message.contains('验证结果为空')) {
+      return '网页登录未完成：请在浏览器里登录后点右上角「确定」，直接返回会取消本次登录';
+    }
+    return message ?? '请重试';
+  }
+
   /// Runs a row action (button tap, select/toggle change). Fork
   /// semantics: errors are surfaced and the sheet stays open.
   Future<void> _runAction(LegadoLoginRow row) async {
@@ -243,7 +253,7 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
         data: gatherData(),
       );
     } on PlatformException catch (error) {
-      _feedback('操作失败：${error.message ?? '请重试'}');
+      _feedback('操作失败：${_humanLoginError(error.message)}');
     } catch (_) {
       _feedback('操作失败，请重试');
     } finally {
@@ -283,7 +293,7 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
           }
       }
     } on PlatformException catch (error) {
-      _feedback('网页登录失败：${error.message ?? '请重试'}');
+      _feedback('网页登录失败：${_humanLoginError(error.message)}');
     } catch (_) {
       _feedback('网页登录失败，请重试');
     } finally {
@@ -314,7 +324,7 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
     } on PlatformException catch (error) {
       if (!mounted) return;
       setState(() => busy = false);
-      _feedback('登录出错：${error.message ?? '请重试'}');
+      _feedback('登录出错：${_humanLoginError(error.message)}');
     } catch (_) {
       if (!mounted) return;
       setState(() => busy = false);
@@ -528,12 +538,17 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
         ),
       ];
     }
+    // The form already has its own web-login button rows (e.g.
+    // 番茄小说 / 漫蛙书源); the footer button would only repeat the
+    // "no login page" prompt for script loginUrls — hide it.
+    final hasWebLoginRow =
+        current.rows.any((row) => row.type == 'button');
     return [
       for (final row in current.rows) ...[
         _rowWidget(row),
         const SizedBox(height: 14),
       ],
-      ..._formFooter(current, includeWebLogin: true),
+      ..._formFooter(current, includeWebLogin: !hasWebLoginRow),
     ];
   }
 
