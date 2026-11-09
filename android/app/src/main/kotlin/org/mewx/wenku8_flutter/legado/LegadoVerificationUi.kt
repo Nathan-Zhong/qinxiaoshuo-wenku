@@ -257,6 +257,19 @@ class LegadoVerificationUiProvider(
                     refetchAfterSuccess = refetchAfterSuccess ?: true,
                     asBottomSheet = asBottomSheet,
                     spec = spec,
+                    // The engine calls this entry for two different
+                    // things: getVerificationResult (saveResult=true,
+                    // a JS thread is parked on the result) and plain
+                    // java.startBrowser (saveResult=false, nobody
+                    // waits — e.g. 漫蛙书源的登录按钮). A fire-and-
+                    // forget browser must not use the verification
+                    // mode: closing it would otherwise fill "" into
+                    // the verification slot (RESULT_NONE exists
+                    // exactly for pages that hand back nothing).
+                    resultMode = if (saveResult == true)
+                        LegadoBrowserRequest.RESULT_VERIFICATION
+                    else
+                        LegadoBrowserRequest.RESULT_NONE,
                 )
             )
             LegadoBackstageWebView.runOnMain {
