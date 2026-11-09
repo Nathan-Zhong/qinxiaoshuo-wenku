@@ -784,6 +784,10 @@ class ImportResult {
     this.updated = 0,
     this.unchanged = 0,
     this.failed = 0,
+    // A6: sources refused by policy (audio/file kinds this build
+    // does not adapt) — counted apart from failed, so the UI can say
+    // "not supported" instead of "import failed".
+    this.skipped = 0,
     this.sources = const <BookSourceSummary>[],
     this.errors = const <String>[],
   });
@@ -792,6 +796,7 @@ class ImportResult {
   final int updated;
   final int unchanged;
   final int failed;
+  final int skipped;
 
   /// Sources that ended up stored by this import.
   final List<BookSourceSummary> sources;
@@ -804,6 +809,7 @@ class ImportResult {
       updated: _int(m, 'updated'),
       unchanged: _int(m, 'unchanged'),
       failed: _int(m, 'failed'),
+      skipped: _int(m, 'skipped'),
       sources: _mapList(m, 'sources', BookSourceSummary.fromMap),
       errors: _strList(m, 'errors'),
     );
@@ -814,6 +820,7 @@ class ImportResult {
     'updated': updated,
     'unchanged': unchanged,
     'failed': failed,
+    'skipped': skipped,
     'sources': <Map<String, Object?>>[for (final s in sources) s.toMap()],
     'errors': errors,
   };
@@ -825,6 +832,7 @@ class ImportResult {
       other.updated == updated &&
       other.unchanged == unchanged &&
       other.failed == failed &&
+      other.skipped == skipped &&
       listEquals(other.sources, sources) &&
       listEquals(other.errors, errors);
 
@@ -834,6 +842,7 @@ class ImportResult {
     updated,
     unchanged,
     failed,
+    skipped,
     Object.hashAll(sources),
     Object.hashAll(errors),
   );
@@ -1105,6 +1114,10 @@ class LegadoLoginData {
     this.values = const <String, String>{},
     this.hasLoginInfo = false,
     this.hasLoginHeader = false,
+    // A3: loginUi rows that failed to parse and were skipped one by
+    // one. 0 = clean form; -1 = the form text itself would not parse
+    // at all. The sheet shows a hint for either.
+    this.badRows = 0,
   });
 
   final String sourceUrl;
@@ -1124,6 +1137,8 @@ class LegadoLoginData {
   /// Whether a login header is saved for this source.
   final bool hasLoginHeader;
 
+  final int badRows;
+
   factory LegadoLoginData.fromMap(Map<Object?, Object?> map) {
     final m = _keyed(map);
     return LegadoLoginData(
@@ -1140,6 +1155,7 @@ class LegadoLoginData {
       values: _strMap(m, 'values'),
       hasLoginInfo: _bool(m, 'hasLoginInfo'),
       hasLoginHeader: _bool(m, 'hasLoginHeader'),
+      badRows: _int(m, 'badRows'),
     );
   }
 }
