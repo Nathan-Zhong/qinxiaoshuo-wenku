@@ -13,6 +13,7 @@ import 'app_licenses.dart';
 import 'app_repository.dart';
 import 'catalog.dart';
 import 'legacy_wenku_repository.dart';
+import 'legado/legado_books.dart';
 import 'library_state.dart';
 import 'local_platform.dart';
 import 'local_series_actions.dart';
@@ -83,8 +84,13 @@ Future<void> main() async {
       ? WenkuAccount()
       : null;
   final remote = LegacyWenkuRepository();
+  // Engine (Legado) books route to the native engine by id; all other
+  // traffic keeps flowing to the wenku remote untouched.
+  final NovelRepository wired = LocalPlatform.fileActions
+      ? LegadoBooks.dispatch(remote)
+      : remote;
   final repository = LocalPlatform.fileActions
-      ? await openApplicationLibrary(remote: remote, network: network)
+      ? await openApplicationLibrary(remote: wired, network: network)
       : const DemoNovelRepository();
   if (repository is OfflineNovelRepository) {
     ReaderIllustrationCache.shared.offlineReader =

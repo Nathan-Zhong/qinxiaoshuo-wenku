@@ -152,7 +152,10 @@ class LegadoNovelRepository extends NovelRepository {
   /// and the like). The search page itself uses the streaming
   /// controller instead.
   @override
-  Future<List<Novel>> search(String query) async {
+  Future<List<Novel>> search(
+    String query, {
+    Duration deadline = const Duration(seconds: 90),
+  }) async {
     final term = query.trim();
     if (term.isEmpty) return const [];
     final sources = await eligibleSources();
@@ -172,8 +175,8 @@ class LegadoNovelRepository extends NovelRepository {
     try {
       // Engine searches fan out over many slow sources; cap the wait
       // and keep whatever has arrived, like Legado's own stop button.
-      final deadline = DateTime.now().add(const Duration(seconds: 90));
-      while (!finished && DateTime.now().isBefore(deadline)) {
+      final deadlineAt = DateTime.now().add(deadline);
+      while (!finished && DateTime.now().isBefore(deadlineAt)) {
         await Future<void>.delayed(const Duration(milliseconds: 100));
       }
       if (!finished) await handle.cancel();
@@ -448,8 +451,33 @@ class LegadoDispatchRepository extends NovelRepository
   Future<Novel?> find(int id) =>
       isLegadoBookId(id) ? legado.find(id) : legacy.find(id);
 
+  /// Wenku results come first (the archive is the app's home shelf);
+  /// engine results follow, de-duplicated by normalized title+author so
+  /// a book available both online and in a source shows up once.
   @override
-  Future<List<Novel>> search(String query) => legacy.search(query);
+  Future<List<Novel>> search(String query) async {
+    final local = await legacy.search(query);
+    List<Novel> engine;
+    try {
+      engine = await legado.search(
+        query,
+        deadline: const Duration(seconds: 15),
+      );
+    } catch (_) {
+      return local;
+    }
+    if (engine.isEmpty) return local;
+    if (local.isEmpty) return engine;
+    final seen = {for (final novel in local) _searchKey(novel)};
+    return [
+      ...local,
+      for (final novel in engine)
+        if (seen.add(_searchKey(novel))) novel,
+    ];
+  }
+
+  static String _searchKey(Novel novel) =>
+      '${legadoNormalizeTitle(novel.title)}|${legadoNormalizeTitle(novel.author)}';
 
   @override
   Future<Novel> detail(Novel novel) =>
