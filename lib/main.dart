@@ -46,7 +46,6 @@ import 'reader_handoff_navigation.dart';
 import 'reader_appearance.dart';
 import 'reader_illustrations.dart';
 import 'app_palette.dart';
-import 'book_open_monitor.dart';
 import 'reading_widget_controller.dart';
 import 'reading_widget_cards.dart';
 import 'reading_widget_settings_page.dart';
@@ -509,33 +508,6 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
   }
 
   LanReadingSync? _lanSync;
-  Future<void> _openLocalBook(Novel book) async {
-    final position =
-        state.positionFor(book.id) ??
-        ReadingPosition(
-          chapter: 0,
-          chapterId: book.chapters.firstOrNull?.id ?? 0,
-          offset: 0,
-          fraction: 0,
-          fontSize: state.readerFontSizeFor(book.id),
-          width: 0,
-          updatedAt: DateTime.now().millisecondsSinceEpoch,
-        );
-    await _readerHandoff.open(
-      bookId: book.id,
-      position: position,
-      page: ReaderPage(
-        novel: book,
-        state: state,
-        repository: repository,
-        initialChapter: position.chapter,
-        initialPosition: position,
-        directEntry: true,
-      ),
-      reduceMotion: state.reduceMotion,
-    );
-  }
-
   Future<void> _continueNearbyBook(LanHandoffReceipt receipt) async {
     final context = _navigator.currentState?.overlay?.context;
     if (context == null || !context.mounted) {
@@ -802,19 +774,6 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
                           network: widget.network,
                         ),
                       );
-                      final repo = repository;
-                      if (LocalPlatform.fileActions &&
-                          repo is OfflineNovelRepository &&
-                          repo.local != null) {
-                        return BookOpenMonitor(
-                          books: repo.local!,
-                          library: state,
-                          onOpen: _openLocalBook,
-                          onInitialInboxSettled: _initialBookInboxSettled,
-                          onOpenRequested: _bookOpenRequested,
-                          child: home,
-                        );
-                      }
                       _initialBookInboxSettled(false);
                       return home;
                     },
