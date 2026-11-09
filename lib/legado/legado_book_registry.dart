@@ -189,13 +189,22 @@ class LegadoBookRecord {
   /// discovery prefetch then repairs the full text from the detail
   /// page in the background).
   static String _absorbDisplayText(String current, String incoming) {
-    if (incoming.isEmpty) return current;
-    if (!legadoHasInvisibleChars(incoming)) return incoming;
-    if (current.isNotEmpty && !legadoHasInvisibleChars(current)) {
-      return current;
+    final String result;
+    if (incoming.isEmpty) {
+      result = current;
+    } else if (!legadoHasInvisibleChars(incoming)) {
+      result = incoming;
+    } else if (current.isNotEmpty &&
+        !legadoHasInvisibleChars(current)) {
+      result = current;
+    } else {
+      final stripped = legadoSanitizeBookText(incoming);
+      result = stripped.isNotEmpty ? stripped : current;
     }
-    final stripped = legadoSanitizeBookText(incoming);
-    return stripped.isNotEmpty ? stripped : current;
+    // A source title element can also repeat the name inside one
+    // string (see legadoDedupeBookName); clean the winner, whichever
+    // side won, so a doubled name never survives an absorb.
+    return legadoDedupeBookName(result);
   }
 
   Map<String, Object?> toJson() => {
@@ -226,9 +235,17 @@ class LegadoBookRecord {
       tocUrl: json['tocUrl'] as String? ?? '',
       type: json['type'] as int? ?? 0,
       // Records persisted before fix2 may hold font-obfuscated titles;
-      // sanitize on load so they self-heal.
-      name: legadoSanitizeBookText(json['name'] as String? ?? ''),
-      author: legadoSanitizeBookText(json['author'] as String? ?? ''),
+      // sanitize on load so they self-heal. Records persisted before
+      // the name de-duplication may also hold a doubled title
+      // (legadoDedupeBookName); that heals here too, so the book
+      // James already opened (WK-1073741923) shows its clean name
+      // without waiting for the source to answer again.
+      name: legadoDedupeBookName(
+        legadoSanitizeBookText(json['name'] as String? ?? ''),
+      ),
+      author: legadoDedupeBookName(
+        legadoSanitizeBookText(json['author'] as String? ?? ''),
+      ),
       kind: json['kind'] as String?,
       coverUrl: json['coverUrl'] as String?,
       intro: json['intro'] as String?,
@@ -430,9 +447,11 @@ class LegadoBookRegistry extends ChangeNotifier {
       type: book.type,
       // Sanitized on the way in (fix2): a font-obfuscated list title
       // is stored without its invisible codepoints; see
-      // _absorbDisplayText for the full rule.
-      name: legadoSanitizeBookText(book.name),
-      author: legadoSanitizeBookText(book.author),
+      // _absorbDisplayText for the full rule. A source title element
+      // can also repeat the name (legadoDedupeBookName); clean that
+      // here too so the first stored value is already the clean one.
+      name: legadoDedupeBookName(legadoSanitizeBookText(book.name)),
+      author: legadoDedupeBookName(legadoSanitizeBookText(book.author)),
       kind: book.kind,
       coverUrl: book.coverUrl,
       intro: book.intro,
