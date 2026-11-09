@@ -229,7 +229,7 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
         _lastTypeface = state.appFontId;
         return MaterialApp(
           navigatorKey: LegadoUiHost.navigatorKey,
-          title: '小说文库',
+          title: '轻小说文库',
           locale: state.language.locale ?? _systemLocale,
           supportedLocales: const [
             Locale('zh', 'CN'),
