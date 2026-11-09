@@ -271,7 +271,16 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
         case LegadoLoginKind.form:
           _feedback('该书源没有独立登录页，请使用表单登录');
         case LegadoLoginKind.none:
-          _feedback('该书源没有登录页，请使用表单登录');
+          // The engine answers "none" both when the source has no
+          // login at all and when its loginUrl is a script (番茄小说
+          // / 漫蛙书源): those sources still offer web login through
+          // their own button rows in the form. Point at the form
+          // instead of claiming there is no login page.
+          if (data?.kind == LegadoLoginKind.form) {
+            _feedback('该书源的网页登录在表单里，请点表单中的登录按钮');
+          } else {
+            _feedback('该书源没有登录页，请使用表单登录');
+          }
       }
     } on PlatformException catch (error) {
       _feedback('网页登录失败：${error.message ?? '请重试'}');
