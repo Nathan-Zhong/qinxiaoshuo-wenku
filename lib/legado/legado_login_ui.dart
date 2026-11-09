@@ -85,6 +85,17 @@ class LegadoLoginUi {
       );
       return null;
     }
+    if (call.method == 'browserLaunchFailed') {
+      // A fire-and-forget browser (e.g. 漫蛙书源的发布页/登录页面)
+      // never opened: no script waits on it, so nothing else would
+      // ever report the failure (bug 4). The feedback goes on the
+      // root overlay, so it is visible even if the sheet has closed.
+      final context = contextProvider();
+      if (context != null && context.mounted) {
+        showNovelFeedback(context, '浏览器打不开，请重试');
+      }
+      return null;
+    }
     final verification = LegadoVerificationUi.installed;
     if (verification != null) {
       return verification.handlePlatformCall(call);
