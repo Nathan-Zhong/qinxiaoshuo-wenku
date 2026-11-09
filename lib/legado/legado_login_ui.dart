@@ -162,7 +162,19 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
       await widget.client.init();
       final result = await widget.client.getLoginData(widget.sourceUrl);
       if (!mounted) return;
-      for (final row in result.rows) {
+      // Fallback for sources with no login page and no form rows
+      // (kind none, e.g. 番茄小说): the sheet would otherwise be a
+      // dead end. Offer a plain account/password form that submits
+      // through the same loginSource path as a source-defined form —
+      // the entered values are saved as the source's login info and
+      // the source's login() runs after, exactly as for form rows.
+      final rows = result.kind == LegadoLoginKind.none
+          ? const <LegadoLoginRow>[
+              LegadoLoginRow(name: '账号', type: 'text'),
+              LegadoLoginRow(name: '密码', type: 'password'),
+            ]
+          : result.rows;
+      for (final row in rows) {
         switch (row.type) {
           case 'text':
           case 'password':
@@ -178,7 +190,18 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
                     : (row.chars.isNotEmpty ? row.chars.first : ''));
         }
       }
-      setState(() => data = result);
+      setState(
+        () => data = LegadoLoginData(
+          sourceUrl: result.sourceUrl,
+          sourceName: result.sourceName,
+          kind: result.kind,
+          loginUrl: result.loginUrl,
+          rows: rows,
+          values: result.values,
+          hasLoginInfo: result.hasLoginInfo,
+          hasLoginHeader: result.hasLoginHeader,
+        ),
+      );
     } catch (_) {
       if (!mounted) return;
       setState(() => loadError = '登录表单加载失败，请重试');
@@ -261,6 +284,16 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
 
   Future<void> _submit() async {
     if (busy) return;
+    if (data?.kind == LegadoLoginKind.none) {
+      // The fallback form has no source-defined rows to fall back
+      // on: two blank fields would save empty credentials.
+      final account = textControllers['账号']?.text.trim() ?? '';
+      final password = textControllers['密码']?.text ?? '';
+      if (account.isEmpty && password.isEmpty) {
+        _feedback('请先输入账号和密码');
+        return;
+      }
+    }
     setState(() => busy = true);
     try {
       await widget.client.loginSource(widget.sourceUrl, gatherData());
@@ -453,6 +486,23 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
 
   List<Widget> _formChildren() {
     final current = data!;
+    if (current.kind == LegadoLoginKind.none) {
+      // No login page and no source-defined form: the fallback
+      // account/password form above. No web-login button — there is
+      // no login page to open.
+      return [
+        const AppText(
+          '该书源没有登录页，可直接输入账号密码登录。',
+          style: TextStyle(height: 1.6),
+        ),
+        const SizedBox(height: 18),
+        for (final row in current.rows) ...[
+          _rowWidget(row),
+          const SizedBox(height: 14),
+        ],
+        ..._formFooter(current, includeWebLogin: false),
+      ];
+    }
     if (current.kind != LegadoLoginKind.form) {
       // Defensive: entrances dispatch web/js before opening the
       // sheet, so a non-form kind here only appears if the source
@@ -474,62 +524,73 @@ class _SourceLoginSheetState extends State<_SourceLoginSheet> {
         _rowWidget(row),
         const SizedBox(height: 14),
       ],
-      if (current.hasLoginInfo || current.hasLoginHeader) ...[
-        Wrap(
-          spacing: 8,
-          children: [
-            if (current.hasLoginInfo)
-              GlassTextButton(
-                key: const ValueKey('source-login-logout'),
-                compact: true,
-                onPressed: busy ? null : () => unawaited(_logout()),
-                child: const AppText('退出登录'),
-              ),
-            if (current.hasLoginHeader)
-              GlassTextButton(
-                key: const ValueKey('source-login-show-header'),
-                compact: true,
-                onPressed: busy ? null : () => unawaited(_showLoginHeader()),
-                child: const AppText('查看登录头'),
-              ),
-            if (current.hasLoginHeader)
-              GlassTextButton(
-                key: const ValueKey('source-login-remove-header'),
-                compact: true,
-                onPressed: busy ? null : () => unawaited(_removeLoginHeader()),
-                child: const AppText('删除登录头'),
-              ),
-          ],
-        ),
-        const SizedBox(height: 14),
-      ],
+      ..._formFooter(current, includeWebLogin: true),
+    ];
+  }
+
+  /// Buttons shared by the source-defined form and the no-login-page
+  /// fallback form: saved-login actions, then (form sources only)
+  /// the web-login button, then cancel/confirm.
+  List<Widget> _formFooter(
+    LegadoLoginData current, {
+    required bool includeWebLogin,
+  }) => [
+    if (current.hasLoginInfo || current.hasLoginHeader) ...[
+      Wrap(
+        spacing: 8,
+        children: [
+          if (current.hasLoginInfo)
+            GlassTextButton(
+              key: const ValueKey('source-login-logout'),
+              compact: true,
+              onPressed: busy ? null : () => unawaited(_logout()),
+              child: const AppText('退出登录'),
+            ),
+          if (current.hasLoginHeader)
+            GlassTextButton(
+              key: const ValueKey('source-login-show-header'),
+              compact: true,
+              onPressed: busy ? null : () => unawaited(_showLoginHeader()),
+              child: const AppText('查看登录头'),
+            ),
+          if (current.hasLoginHeader)
+            GlassTextButton(
+              key: const ValueKey('source-login-remove-header'),
+              compact: true,
+              onPressed: busy ? null : () => unawaited(_removeLoginHeader()),
+              child: const AppText('删除登录头'),
+            ),
+        ],
+      ),
+      const SizedBox(height: 14),
+    ],
+    if (includeWebLogin) ...[
       GlassTextButton(
         key: const ValueKey('source-login-web'),
         onPressed: busy ? null : () => unawaited(_webLogin()),
         child: const AppText('网页登录（部分书源需要）'),
       ),
       const SizedBox(height: 12),
-      Row(
-        children: [
-          GlassTextButton(
-            key: const ValueKey('source-login-cancel'),
-
-            onPressed: busy ? null : () => Navigator.pop(widget.sheet),
-            child: const AppText('取消'),
+    ],
+    Row(
+      children: [
+        GlassTextButton(
+          key: const ValueKey('source-login-cancel'),
+          onPressed: busy ? null : () => Navigator.pop(widget.sheet),
+          child: const AppText('取消'),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: GlassPillButton(
+            key: const ValueKey('source-login-confirm'),
+            icon: CupertinoIcons.checkmark,
+            label: busy ? '处理中…' : '确定',
+            onPressed: busy ? null : () => unawaited(_submit()),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: GlassPillButton(
-              key: const ValueKey('source-login-confirm'),
-              icon: CupertinoIcons.checkmark,
-              label: busy ? '处理中…' : '确定',
-              onPressed: busy ? null : () => unawaited(_submit()),
-            ),
-          ),
-        ],
-      ),
-    ];
-  }
+        ),
+      ],
+    ),
+  ];
 
   Widget _rowWidget(LegadoLoginRow row) {
     switch (row.type) {
