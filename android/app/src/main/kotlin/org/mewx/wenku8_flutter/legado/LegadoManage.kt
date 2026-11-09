@@ -216,7 +216,7 @@ object LegadoManage {
             // which eval path threw).
             ?.take(1200)
             .orEmpty()
-        val cause = translateCheckError(rawError, stages)
+        val cause = translateCheckError(source, rawError, stages)
             ?: probeSearchAddress(source, stages)
         val base = listOfNotNull(
             invalid.takeIf { it.isNotBlank() },
@@ -237,8 +237,16 @@ object LegadoManage {
      * Translates the engine's error comment into a human cause, or
      * null when it says nothing beyond the failed stages (pure
      * repetition, e.g. "校验失败:发现失效，搜索失效").
+     *
+     * A2: when the engine chokes on an address that is not a URL at
+     * all, the message names the field that held it (and shows the
+     * offending value) instead of the bare engine jargon — a user
+     * seeing "Expected URL scheme …" could not tell whether the
+     * problem was the source address, the search address or the
+     * explore address.
      */
     private fun translateCheckError(
+        source: BookSource,
         rawError: String,
         stages: List<String>,
     ): String? {
@@ -270,7 +278,16 @@ object LegadoManage {
                 return "发现页里有个操作按钮（登录入口），校验把它当成网址打开了；这不是书源坏了" +
                     if (searchOk) "，搜索不受影响" else ""
             }
-            return "校验拿到的地址不是网址，可能是源里的操作按钮"
+            // A2 (not an action button): name the field that held the
+            // bad address. Match the offending value against the
+            // source's own addresses first; when it matches nothing
+            // (e.g. an address the engine built from a rule), the
+            // failed stage says which address was being fetched.
+            val badValue = text.substringAfter("for ", "").trim().take(80)
+            val field = fieldOfBadUrl(source, badValue, stages)
+            return "校验拿到的地址不是网址" +
+                (field?.let { "（$it）" } ?: "") +
+                (badValue.takeIf { it.isNotBlank() }?.let { "：$it" } ?: "")
         }
         if (text.contains("Unable to resolve host") ||
             text.contains("UnknownHostException")
@@ -299,6 +316,37 @@ object LegadoManage {
             }
         if (kept.isEmpty()) return null
         return kept.joinToString("，").take(300)
+    }
+
+    /** Names the source field a bad check-time URL came from (A2):
+     * the offending value is matched against the source's own
+     * addresses first (a value straight out of searchUrl/exploreUrl/
+     * bookSourceUrl names its field); otherwise the failed stage
+     * says which address was being fetched. Null when neither says. */
+    private fun fieldOfBadUrl(
+        source: BookSource,
+        badValue: String,
+        stages: List<String>,
+    ): String? {
+        val probe = badValue.take(40)
+        if (probe.isNotEmpty()) {
+            if (!source.exploreUrl.isNullOrBlank() &&
+                source.exploreUrl.contains(probe)
+            ) return "发现地址"
+            if (!source.searchUrl.isNullOrBlank() &&
+                source.searchUrl.contains(probe)
+            ) return "搜索地址"
+            if (!source.bookSourceUrl.isNullOrBlank() &&
+                source.bookSourceUrl.contains(probe)
+            ) return "书源地址"
+        }
+        return when {
+            stages.any { it.contains("搜索") } -> "搜索地址"
+            stages.any { it.contains("发现") } -> "发现地址"
+            stages.any { it.contains("目录") } -> "目录地址"
+            stages.any { it.contains("正文") } -> "正文地址"
+            else -> null
+        }
     }
 
     /** Two stage spellings count as the same when they match with or
@@ -467,6 +515,8 @@ object LegadoManage {
             "updated" to counts.updated,
             "unchanged" to counts.unchanged,
             "failed" to counts.failed,
+            // A6: policy-skipped sources ride separately from failed.
+            "skipped" to counts.skipped,
             "sources" to emptyList<Map<String, Any?>>(),
             "errors" to counts.errors
         )
