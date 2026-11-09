@@ -296,8 +296,7 @@ class SupportFeedbackPage extends StatelessWidget {
           const SizedBox(height: 24),
           ContentPanel(
             child: AppText(
-              '这个版本是我们自己编译维护的，装包来自本地构建，
-'
+              '这个版本是我们自己编译维护的，装包来自本地构建，'
               '不走官方更新通道；遇到问题请走上面的 Issues。',
               style: TextStyle(
                 fontSize: 13,
