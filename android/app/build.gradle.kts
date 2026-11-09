@@ -15,8 +15,12 @@ val readerPreview = providers.gradleProperty("wenkuReaderPreview").orNull == "tr
 
 android {
     namespace = "org.mewx.wenku8_flutter"
-    compileSdk = flutter.compileSdkVersion
+    // Legado engine AARs under libs/ were built against compileSdk 37; AGP's
+    // AAR metadata check rejects them under 36.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
+    packaging.jniLibs.keepDebugSymbols.add("**/libcpp.so")
+    packaging.resources.excludes.add("META-INF/INDEX.LIST")
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
@@ -62,7 +66,13 @@ android {
             applicationIdSuffix = ".probe"
         }
         release {
-            proguardFile(file("document-import.pro"))
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                file("document-import.pro"),
+                file("legado-keep.pro")
+            )
             if (readerPreview) {
                 applicationIdSuffix = ".reader_preview"
             }
@@ -105,4 +115,29 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // Keep the media host classes available to the app's shared-engine wiring.
     implementation("androidx.media:media:1.7.0")
+    // Legado engine: vendored AARs carry no POM, so their external
+    // dependencies are declared manually below.
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.squareup.okio:okio:3.18.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.11.0")
+    implementation("org.jetbrains.kotlinx:atomicfu:0.33.0")
+    implementation("androidx.room3:room3-runtime:3.0.1")
+    implementation("androidx.sqlite:sqlite-framework:2.7.0")
+    implementation("com.fleeksoft.ksoup:ksoup:0.2.6")
+    implementation("org.jetbrains.compose.runtime:runtime:1.11.1")
+    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("cn.hutool:hutool-crypto:5.8.22")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-cbor:1.9.0")
+    implementation("androidx.collection:collection:1.6.0")
+    implementation("androidx.core:core-ktx:1.18.0")
+    implementation("androidx.webkit:webkit:1.16.0")
+    implementation("androidx.documentfile:documentfile:1.1.0")
+    implementation("com.caverock:androidsvg-aar:1.4")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.4.0")
+    implementation("com.github.null2264.injekt:injekt-core:4135455a2a")
+    implementation("com.github.liuyueyi.quick-chinese-transfer:quick-transfer-core:0.2.16")
 }

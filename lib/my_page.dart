@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import 'app_interactions.dart';
 import 'app_ui.dart';
+import 'book_source_manager_page.dart';
 import 'bookmark_library_page.dart';
 import 'reading_statistics_page.dart';
 import 'catalog.dart';
@@ -10,7 +11,7 @@ import 'dock_layout.dart';
 import 'feature_pages.dart';
 import 'library_state.dart';
 import 'offline_repository.dart';
-import 'pages.dart' show SettingsPage;
+import 'pages.dart' show SettingsPage, openDetail;
 import 'ui_notifiers.dart';
 import 'updates/app_updates.dart';
 import 'updates/update_page.dart';
@@ -202,6 +203,26 @@ class MyPage extends StatelessWidget {
                     ),
                   );
                 },
+              ),
+              const SizedBox(height: 14),
+              FeatureEntry(
+                key: const ValueKey('my-book-sources'),
+                title: '书源管理',
+                subtitle: '导入与管理 Legado 书源',
+                icon: CupertinoIcons.list_bullet,
+                onTap: () => pushNovelPage<void>(
+                  context,
+                  BookSourceManagerPage(
+                    onOpenBook: (pageContext, novel) => openDetail(
+                      pageContext,
+                      novel,
+                      state,
+                      repository,
+                      forceDetails: true,
+                    ),
+                  ),
+                  reduceMotion: state.reduceMotion,
+                ),
               ),
               const SizedBox(height: 14),
               FeatureEntry(

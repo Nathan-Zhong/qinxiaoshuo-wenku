@@ -25,6 +25,7 @@ internal fun attachWenkuEnginePlugins(engine: FlutterEngine) {
     if (!engine.plugins.has(ReaderControlsPlugin::class.java)) engine.plugins.add(ReaderControlsPlugin())
     if (!engine.plugins.has(NetworkStatusPlugin::class.java)) engine.plugins.add(NetworkStatusPlugin())
     if (!engine.plugins.has(FrameRatePlugin::class.java)) engine.plugins.add(FrameRatePlugin())
+    if (!engine.plugins.has(LegadoEnginePlugin::class.java)) engine.plugins.add(LegadoEnginePlugin())
 }
 
 class WenkuHostPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityResultListener, PluginRegistry.RequestPermissionsResultListener, PluginRegistry.NewIntentListener {
