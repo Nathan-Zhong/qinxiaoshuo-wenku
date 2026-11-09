@@ -937,6 +937,8 @@ object LegadoEngine {
             "updated" to outcome.updated,
             "unchanged" to outcome.unchanged,
             "failed" to outcome.failed,
+            // A6: policy-skipped sources ride separately from failed.
+            "skipped" to outcome.skipped,
             "sources" to outcome.stored.map { LegadoDto.source(it) },
             "errors" to outcome.errors
         )
