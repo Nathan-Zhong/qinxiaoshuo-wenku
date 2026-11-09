@@ -42,6 +42,15 @@ class AppVersionNotes {
 /// 详细更新说明里每个版本占一页，按这个顺序翻页。
 const appChangelog = <AppVersionNotes>[
   AppVersionNotes(
+    version: '1.0.12',
+    build: 10012,
+    date: '2026-11-09',
+    summary: ['清掉本地导入残留，应用不再接管系统里的打开文件。'],
+    items: [
+      '删除本地导入的页面与文件打开接管，只保留书架里的在线阅读',
+    ],
+  ),
+  AppVersionNotes(
     version: '1.0.11',
     build: 10011,
     date: '2026-11-09',
@@ -64,14 +73,5 @@ const appChangelog = <AppVersionNotes>[
       '修复漫画团校验时「JS执行出错」：这类源正文解密时，脚本引擎有个小毛病会把文字弄错格式，这次在引擎里对齐了原版阅读的处理方式',
     ],
   ),
-  AppVersionNotes(
-    version: '1.0.9',
-    build: 10009,
-    date: '2026-11-04',
-    summary: ['漫画柜等失效书源恢复可用。'],
-    items: [
-      '修复漫画柜校验时「JS执行出错」：上一版补的加密函数在打包时被改名失效，这次直接补进引擎本体',
-      '阅友小说等书源一并恢复：补齐它们搜索、正文要用的加密函数',
-    ],
-  ),
+
 ];
