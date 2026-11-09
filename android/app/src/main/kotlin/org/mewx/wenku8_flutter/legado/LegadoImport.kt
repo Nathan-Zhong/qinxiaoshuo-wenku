@@ -363,16 +363,19 @@ object LegadoImport {
             added = sourceCounts.added + typed.added,
             updated = sourceCounts.updated + typed.updated,
             unchanged = sourceCounts.unchanged + typed.unchanged,
-            failed = parsed.failed,
+            failed = parsed.failed + sourceCounts.failed,
             stored = stored,
-            errors = (parsed.errors + typed.errors).take(8)
+            errors = (parsed.errors + sourceCounts.errors + typed.errors).take(8)
         )
     }
 
     /** Subscription-import variant: book sources only, as [Counts]. */
     private suspend fun storeSourcesOnly(db: AppDatabase, parsed: Parsed): Counts {
         val counts = storeSources(db, parsed.sources)
-        return counts.copy(failed = parsed.failed, errors = parsed.errors.take(8))
+        return counts.copy(
+            failed = parsed.failed + counts.failed,
+            errors = (parsed.errors + counts.errors).take(8)
+        )
     }
 
     /**
@@ -386,8 +389,20 @@ object LegadoImport {
         var added = 0
         var updated = 0
         var unchanged = 0
+        var rejected = 0
+        val rejectedNames = arrayListOf<String>()
         val toInsert = arrayListOf<BookSource>()
         for (source in parsed) {
+            // This build only adapts novel (type 0) and manga (type 2)
+            // sources. Audio (1), file (3) and any unknown type are
+            // refused at import time, before they reach the tables.
+            if (source.bookSourceType != 0 && source.bookSourceType != 2) {
+                rejected++
+                if (rejectedNames.size < 3) {
+                    rejectedNames.add(source.bookSourceName)
+                }
+                continue
+            }
             val existing = dao.getBookSourcePart(source.bookSourceUrl)
             when {
                 existing == null -> {
@@ -416,7 +431,15 @@ object LegadoImport {
         SourceHelp.evictAll()
         scope.launch { runCatching { SourceHelp.adjustSortNumber() } }
         ContentProcessorProviders.get().upReplaceRules()
-        return Counts(added, updated, unchanged)
+        val errors = if (rejected == 0) {
+            emptyList()
+        } else {
+            listOf(
+                "已跳过 $rejected 个非小说/漫画书源，本版只适配小说、漫画" +
+                    if (rejectedNames.isEmpty()) "" else "：${rejectedNames.joinToString("、")}"
+            )
+        }
+        return Counts(added, updated, unchanged, failed = rejected, errors = errors)
     }
 
     /**
