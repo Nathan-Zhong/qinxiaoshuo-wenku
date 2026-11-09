@@ -185,11 +185,17 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
   final _username = TextEditingController();
   final _password = TextEditingController();
   bool _obscure = true;
+  // The only account transport this build has is the native relay (NET).
+  String _transport = 'net';
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(widget.account.initialize());
+      if (mounted) {
+        unawaited(
+          widget.account.initialize(keepLogin: widget.state.keepWenkuLogin),
+        );
+      }
     });
   }
 
@@ -232,6 +238,37 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
         _password.clear();
       }
     }
+  }
+
+  Future<void> _testConnection() async {
+    final account = widget.account;
+    if (account.busy) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    try {
+      final message = await account.testConnection();
+      if (mounted) showNovelFeedback(context, message);
+    } catch (_) {
+      // The account's live region displays the concrete failure.
+    }
+  }
+
+  Future<void> _chooseTransport(BuildContext anchor) async {
+    final selected = await showGlassMenu<String>(
+      context: anchor,
+      reduceMotion: widget.state.reduceMotion,
+      builder: (menuContext) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          GlassMenuItem(
+            order: 0,
+            label: 'NET（直连）',
+            selected: _transport == 'net',
+            onPressed: () => Navigator.pop(menuContext, 'net'),
+          ),
+        ],
+      ),
+    );
+    if (mounted && selected != null) setState(() => _transport = selected);
   }
 
   Future<void> _logout() async {
@@ -363,6 +400,47 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                               ),
                             )
                           else ...[
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: JellyTapSurface(
+                                    key: const ValueKey(
+                                      'account-test-connection',
+                                    ),
+                                    onTap: account.busy
+                                        ? null
+                                        : _testConnection,
+                                    child: const AppText('测试连接'),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Builder(
+                                  builder: (menuAnchor) => JellyTapSurface(
+                                    key: const ValueKey('account-transport'),
+                                    onTap: account.busy
+                                        ? null
+                                        : () =>
+                                              _chooseTransport(menuAnchor),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        AppText(
+                                          _transport == 'net'
+                                              ? 'NET'
+                                              : _transport,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        const ArchiveIcon(
+                                          CupertinoIcons.chevron_down,
+                                          size: 14,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
                             ArchiveCode(
                               profile == null
                                   ? 'SESSION / READY'
@@ -398,6 +476,42 @@ class _WenkuAccountPageState extends State<WenkuAccountPage> {
                                 child: const AppText('刷新资料'),
                               ),
                             ],
+                          ),
+                          const SizedBox(height: 20),
+                          Row(
+                            children: [
+                              const Expanded(
+                                child: AppText(
+                                  '保持登录',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              AppControls.toggle(
+                                context,
+                                key: const ValueKey('account-keep-login'),
+                                value: widget.state.keepWenkuLogin,
+                                onChanged: (value) async {
+                                  await widget.state.setKeepWenkuLogin(value);
+                                  if (mounted) setState(() {});
+                                },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          AppText(
+                            widget.state.keepWenkuLogin
+                                ? '官网会话已保存在本机，过期后需重新登录；退出账号会清除会话。'
+                                : '关闭后下次打开需重新登录；本次登录在退出应用前仍有效。',
+                            style: TextStyle(
+                              fontSize: 12,
+                              height: 1.6,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
+                            ),
                           ),
                         ],
                       ),
@@ -767,7 +881,9 @@ class _PublicationLibraryPageState extends State<PublicationLibraryPage> {
     try {
       // Restoring the shared account is part of entering this catalogue, not a
       // reason to issue a guest request and replace it again after restoration.
-      await widget.account?.initialize();
+      await widget.account?.initialize(
+        keepLogin: widget.state.keepWenkuLogin,
+      );
       final libraries = await widget.catalog.publicationLibraries(
         refresh: true,
       );
