@@ -2583,7 +2583,6 @@ class _ShelfPageState extends State<ShelfPage>
           sourceOptions: state.combinedShelf
               ? const {
                   'all': '全部来源',
-                  'local': '本地书籍',
                   'cached': '已缓存',
                   'online': '在线收藏',
                 }
@@ -2797,7 +2796,6 @@ class _ShelfPageState extends State<ShelfPage>
             shelfSourceOptions: state.combinedShelf
                 ? const {
                     'all': '全部来源',
-                    'local': '本地书籍',
                     'cached': '已缓存',
                     'online': '在线收藏',
                   }

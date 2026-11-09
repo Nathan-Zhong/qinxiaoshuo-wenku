@@ -42,6 +42,16 @@ class AppVersionNotes {
 /// 详细更新说明里每个版本占一页，按这个顺序翻页。
 const appChangelog = <AppVersionNotes>[
   AppVersionNotes(
+    version: '1.0.16',
+    build: 10016,
+    date: '2026-11-09',
+    summary: ['书架筛选里清掉「本地导入」这个已经用不上的来源。'],
+    items: [
+      '书架的「书籍来源」和立体书架来源里去掉「本地导入 / 本地书籍」',
+      '以前选过该来源的，自动回落到「全部来源」',
+    ],
+  ),
+  AppVersionNotes(
     version: '1.0.15',
     build: 10015,
     date: '2026-11-09',
@@ -59,16 +69,6 @@ const appChangelog = <AppVersionNotes>[
     items: [
       '「我的」页删掉书签卡片，书签只从底部导航进入',
       '「我的」页补上「赞助与反馈」：赞助原作者、问题反馈（GitHub Issues）',
-    ],
-  ),
-  AppVersionNotes(
-    version: '1.0.13',
-    build: 10013,
-    date: '2026-11-09',
-    summary: ['修好需要登录的书源：网页登录不再被表单挡住。'],
-    items: [
-      '书源登录的「网页登录」直接打开书源自己的登录页，表单登录不再是唯一入口',
-      '搜索结果里的书源条目显示具体书源名，不再笼统写「在线」',
     ],
   ),
 

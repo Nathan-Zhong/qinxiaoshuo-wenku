@@ -269,7 +269,6 @@ class LibraryViewOptions extends StatelessWidget {
             '书籍来源',
             const {
               'all': '全部',
-              'local': '本地导入',
               'cached': '已缓存',
               'online': '在线收藏',
             },

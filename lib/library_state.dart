@@ -535,7 +535,7 @@ class LibraryState extends ChangeNotifier {
     _discoveryShelfQuery =
         discoveryQuery ?? const DiscoveryShelfQuery.defaults();
     _shelfSourceFilter =
-        ['local', 'cached', 'online'].contains(_prefs.get('shelfSourceFilter'))
+        ['cached', 'online'].contains(_prefs.get('shelfSourceFilter'))
         ? _prefs.get('shelfSourceFilter') as String
         : 'all';
     _adaptWhenOffline = _prefs.get('adaptWhenOffline') != false;
@@ -1260,7 +1260,7 @@ class LibraryState extends ChangeNotifier {
           _shelfLayout;
       final nextGridDensity = gridDensity ?? _shelfGridDensity;
       final nextShelfPreferences = shelfPreferences ?? _shelfPreferences;
-      final nextSource = ['all', 'local', 'cached', 'online'].contains(source)
+      final nextSource = ['all', 'cached', 'online'].contains(source)
           ? source!
           : _shelfSourceFilter;
       await _commitLibraryRecords({

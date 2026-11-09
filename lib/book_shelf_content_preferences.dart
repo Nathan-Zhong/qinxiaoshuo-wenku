@@ -99,12 +99,15 @@ class BookShelfContentPreferences {
         .where((item) => item.name == sortName)
         .firstOrNull;
     if (sort == null) return null;
+    final source = value['source'] as String;
     return BookShelfContentPreferences(
       followCollection: value['followCollection'] as bool,
       category: value['category'] as String,
       readingFilter: value['readingFilter'] as String,
       sort: sort,
-      source: value['source'] as String,
+      // Local import is gone; a shelf saved while it existed falls back to
+      // "all sources" instead of pointing at a filter that no longer renders.
+      source: source == 'local' ? 'all' : source,
     );
   }
 
