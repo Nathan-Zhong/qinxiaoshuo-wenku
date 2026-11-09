@@ -21,7 +21,7 @@ class WenkuApiError implements Exception {
     9 => '今天已经签到',
     10 => '本次推荐未成功，请稍后再试',
     11 => '发表未成功，请检查内容后重试',
-    _ => '服务器未完成本次操作，请稍后重试',
+    _ => '服务器未完成本次操作，请稍后重试（代码 $code）',
   };
   @override
   String toString() => message;
