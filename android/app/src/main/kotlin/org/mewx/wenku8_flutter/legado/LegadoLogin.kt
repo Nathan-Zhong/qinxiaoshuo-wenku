@@ -189,12 +189,25 @@ object LegadoLogin {
             return mapOf("ok" to true, "opened" to "browser")
         }
         val loginJs = source.getLoginJs() ?: ""
-        runScriptWithContext {
-            source.evalJS("$loginJs\n$action") {
-                put("result", { HashMap(data) })
-                put("book", null)
-                put("chapter", null)
+        // Fork semantics (SourceLoginDialog.handleButtonClick): a
+        // button-row JS error is logged, not surfaced. The common
+        // case is a web login the user closed without confirming —
+        // the engine wakes the waiting script with an empty result
+        // ("验证结果为空"); the login itself already took effect
+        // through cookie sync, and the sheet stays open so the user
+        // can tap the button again. Cancellation still propagates.
+        runCatching {
+            runScriptWithContext {
+                source.evalJS("$loginJs\n$action") {
+                    put("result", { HashMap(data) })
+                    put("book", null)
+                    put("chapter", null)
+                }
             }
+        }.onFailure { e ->
+            if (e is CancellationException) throw e
+            AppLog.put("LoginUI Button JavaScript error: $action", e)
+            LegadoEngine.recordBridgeError("loginAction:${source.bookSourceUrl}", e)
         }
         return mapOf("ok" to true)
     }
