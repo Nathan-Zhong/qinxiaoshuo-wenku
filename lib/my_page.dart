@@ -285,8 +285,11 @@ class SupportFeedbackPage extends StatelessWidget {
           const SizedBox(height: 24),
           ContentPanel(
             child: AppText(
-              '这个版本是我们自己编译维护的，装包来自本地构建，'
-              '不走官方更新通道；本版只适配小说和漫画类书源。',
+              '本版本基于「轻小说文库」二次开发，旨在提供更丰富的小说与漫画阅读体验。'
+              '安装包由本地独立构建，不接入官方更新渠道，属于非官方修改版本。'
+              '在此感谢原作者及其团队的辛勤付出与开源贡献。'
+              '如果您认可并喜爱「轻小说文库」，欢迎通过原项目官方渠道赞助支持原作者，'
+              '共同助力项目的持续发展ᕙ(  •̀ ᗜ •́  )ᕗ',
               style: TextStyle(
                 fontSize: 13,
                 height: 1.6,
