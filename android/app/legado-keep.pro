@@ -119,3 +119,11 @@
 -dontwarn org.mozilla.**
 -dontwarn com.sun.**
 -dontwarn org.openjsse.**
+
+# --- POI / log4j transitively reference JDK & OSGi types not on Android ------
+-dontwarn javax.xml.stream.**
+-dontwarn org.osgi.**
+-dontwarn org.apache.poi.**
+-dontwarn org.apache.logging.log4j.**
+-dontwarn org.apache.xmlbeans.**
+-dontwarn org.openxmlformats.**
