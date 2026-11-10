@@ -567,7 +567,9 @@ object LegadoLoginEventBridge {
             // A3: same per-row tolerance as openSourceLogin — a form
             // with one bad row still opens as a form.
             val (rows, _) = if (bookSource != null) {
-                loginRows(bookSource)
+                // loginRows 是 object LegadoLogin 的成员，这里是
+                // LegadoLoginEventBridge，得写全名才能调到。
+                LegadoLogin.loginRows(bookSource)
             } else {
                 emptyList<RowUi>() to 0
             }
