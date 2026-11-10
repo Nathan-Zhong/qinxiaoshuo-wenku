@@ -330,11 +330,15 @@ object LegadoManage {
     ): String? {
         val probe = badValue.take(40)
         if (probe.isNotEmpty()) {
-            if (!source.exploreUrl.isNullOrBlank() &&
-                source.exploreUrl.contains(probe)
+            // exploreUrl/searchUrl 是可变属性，判空后不能直接 smart cast，
+            // 先存到局部变量再判。
+            val exploreUrl = source.exploreUrl
+            val searchUrl = source.searchUrl
+            if (!exploreUrl.isNullOrBlank() &&
+                exploreUrl.contains(probe)
             ) return "发现地址"
-            if (!source.searchUrl.isNullOrBlank() &&
-                source.searchUrl.contains(probe)
+            if (!searchUrl.isNullOrBlank() &&
+                searchUrl.contains(probe)
             ) return "搜索地址"
             if (!source.bookSourceUrl.isNullOrBlank() &&
                 source.bookSourceUrl.contains(probe)
