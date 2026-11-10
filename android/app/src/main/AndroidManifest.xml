@@ -31,6 +31,19 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Visible browser for Legado source verification flows
+             (java.startBrowser / startBrowserAwait). Not exported:
+             only the engine's VerificationUiProvider may open it, with
+             a one-shot in-memory token. configChanges mirrors
+             MainActivity so rotation/theme flips never recreate it
+             (its load spec is consumed once from memory). -->
+        <activity
+            android:name=".legado.LegadoBrowserActivity"
+            android:exported="false"
+            android:theme="@style/LegadoBrowserTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".ReaderActivity"
             android:exported="true"
