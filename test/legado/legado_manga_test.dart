@@ -127,7 +127,7 @@ void main() {
     test('concurrent loads share one fetch; later loads hit the cache', () async {
       var calls = 0;
       final cache = MangaImageCache(
-        loader: ({required origin, required url}) async {
+        loader: ({required origin, required url, String? bookUrl}) async {
           calls++;
           return _png;
         },
@@ -146,7 +146,7 @@ void main() {
     test('entry budget evicts least-recently-used pages', () async {
       final cache = MangaImageCache(
         maxEntries: 2,
-        loader: ({required origin, required url}) async => _png,
+        loader: ({required origin, required url, String? bookUrl}) async => _png,
       );
       await cache.load(_sourceUrl, 'https://i/1.jpg');
       await cache.load(_sourceUrl, 'https://i/2.jpg');
@@ -158,7 +158,7 @@ void main() {
     test('a failure is remembered briefly, then evict allows a retry', () async {
       var calls = 0;
       final cache = MangaImageCache(
-        loader: ({required origin, required url}) async {
+        loader: ({required origin, required url, String? bookUrl}) async {
           calls++;
           throw StateError('boom');
         },
@@ -344,7 +344,7 @@ void main() {
   group('MangaChapterImage widget', () {
     testWidgets('shows the image once loaded', (tester) async {
       final cache = MangaImageCache(
-        loader: ({required origin, required url}) async => _png,
+        loader: ({required origin, required url, String? bookUrl}) async => _png,
       );
       await tester.pumpWidget(
         MaterialApp(
@@ -368,7 +368,7 @@ void main() {
     ) async {
       var fail = true;
       final cache = MangaImageCache(
-        loader: ({required origin, required url}) async {
+        loader: ({required origin, required url, String? bookUrl}) async {
           if (fail) throw StateError('boom');
           return _png;
         },
@@ -404,7 +404,7 @@ void main() {
 
     setUp(() {
       tempDir = Directory.systemTemp.createTempSync('manga_reader_test');
-      MangaImageDebug.loaderOverride = ({required origin, required url}) async =>
+      MangaImageDebug.loaderOverride = ({required origin, required url, String? bookUrl}) async =>
           _png;
     });
 

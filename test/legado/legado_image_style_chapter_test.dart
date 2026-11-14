@@ -323,7 +323,7 @@ void main() {
 
     setUp(() {
       tempDir = Directory.systemTemp.createTempSync('imgstyle_reader_test');
-      MangaImageDebug.loaderOverride = ({required origin, required url}) async =>
+      MangaImageDebug.loaderOverride = ({required origin, required url, String? bookUrl}) async =>
           _png;
     });
 
