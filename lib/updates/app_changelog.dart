@@ -42,8 +42,8 @@ class AppVersionNotes {
 /// 详细更新说明里每个版本占一页，按这个顺序翻页。
 const appChangelog = <AppVersionNotes>[
   AppVersionNotes(
-    version: '1.0.11',
-    build: 10011,
+    version: '1.0.16',
+    build: 10016,
     date: '2026-11-15',
     summary: ['文库登录不再动不动掉线，书源搜索更好用了。'],
     items: [
