@@ -61,7 +61,28 @@ Future<Uint8List> coverBytesFor(Novel novel) {
 Future<Uint8List> loadLegadoCoverBytes(Novel novel, String url) async {
   final cached = UrlCover.peek(url);
   if (cached != null) return cached;
-  final origin = LegadoBooks.registryOrNull?.recordById(novel.id)?.origin;
+  final record = LegadoBooks.registryOrNull?.recordById(novel.id);
+  final origin = record?.origin;
+  // Bug 5 (2026-11-15): the engine's native fetch goes first — it
+  // applies the source's cover decode JS (coverDecodeJs) where one
+  // is declared. Any failure falls through to the ladder below, so
+  // a source without decode JS behaves exactly as before.
+  if (origin != null && origin.isNotEmpty) {
+    try {
+      final bytes = await LegadoBooks.client.fetchImageBytes(
+        origin: origin,
+        bookUrl: record?.bookUrl,
+        url: url,
+        isCover: true,
+      );
+      // Seed the URL-keyed cache so peek() callers see the same bytes.
+      UrlCover.seed(url, bytes);
+      return bytes;
+    } catch (_) {
+      // Native fetch failed: the ladder below is a genuinely
+      // different request and gets its own attempt.
+    }
+  }
   if (origin != null && origin.isNotEmpty) {
     final target = await legadoImageResolver.resolve(origin, url);
     if (target != null && (target.url != url || target.headers.isNotEmpty)) {

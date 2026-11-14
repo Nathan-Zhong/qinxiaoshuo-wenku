@@ -421,6 +421,15 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
                 )
             }
 
+            "fetchImageBytes" -> launchEngine(result) {
+                LegadoEngine.fetchImageBytes(
+                    origin = reqString(call, "origin"),
+                    bookUrl = call.argument<String>("bookUrl"),
+                    url = reqString(call, "url"),
+                    isCover = call.argument<Boolean>("isCover") ?: false
+                )
+            }
+
             // ---- Management plane (P5.6, legado/LegadoManage.kt) ----
 
             "checkSources" -> {

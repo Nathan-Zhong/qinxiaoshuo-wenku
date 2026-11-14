@@ -1212,7 +1212,10 @@ class _CheckSourcesSheetState extends State<_CheckSourcesSheet> {
     final seen = <String>{};
     return [
       for (final result in _results)
-        if (!result.ok && seen.add(result.sourceUrl)) result.sourceUrl,
+        // Bug 3 (2026-11-15): a "partial" source still searches and
+        // reads, so it must never be offered for batch deletion.
+        if (!result.ok && !result.partial && seen.add(result.sourceUrl))
+          result.sourceUrl,
     ];
   }
 
@@ -1260,10 +1263,12 @@ class _CheckSourcesSheetState extends State<_CheckSourcesSheet> {
             AppText(
               result.ok
                   ? '可用'
-                  : '失效${result.message == null ? '' : '：${result.message}'}',
+                  : result.partial
+                      ? '部分可用${result.message == null ? '' : '：${result.message}'}'
+                      : '失效${result.message == null ? '' : '：${result.message}'}',
               style: TextStyle(
                 fontSize: 12,
-                color: result.ok
+                color: result.ok || result.partial
                     ? Theme.of(context).colorScheme.onSurfaceVariant
                     : Theme.of(context).colorScheme.error,
               ),

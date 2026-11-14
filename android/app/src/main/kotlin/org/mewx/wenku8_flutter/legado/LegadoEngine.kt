@@ -20,6 +20,7 @@ import io.legado.app.help.http.OkHttpClientProviders
 import io.legado.app.help.http.newCallStrResponse
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.exploreKinds
+import io.legado.app.utils.ImageUtils
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
 import io.legado.app.model.analyzeRule.RuleData
 import io.legado.app.model.script.JsBindingInjector
@@ -33,6 +34,8 @@ import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.scan.TagScan
 import io.legado.engine.LegadoEngineFacade
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -1163,6 +1166,38 @@ object LegadoEngine {
         type = bookType
     )
 
+    /**
+     * Bug 4 (2026-11-15): the book chain (info / toc / content) had
+     * no warm-up and no retry, while search has both (fix3). A
+     * detail, toc or content page that triggers a Cloudflare
+     * challenge on its first request, or a transient failure, failed
+     * outright — search worked, reading showed 加载失败， and cover /
+     * intro (which come from getBookInfo) failed with it. Warm the
+     * target URL through the engine's own client (the challenge
+     * interceptor gets its solve window and cookies land before the
+     * real fetch), then retry the fetch once before surfacing the
+     * error. The warm-up is best-effort: a relative URL, or one
+     * carrying a Legado `,{...}` options suffix, is simply skipped.
+     */
+    private suspend fun <T> withDetailWarmRetry(
+        warmUrl: String?,
+        block: suspend () -> T
+    ): T {
+        warmUrl?.takeIf { it.startsWith("http") }?.let { url ->
+            runCatching {
+                OkHttpClientProviders.get().okHttpClient
+                    .newCallStrResponse { url(url) }
+            }
+        }
+        return try {
+            block()
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            LegadoEngine.recordBridgeError("detailRetry", e)
+            block()
+        }
+    }
+
     suspend fun getBookInfo(
         origin: String,
         bookUrl: String,
@@ -1174,7 +1209,9 @@ object LegadoEngine {
         requireInit()
         val source = sourceOrThrow(origin)
         val book = buildBook(origin, source.bookSourceName, bookUrl, tocUrl, name, author, variable, source.getBookType())
-        val result = WebBook.getBookInfoAwait(source, book)
+        val result = withDetailWarmRetry(bookUrl) {
+            WebBook.getBookInfoAwait(source, book)
+        }
         return LegadoDto.book(result, source.contentRule.imageStyle)
     }
 
@@ -1193,7 +1230,9 @@ object LegadoEngine {
         // also writes chapters into the engine DB as a side effect, like
         // Legado itself). forceRefresh is accepted by the contract; this
         // phase does not serve a bridge-level TOC cache.
-        val chapters = WebBook.getChapterListAwait(source, book).getOrElse { throw it }
+        val chapters = withDetailWarmRetry(tocUrl?.takeIf { it.isNotBlank() } ?: bookUrl) {
+            WebBook.getChapterListAwait(source, book)
+        }.getOrElse { throw it }
         return mapOf(
             "book" to LegadoDto.book(book, source.contentRule.imageStyle),
             "chapters" to chapters.map { LegadoDto.chapter(it) }
@@ -1235,9 +1274,11 @@ object LegadoEngine {
         // online reads do not implicitly populate the offline cache;
         // only the explicit cache download (startCacheChapters) does.
         var content = BookHelpProviders.get().getContent(book, chapter)
-            ?: WebBook.getContentAwait(
-                source, book, chapter, nextChapterUrl, needSave = false
-            )
+            ?: withDetailWarmRetry(chapterUrl) {
+                WebBook.getContentAwait(
+                    source, book, chapter, nextChapterUrl, needSave = false
+                )
+            }
         val isImageChapter = source.bookSourceType == 2
         // Image chapters carry an image-URL list, not prose: the fork
         // never runs the text pipeline over it (an image book's
@@ -1539,6 +1580,87 @@ object LegadoEngine {
             recordBridgeError("resolveImageRequest:$origin", e)
             fallback
         }
+    }
+
+    /**
+     * Bug 5 (2026-11-15): manga pages and covers were fetched as raw
+     * bytes by the Dart side (plain HTTP, resolved headers only) and
+     * displayed as-is — but many manga sources encrypt their images
+     * and declare the decryption in the source rules (漫蛙
+     * ruleContent.imageDecode: AES/CBC via java.createSymmetricCrypto;
+     * covers via BookSource.coverDecodeJs). The vendored engine's
+     * ImageUtils.decode applies exactly that JS, yet nothing in the
+     * app ever called it, so encrypted pages decoded to garbage and
+     * the reader showed 图片加载失败 even though the chapter list and
+     * URLs were fine. This bridge downloads through the engine's own
+     * client (resolved URL + headers, same as resolveImageRequest)
+     * and runs ImageUtils.decode when the source declares decode JS
+     * (content imageDecode, cover coverDecodeJs); a decode failure
+     * falls back to the raw bytes so a broken rule can never make a
+     * plain image worse.
+     */
+    suspend fun fetchImageBytes(
+        origin: String,
+        bookUrl: String?,
+        url: String,
+        isCover: Boolean
+    ): Map<String, Any?> {
+        requireInit()
+        val source = runCatching { SourceHelp.getSource(origin) }.getOrNull()
+        val (resolvedUrl, headers) = if (source != null) {
+            runCatching {
+                val analyzeUrl = AnalyzeUrlFactories.create(
+                    rawUrl = url,
+                    source = source,
+                    coroutineContext = currentCoroutineContext()
+                )
+                val (u, h) = analyzeUrl.resolveImageRequest()
+                val cleaned = LinkedHashMap(h)
+                cleaned.remove("proxy")
+                u to cleaned
+            }.getOrElse { url to emptyMap<String, String>() }
+        } else {
+            url to emptyMap<String, String>()
+        }
+        val bytes = withContext(Dispatchers.IO) {
+            val client = OkHttpClientProviders.get().okHttpClient.newBuilder()
+                .callTimeout(20, TimeUnit.SECONDS)
+                .build()
+            val request = okhttp3.Request.Builder().url(resolvedUrl)
+                .apply { headers.forEach { (k, v) -> header(k, v) } }
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw IOException("图片请求失败 (${response.code})")
+                }
+                val body = response.body
+                    ?: throw IOException("图片内容为空")
+                val data = body.bytes()
+                if (data.size > 20 * 1024 * 1024) {
+                    throw IOException("图片过大")
+                }
+                data
+            }
+        }
+        val ruleJs = when {
+            source == null -> null
+            isCover -> source.coverDecodeJs?.takeIf { it.isNotBlank() }
+            else -> source.contentRule.imageDecode?.takeIf { it.isNotBlank() }
+        }
+        val decoded = if (!ruleJs.isNullOrBlank() && source != null) {
+            val book = buildBook(
+                origin, source.bookSourceName, bookUrl ?: "",
+                null, null, null, null, source.getBookType()
+            )
+            runCatching {
+                ImageUtils.decode(ruleJs, bytes, isCover, source, book)
+            }.onFailure { e ->
+                LegadoEngine.recordBridgeError("imageDecode", e)
+            }.getOrElse { bytes }
+        } else {
+            bytes
+        }
+        return mapOf("bytes" to decoded)
     }
 
     /**

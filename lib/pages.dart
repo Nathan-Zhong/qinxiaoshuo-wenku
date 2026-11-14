@@ -5375,11 +5375,13 @@ class _ReaderPageState extends State<ReaderPage>
           origin: images.origin,
           urls: images.urls,
           around: index,
+          bookUrl: images.bookUrl,
         );
         return MangaChapterImage(
           key: ValueKey('manga-page-$_contentGeneration-$index'),
           origin: images.origin,
           url: images.urls[index],
+          bookUrl: images.bookUrl,
         );
       },
     );

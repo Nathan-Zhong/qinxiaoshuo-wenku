@@ -44,10 +44,18 @@ bool legadoBookHasImageStyle(LegadoBookRecord record) =>
 /// could be extracted — the reader shows its empty/failed state with a
 /// retry instead of prose.
 class ChapterImageList {
-  const ChapterImageList({required this.origin, required this.urls});
+  const ChapterImageList({
+    required this.origin,
+    required this.urls,
+    this.bookUrl,
+  });
 
   final String origin;
   final List<String> urls;
+
+  /// The book's URL: the native image fetch needs it to build the
+  /// book context the source's image decode JS runs against (Bug 5).
+  final String? bookUrl;
 
   @override
   bool operator ==(Object other) =>
@@ -358,7 +366,11 @@ class LegadoNovelRepository extends NovelRepository {
     if (urls.isEmpty && result.content.trim().isNotEmpty) {
       urls = parseLegadoImageUrls(result.content, baseUrl: baseUrl);
     }
-    return ChapterImageList(origin: record.origin, urls: urls);
+    return ChapterImageList(
+      origin: record.origin,
+      urls: urls,
+      bookUrl: record.bookUrl,
+    );
   }
 
   // ------------------------------------------------------------------

@@ -115,40 +115,80 @@ object LegadoManage {
                                 runCatching { dao.update(source) }
                                 val invalid = source.getInvalidGroupNames()
                                 val ok = invalid.isBlank()
-                                val message = if (ok) {
-                                    "校验成功"
+                                // fix6: keep the WHOLE error paragraph,
+                                // not just its first line. The engine's
+                                // addErrorComment stores "// Error: " +
+                                // e.message, and for JS failures that
+                                // message is "JS执行出错\n<real cause>" —
+                                // first-line extraction showed Cassidy
+                                // only the wrapper and dropped the cause
+                                // (device report 2026-11-04). The error
+                                // block is the comment's first paragraph
+                                // (addErrorComment prepends it ahead of a
+                                // "\n\n" separator); collapse its inner
+                                // newlines so the sheet stays one line.
+                                val errorLine = source.bookSourceComment
+                                    ?.takeIf { it.startsWith("// Error: ") }
+                                    ?.removePrefix("// Error: ")
+                                    ?.substringBefore("\n\n")
+                                    ?.replace(Regex("\\s*\\n\\s*"), " ")
+                                    ?.trim()
+                                    // FIX8: widened 300 -> 1200 so a JS
+                                    // error's full QuickJS stack survives
+                                    // into the note (7753's truncated
+                                    // stack hid which eval path threw).
+                                    ?.take(1200)
+                                val failDetail = listOfNotNull(
+                                    invalid,
+                                    errorLine?.takeIf { it.isNotBlank() }
+                                ).joinToString("：")
+                                // Bug 3 (2026-11-15): checkSource is an
+                                // all-or-nothing gate (search -> info ->
+                                // toc -> content) while real use only
+                                // needs search to list books and
+                                // info/toc/content for the one book
+                                // being read. A source whose search works
+                                // but whose probe book is gone, or whose
+                                // toc/content stage timed out under batch
+                                // concurrency, was reported "失效" and
+                                // offered for batch deletion even though
+                                // Discover search + reading worked.
+                                // Re-probe search directly: if it returns
+                                // books, report "partial" (search works,
+                                // the failing stage is unconfirmed) and
+                                // count it as usable, not failed.
+                                val searchWorks = if (ok) {
+                                    false
                                 } else {
-                                    // fix6: keep the WHOLE error paragraph,
-                                    // not just its first line. The engine's
-                                    // addErrorComment stores "// Error: " +
-                                    // e.message, and for JS failures that
-                                    // message is "JS执行出错\n<real cause>" —
-                                    // first-line extraction showed Cassidy
-                                    // only the wrapper and dropped the cause
-                                    // (device report 2026-11-04). The error
-                                    // block is the comment's first paragraph
-                                    // (addErrorComment prepends it ahead of a
-                                    // "\n\n" separator); collapse its inner
-                                    // newlines so the sheet stays one line.
-                                    val errorLine = source.bookSourceComment
-                                        ?.takeIf { it.startsWith("// Error: ") }
-                                        ?.removePrefix("// Error: ")
-                                        ?.substringBefore("\n\n")
-                                        ?.replace(Regex("\\s*\\n\\s*"), " ")
-                                        ?.trim()
-                                        // FIX8: widened 300 -> 1200 so a JS
-                                        // error's full QuickJS stack survives
-                                        // into the note (7753's truncated
-                                        // stack hid which eval path threw).
-                                        ?.take(1200)
-                                    listOfNotNull(
-                                        invalid,
-                                        errorLine?.takeIf { it.isNotBlank() }
-                                    ).joinToString("：")
+                                    runCatching {
+                                        WebBook.getBookListAwait(
+                                            source, "斗破", 1
+                                        ).books.isNotEmpty()
+                                    }.getOrDefault(false)
+                                }
+                                val partial = !ok && searchWorks
+                                val state = when {
+                                    ok -> "ok"
+                                    partial -> "partial"
+                                    else -> "fail"
+                                }
+                                val needsLogin = !ok && !partial &&
+                                    source.hasLogin() &&
+                                    LegadoLogin.loginStates(
+                                        listOf(source)
+                                    )[source.bookSourceUrl] != true
+                                val message = when {
+                                    ok -> "校验成功"
+                                    partial -> listOfNotNull(
+                                        "搜索可用",
+                                        failDetail.takeIf { it.isNotBlank() }
+                                    ).joinToString("，")
+                                    needsLogin -> "需先登录书源：$failDetail"
+                                    else -> failDetail
                                 }
                                 val snapshot = synchronized(this@LegadoManage) {
                                     done++
-                                    if (ok) okCount++ else failCount++
+                                    if (ok || partial) okCount++ else failCount++
                                     done
                                 }
                                 emit(
@@ -156,7 +196,7 @@ object LegadoManage {
                                         "type" to "checkProgress",
                                         "taskId" to taskId,
                                         "sourceUrl" to url,
-                                        "state" to if (ok) "ok" else "fail",
+                                        "state" to state,
                                         "message" to message,
                                         "done" to snapshot,
                                         "total" to total

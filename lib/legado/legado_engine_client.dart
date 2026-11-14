@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 
@@ -493,6 +494,28 @@ class LegadoEngineClient {
     return ChapterContent.fromMap(result ?? const {});
   }
 
+  /// Downloads one image through the engine (resolved URL + headers)
+  /// and applies the source's image decode JS when it declares one
+  /// (Bug 5, 2026-11-15: manga sources like 漫蛙 serve AES-encrypted
+  /// pages via ruleContent.imageDecode; covers via coverDecodeJs).
+  /// Falls back to the raw bytes when no decode JS is declared.
+  Future<Uint8List> fetchImageBytes({
+    required String origin,
+    String? bookUrl,
+    required String url,
+    bool isCover = false,
+  }) async {
+    final result = await _invokeMap('fetchImageBytes', {
+      'origin': origin,
+      'bookUrl': ?bookUrl,
+      'url': url,
+      'isCover': isCover,
+    });
+    final bytes = result?['bytes'];
+    if (bytes is Uint8List && bytes.isNotEmpty) return bytes;
+    throw const FormatException('图片内容为空');
+  }
+
   /// Resolves the real URL + required headers for a cover/manga image.
   Future<ImageRequest> resolveImageRequest({
     required String origin,
@@ -821,6 +844,10 @@ sealed class LegadoTaskEvent {
           taskId,
           sourceUrl: m['sourceUrl']?.toString() ?? '',
           ok: m['state'] == 'ok',
+          // Bug 3 (2026-11-15): a source whose search works but whose
+          // check probe failed on another stage reports "partial" —
+          // usable for search/reading, not a failure.
+          partial: m['state'] == 'partial',
           message: m['message']?.toString(),
           done: asInt('done'),
           total: asInt('total'),
@@ -862,6 +889,7 @@ class CheckProgressEvent extends LegadoTaskEvent {
     super.taskId, {
     required this.sourceUrl,
     required this.ok,
+    this.partial = false,
     this.message,
     this.done = 0,
     this.total = 0,
@@ -869,6 +897,9 @@ class CheckProgressEvent extends LegadoTaskEvent {
 
   final String sourceUrl;
   final bool ok;
+
+  /// Search works but another check stage failed: usable, not failed.
+  final bool partial;
   final String? message;
   final int done;
   final int total;

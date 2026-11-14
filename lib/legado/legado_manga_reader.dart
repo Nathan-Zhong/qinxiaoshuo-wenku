@@ -8,10 +8,17 @@ import 'package:flutter/foundation.dart';
 
 import '../app_ui.dart';
 import '../cover_images.dart';
+import 'legado_books.dart';
 
 /// Fetches one manga page's bytes for [url] under source [origin].
+/// [bookUrl] is the book's URL, needed to build the book context
+/// the source's image decode JS runs against (Bug 5).
 typedef MangaImageLoader =
-    Future<Uint8List> Function({required String origin, required String url});
+    Future<Uint8List> Function({
+      required String origin,
+      required String url,
+      String? bookUrl,
+    });
 
 /// Bounded byte cache for manga chapter pages.
 ///
@@ -72,7 +79,11 @@ class MangaImageCache {
     _encodedBytes = 0;
   }
 
-  Future<({Uint8List bytes, Size size})> load(String origin, String url) {
+  Future<({Uint8List bytes, Size size})> load(
+    String origin,
+    String url, {
+    String? bookUrl,
+  }) {
     final hit = peek(url);
     if (hit != null) return Future.value(hit);
     final failure = _failures[url];
@@ -80,7 +91,7 @@ class MangaImageCache {
     _failures.remove(url);
     final pending = _pending[url];
     if (pending != null) return pending;
-    final future = _load(origin, url);
+    final future = _load(origin, url, bookUrl: bookUrl);
     _pending[url] = future;
     return future.whenComplete(() {
       if (identical(_pending[url], future)) _pending.remove(url);
@@ -89,10 +100,15 @@ class MangaImageCache {
 
   Future<({Uint8List bytes, Size size})> _load(
     String origin,
-    String url,
-  ) async {
+    String url, {
+    String? bookUrl,
+  }) async {
     try {
-      final bytes = await loader(origin: origin, url: url);
+      final bytes = await loader(
+        origin: origin,
+        url: url,
+        bookUrl: bookUrl,
+      );
       if (bytes.isEmpty) throw const FormatException('图片为空');
       final size = await _decodeSize(bytes);
       final result = (bytes: bytes, size: size);
@@ -148,10 +164,11 @@ class MangaImageCache {
 /// through the engine first (G7: the source's headers and the
 /// per-image `,{...}` suffix rules), exactly like cover loads.
 final legadoMangaImageCache = MangaImageCache(
-  loader: ({required origin, required url}) =>
+  loader: ({required origin, required url, String? bookUrl}) =>
       (MangaImageDebug.loaderOverride ?? loadLegadoMangaImageBytes)(
         origin: origin,
         url: url,
+        bookUrl: bookUrl,
       ),
 );
 
@@ -163,19 +180,36 @@ abstract final class MangaImageDebug {
   static MangaImageLoader? loaderOverride;
 }
 
-/// Loads one manga page with the G7 anti-hotlink ladder, mirroring
-/// [loadLegadoCoverBytes]: resolved URL + headers first when the
-/// engine resolves the image to something different, then the bare
-/// URL as its own attempt.
+/// Loads one manga page, mirroring [loadLegadoCoverBytes].
+///
+/// Bug 5 (2026-11-15): the engine's native fetch goes first — it
+/// downloads through the engine client and applies the source's
+/// image decode JS (漫蛙 AES-encrypted pages), which plain HTTP can
+/// never do. Any native failure falls through to the G7 anti-hotlink
+/// ladder below (resolved URL + headers, then the bare URL), so a
+/// source without decode JS behaves exactly as before.
 Future<Uint8List> loadLegadoMangaImageBytes({
   required String origin,
   required String url,
+  String? bookUrl,
 }) async {
   // Offline cache hit (P5.7): the bridge substitutes a downloaded
   // chapter image's local file path for its remote URL. A missing
   // file throws here and surfaces through the tile's existing
   // failure + retry presentation.
   if (url.startsWith('/')) return File(url).readAsBytes();
+  if (origin.isNotEmpty) {
+    try {
+      return await LegadoBooks.client.fetchImageBytes(
+        origin: origin,
+        bookUrl: bookUrl,
+        url: url,
+      );
+    } catch (_) {
+      // Native fetch failed: the ladder below is a genuinely
+      // different request and gets its own attempt.
+    }
+  }
   if (origin.isNotEmpty) {
     final target = await legadoImageResolver.resolve(origin, url);
     if (target != null && (target.url != url || target.headers.isNotEmpty)) {
@@ -253,6 +287,7 @@ void warmMangaImages({
   required String origin,
   required List<String> urls,
   required int around,
+  String? bookUrl,
   MangaImageCache? cache,
 }) {
   final target = cache ?? legadoMangaImageCache;
@@ -261,7 +296,11 @@ void warmMangaImages({
     if (index < 0 || index >= urls.length) continue;
     final url = urls[index];
     if (target.peek(url) != null) continue;
-    unawaited(target.load(origin, url).then((_) {}, onError: (Object _) {}));
+    unawaited(
+      target
+          .load(origin, url, bookUrl: bookUrl)
+          .then((_) {}, onError: (Object _) {}),
+    );
   }
 }
 
@@ -278,11 +317,15 @@ class MangaChapterImage extends StatefulWidget {
     super.key,
     required this.origin,
     required this.url,
+    this.bookUrl,
     this.cache,
   });
 
   final String origin;
   final String url;
+
+  /// The book's URL, for the native image fetch's decode context.
+  final String? bookUrl;
   final MangaImageCache? cache;
 
   @override
@@ -294,13 +337,18 @@ class _MangaChapterImageState extends State<MangaChapterImage> {
 
   late Future<({Uint8List bytes, Size size})> _future = _load();
 
-  Future<({Uint8List bytes, Size size})> _load() =>
-      _cache.load(widget.origin, widget.url);
+  Future<({Uint8List bytes, Size size})> _load() => _cache.load(
+    widget.origin,
+    widget.url,
+    bookUrl: widget.bookUrl,
+  );
 
   @override
   void didUpdateWidget(MangaChapterImage old) {
     super.didUpdateWidget(old);
-    if (old.url != widget.url || old.origin != widget.origin) {
+    if (old.url != widget.url ||
+        old.origin != widget.origin ||
+        old.bookUrl != widget.bookUrl) {
       _future = _load();
     }
   }
