@@ -170,8 +170,16 @@ object LegadoImport {
         // inlined into this host (compiled for target 17).
         val source = runCatching {
             GSON.decodeFromString(BookSource.serializer(), sourceJson)
-        }.getOrElse { throw LegadoParseException("不是书源") }
-        if (source.bookSourceUrl.isBlank()) throw LegadoParseException("不是书源")
+        }.getOrElse { failure ->
+            // A bare "不是书源" hid which field broke, so every
+            // incompatible source looked identical. Keep the prefix
+            // (callers match on it) and append the decoder's cause.
+            val cause = failure.message?.take(200)?.trim().orEmpty()
+            throw LegadoParseException(
+                if (cause.isEmpty()) "不是书源" else "不是书源：$cause"
+            )
+        }
+        if (source.bookSourceUrl.isBlank()) throw LegadoParseException("不是书源：缺少 bookSourceUrl")
         return source
     }
 
@@ -279,9 +287,28 @@ object LegadoImport {
 
                 else -> throw LegadoParseException("不是书源")
             }
-        }.onFailure {
+        }.onFailure { failure ->
             acc.failed++
-            acc.errors.add(it.message ?: "不是书源")
+            // Name the failing item (name / bookSourceUrl when the
+            // payload carries one) instead of a bare "不是书源":
+            // in a multi-source package the user otherwise cannot
+            // tell which of the imported sources was rejected.
+            val label = obj["bookSourceName"]?.let {
+                (it as? JsonPrimitive)?.contentOrNull
+            } ?: obj["bookSourceUrl"]?.let {
+                (it as? JsonPrimitive)?.contentOrNull
+            } ?: obj["name"]?.let {
+                (it as? JsonPrimitive)?.contentOrNull
+            }
+            val cause = failure.message?.take(200)?.trim().orEmpty()
+            acc.errors.add(
+                when {
+                    label != null && cause.isNotEmpty() -> "$label：$cause"
+                    label != null -> "$label：不是书源"
+                    cause.isNotEmpty() -> cause
+                    else -> "不是书源"
+                }
+            )
         }
     }
 
@@ -365,14 +392,14 @@ object LegadoImport {
             unchanged = sourceCounts.unchanged + typed.unchanged,
             failed = parsed.failed,
             stored = stored,
-            errors = (parsed.errors + typed.errors).take(8)
+            errors = (parsed.errors + typed.errors).take(20)
         )
     }
 
     /** Subscription-import variant: book sources only, as [Counts]. */
     private suspend fun storeSourcesOnly(db: AppDatabase, parsed: Parsed): Counts {
         val counts = storeSources(db, parsed.sources)
-        return counts.copy(failed = parsed.failed, errors = parsed.errors.take(8))
+        return counts.copy(failed = parsed.failed, errors = parsed.errors.take(20))
     }
 
     /**

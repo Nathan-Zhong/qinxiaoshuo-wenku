@@ -782,10 +782,18 @@ object LegadoEngine {
         fun warmAndRestart() {
             lastCallbackAt.set(System.currentTimeMillis())
             scope.launch {
+                // Mirror the session warm-up: resolve the real search
+                // URL (probeResolvedSearchUrl) instead of the source
+                // homepage, so a challenge that only appears on the
+                // search path is actually solved before the restart.
+                val warmUrl = runCatching { probeResolvedSearchUrl(source) }
+                    .getOrNull()
+                    ?.takeIf { it.isNotBlank() && !it.startsWith("ERROR") }
+                    ?: source.bookSourceUrl
                 runCatching {
                     OkHttpClientProviders.get().okHttpClient
                         .newCallStrResponse {
-                            url(source.bookSourceUrl)
+                            url(warmUrl)
                         }
                     warmed.set(true)
                 }

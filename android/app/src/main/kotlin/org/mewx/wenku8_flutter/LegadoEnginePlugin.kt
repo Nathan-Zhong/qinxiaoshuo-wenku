@@ -9,9 +9,12 @@ import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.legado.app.constant.AppConst
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.help.http.OkHttpClientProviders
 import io.legado.app.help.http.newCallStrResponse
+import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
+import io.legado.app.model.analyzeRule.RuleData
 import io.legado.app.model.webBook.SearchModel
 import io.legado.app.model.webBook.SourceSearchGroup
 import io.legado.app.ui.book.search.SearchScope
@@ -22,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.mewx.wenku8_flutter.legado.LegadoBridgeException
@@ -621,8 +625,41 @@ class LegadoEnginePlugin : FlutterPlugin, ActivityAware {
             ?.filterIsInstance<String>()
             ?.takeIf { it.isNotEmpty() }
         val scopes: List<SearchScope> = when {
-            sourceUrls != null -> sourceUrls.mapNotNull { url ->
-                dao.getBookSource(url)?.let { SearchScope(it) }
+            sourceUrls != null -> {
+                // The DAO lookup is an exact-string match, so a
+                // trailing slash / stray whitespace in the stored
+                // URL used to silently drop an imported source from
+                // every search ("imported fine, never searched").
+                // Normalise before lookup, and report every URL
+                // that still misses instead of dropping it quietly:
+                // the Dart side already surfaces searchError events
+                // per source, so "导入成功、搜索不到" becomes a
+                // named failure instead of an empty result.
+                val resolved = arrayListOf<SearchScope>()
+                for (rawUrl in sourceUrls) {
+                    val candidates = listOf(
+                        rawUrl,
+                        rawUrl.trim(),
+                        rawUrl.trim().trimEnd('/'),
+                    ).distinct()
+                    val source = candidates.firstNotNullOfOrNull { candidate ->
+                        runCatching { dao.getBookSource(candidate) }.getOrNull()
+                    }
+                    if (source != null) {
+                        resolved += SearchScope(source)
+                    } else {
+                        emitSearchEvent(
+                            mapOf(
+                                "type" to "searchError",
+                                "taskId" to taskId,
+                                "sourceUrl" to rawUrl,
+                                "errorCode" to "UNKNOWN_SOURCE",
+                                "message" to "书源未在引擎库中命中，请重新导入该书源"
+                            )
+                        )
+                    }
+                }
+                resolved
             }
 
             group != null -> listOf(SearchScope(group))
@@ -995,6 +1032,37 @@ private class LegadoSearchSession(
     }
 
     /**
+     * Resolves the actual search URL for [sourceUrl] (the search-URL
+     * template with {{key}} / {{page}} substituted, exactly as the
+     * self-check's probe does), falling back to the source homepage
+     * when the source has no search URL or the template cannot be
+     * resolved. Warming up the homepage alone never solved a
+     * challenge that only appears on the search path / parameterised
+     * search URL, which is why shielded sources kept failing their
+     * retried search even after a "successful" warm-up.
+     */
+    private suspend fun resolveWarmUpUrl(sourceUrl: String): String {
+        return runCatching {
+            val source = LegadoEngine.db.bookSourceDao.getBookSource(sourceUrl)
+                ?: return@runCatching sourceUrl
+            val searchUrl = source.searchUrl
+            if (searchUrl.isNullOrBlank()) return@runCatching sourceUrl
+            val analyzeUrl = AnalyzeUrlFactories.create(
+                rawUrl = searchUrl,
+                baseUrl = source.bookSourceUrl,
+                source = source,
+                ruleData = RuleData(),
+                coroutineContext = currentCoroutineContext(),
+                variables = mapOf(
+                    AppConst.JsVarName.KEY to keyword,
+                    AppConst.JsVarName.PAGE to 1
+                )
+            )
+            analyzeUrl.url.takeIf { it.isNotBlank() } ?: sourceUrl
+        }.getOrElse { sourceUrl }
+    }
+
+    /**
      * fix3 retry worker: warm the source through the engine's own
      * client (no SearchModel timeout — the Cloudflare interceptor gets
      * its full solve window), then restart just this unit's source for
@@ -1004,9 +1072,10 @@ private class LegadoSearchSession(
      */
     private fun warmUpAndRestart(unit: Int, sourceUrl: String) {
         LegadoEngine.scope.launch {
+            val warmUrl = resolveWarmUpUrl(sourceUrl)
             runCatching {
                 OkHttpClientProviders.get().okHttpClient
-                    .newCallStrResponse { url(sourceUrl) }
+                    .newCallStrResponse { url(warmUrl) }
             }
             if (!active.get()) return@launch
             val model = models.getOrNull(unit) ?: run {

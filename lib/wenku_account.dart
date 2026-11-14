@@ -183,15 +183,27 @@ class WenkuAccount extends ChangeNotifier {
       ? error.message.toString()
       : '网络或本地存储暂时异常，请重试';
 
-  Future<void> initialize() => _initialization ??= _run('正在读取账号', () async {
-    final session = await _hasSession();
-    if (_disposed) return;
-    authenticated = session;
-    if (authenticated) {
-      profile = WenkuProfile.parse(await _send('action=userinfo'));
-      unawaited(_loadAvatar());
-    }
-  }).catchError((Object _) {});
+  Future<void> initialize() {
+    final existing = _initialization;
+    if (existing != null) return existing;
+    final future = _run('正在读取账号', () async {
+      final session = await _hasSession();
+      if (_disposed) return;
+      authenticated = session;
+      if (authenticated) {
+        profile = WenkuProfile.parse(await _send('action=userinfo'));
+        unawaited(_loadAvatar());
+      }
+    });
+    // A failed first attempt (offline, relay hiccup, or one bad
+    // userinfo round-trip) must not latch the account as dead for
+    // the rest of the process: drop the memo so the next call
+    // retries instead of returning the same dead future forever.
+    _initialization = future.catchError((Object _) {
+      _initialization = null;
+    });
+    return _initialization!;
+  }
 
   Future<T> _run<T>(String label, Future<T> Function() work) async {
     if (busy) throw StateError('An account operation is already active');
@@ -217,14 +229,41 @@ class WenkuAccount extends ChangeNotifier {
     final reply = await _request(action);
     if (_disposed || identity != _identity) throw StateError('Account changed');
     if (wenkuResponseCode(reply) == 4) {
-      await _clear();
-      _identity++;
-      authenticated = false;
-      profile = null;
-      avatar = null;
-      cloudBooks = null;
-      syncedAt = null;
-      signedToday = false;
+      // Only userinfo itself is authoritative about expiry. Any
+      // other action returning 4 may be a stale in-memory session,
+      // a relay hiccup, or an action-specific refusal — clearing
+      // the stored session on that alone turned one bad reply
+      // into a permanent logout. Confirm with userinfo first:
+      // only a second 4 from userinfo deletes the stored login.
+      // (The native side also returns a synthetic "4" when it has
+      // no session in memory, which is not a server verdict.)
+      var expired = action == 'action=userinfo';
+      if (!expired) {
+        try {
+          final check = await _request('action=userinfo');
+          if (_disposed || identity != _identity) {
+            throw StateError('Account changed');
+          }
+          if (wenkuResponseCode(check) == 4) {
+            expired = true;
+          } else {
+            // A parseable profile proves the session is alive.
+            WenkuProfile.parse(check);
+          }
+        } catch (error) {
+          expired = error is WenkuApiError && error.code == 4;
+        }
+      }
+      if (expired) {
+        await _clear();
+        _identity++;
+        authenticated = false;
+        profile = null;
+        avatar = null;
+        cloudBooks = null;
+        syncedAt = null;
+        signedToday = false;
+      }
       throw const WenkuApiError(4);
     }
     return reply;

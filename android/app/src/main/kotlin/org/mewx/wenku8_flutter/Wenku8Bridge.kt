@@ -88,15 +88,23 @@ internal class Wenku8Bridge(context: Context, private val postToMain: (Runnable)
                             WenkuPublicationSession.ApiReply(response.bytes.toString(Charsets.UTF_8), cookie.merge(response.cookies))
                         }
                         reply.apiCookies?.let { next ->
-                            if (next != sessionCookie) {
-                                store.write(if (next.hasSession) next.stored() else null)
-                                sessionCookie = next.takeIf { it.hasSession }
+                            // Only ever persist a session we still have.
+                            // A merged jar that lost PHPSESSID (server
+                            // sent an empty/expired Set-Cookie, or a
+                            // rotated id that fails validation) is not
+                            // proof of logout: keep the stored session
+                            // and the in-memory one instead of writing
+                            // null and logging the user out mid-use.
+                            // Only clearSession() may write null.
+                            if (next != sessionCookie && next.hasSession) {
+                                store.write(next.stored())
+                                sessionCookie = next
                             }
                         }
                         reply.webCookies?.let { next ->
-                            if (next != webCookie) {
-                                webStore.write(if (next.hasWebLogin) next.stored() else null)
-                                webCookie = next.takeIf { it.hasWebLogin }
+                            if (next != webCookie && next.hasWebLogin) {
+                                webStore.write(next.stored())
+                                webCookie = next
                             }
                         }
                         reply.body
@@ -145,10 +153,15 @@ internal class Wenku8Bridge(context: Context, private val postToMain: (Runnable)
                                 val reply = request(action, cookie)
                                 val text = reply.bytes.toString(Charsets.UTF_8)
                                 val next = cookie.merge(reply.cookies)
-                                if (next != cookie && text.trim() != "4") {
-                                    store.write(if (next.hasSession) next.stored() else null)
-                                    sessionCookie = next.takeIf { it.hasSession }
+                                if (next != cookie && text.trim() != "4" && next.hasSession) {
+                                    store.write(next.stored())
+                                    sessionCookie = next
                                 }
+                                // If the merge lost PHPSESSID, keep the
+                                // previous session (memory + disk) as-is:
+                                // a single response carrying an expired
+                                // or empty Set-Cookie must not erase a
+                                // login that userinfo still accepts.
                                 text
                             }
                         } else {
