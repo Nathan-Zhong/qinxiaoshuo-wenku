@@ -32,7 +32,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('书籍加载失败'), findsNothing);
       expect(find.text('重试之书'), findsWidgets);
-      expect(find.text('小说文库'), findsOneWidget);
+      expect(find.text('轻小说文库'), findsOneWidget);
       expect(engine.attempts, 2);
       expect(tester.takeException(), isNull);
     },

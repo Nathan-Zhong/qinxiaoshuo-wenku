@@ -467,7 +467,7 @@ void main() {
       tester.widget<MaterialApp>(find.byType(MaterialApp)).locale,
       const Locale('zh', 'TW'),
     );
-    expect(find.text('小說文庫'), findsOneWidget);
+    expect(find.text('輕小說文庫'), findsOneWidget);
     final restarted = await LibraryState.load();
     addTearDown(restarted.dispose);
     expect(restarted.language, AppLanguage.taiwan);
